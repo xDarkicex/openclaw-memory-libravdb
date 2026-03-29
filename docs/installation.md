@@ -1,6 +1,6 @@
 # Installation Reference
 
-This document is the full installation reference for `@xdarkicex/openclaw-memory-libravdb`. For the short path, use the root [README.md](/Users/z3robit/Development/golang/src/github.com/xDarkicex/openclaw-memory-libravdb/README.md).
+This document is the full installation reference for `@xdarkicex/openclaw-memory-libravdb`. For the short path, use the root [README.md](../README.md).
 
 ## System Requirements
 
