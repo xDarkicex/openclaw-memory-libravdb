@@ -12,48 +12,62 @@ permissions:
 jobs:
   build-sidecar:
     name: build-${{ matrix.asset_name }}
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - goos: darwin
+          - runner: macos-14
+            goos: darwin
             goarch: arm64
             asset_name: clawdb-sidecar-darwin-arm64
-          - goos: darwin
+          - runner: macos-13
+            goos: darwin
             goarch: amd64
             asset_name: clawdb-sidecar-darwin-amd64
-          - goos: linux
+          - runner: ubuntu-24.04
+            goos: linux
             goarch: amd64
             asset_name: clawdb-sidecar-linux-amd64
-          - goos: linux
+          - runner: ubuntu-24.04-arm
+            goos: linux
             goarch: arm64
             asset_name: clawdb-sidecar-linux-arm64
-          - goos: windows
+          - runner: windows-2022
+            goos: windows
             goarch: amd64
             asset_name: clawdb-sidecar-windows-amd64.exe
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: sidecar/go.mod
 
       - name: Build sidecar binary
         working-directory: sidecar
         env:
-          CGO_ENABLED: "0"
+          CGO_ENABLED: "1"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p ../dist
           go build -trimpath -ldflags="-s -w" -o "../dist/${{ matrix.asset_name }}" .
 
-      - name: Generate checksum
+      - name: Generate checksum (unix)
+        if: runner.os != 'Windows'
         working-directory: dist
         run: |
           shasum -a 256 "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+
+      - name: Generate checksum (windows)
+        if: runner.os == 'Windows'
+        working-directory: dist
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "${{ matrix.asset_name }}" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "${{ matrix.asset_name }}.sha256" -Value "$hash  ${{ matrix.asset_name }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

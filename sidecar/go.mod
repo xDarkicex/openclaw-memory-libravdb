@@ -18,6 +18,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/xDarkicex/libravdb => /Users/z3robit/Development/golang/src/github.com/xDarkicex/libraVDB
-
 replace github.com/sugarme/tokenizer => github.com/clems4ever/tokenizer v0.0.0-20250926133620-9ddc80533c43
