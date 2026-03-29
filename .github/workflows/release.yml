@@ -82,6 +82,7 @@ jobs:
     name: publish-release-assets
     runs-on: ubuntu-latest
     needs: build-sidecar
+    if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - name: Download build artifacts
@@ -93,6 +94,7 @@ jobs:
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: |
             dist/clawdb-sidecar-darwin-arm64
             dist/clawdb-sidecar-darwin-arm64.sha256
