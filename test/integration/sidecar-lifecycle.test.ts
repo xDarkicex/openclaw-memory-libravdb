@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { RpcClient } from "../../src/rpc.js";
-import { resolveEndpoint, startSidecar, type SidecarRuntime } from "../../src/sidecar.js";
+import { installSidecarProcessCleanup, resolveEndpoint, startSidecar, type SidecarRuntime } from "../../src/sidecar.js";
 import type { LoggerLike, PluginConfig, SidecarSocket } from "../../src/types.js";
 
 type CloseHandler = () => void;
@@ -207,4 +207,35 @@ test("sidecar startup forwards embedding config into launch environment", async 
     LIBRAVDB_EMBEDDING_DIMENSIONS: "384",
     LIBRAVDB_EMBEDDING_NORMALIZE: "true",
   });
+});
+
+test("process cleanup hooks stop the owned sidecar on host exit signals", () => {
+  const handlers = new Map<string, Set<() => void>>();
+  const host = {
+    once(event: string, handler: () => void) {
+      const set = handlers.get(event) ?? new Set<() => void>();
+      set.add(handler);
+      handlers.set(event, set);
+    },
+    off(event: string, handler: () => void) {
+      handlers.get(event)?.delete(handler);
+    },
+  };
+
+  let stops = 0;
+  const remove = installSidecarProcessCleanup(host, () => {
+    stops += 1;
+  });
+
+  for (const event of ["exit", "SIGINT", "SIGTERM", "SIGHUP"]) {
+    const registered = handlers.get(event);
+    assert.equal(registered?.size, 1);
+    registered?.forEach((handler) => handler());
+  }
+  assert.equal(stops, 1);
+
+  remove();
+  for (const event of ["exit", "SIGINT", "SIGTERM", "SIGHUP"]) {
+    assert.equal(handlers.get(event)?.size ?? 0, 0);
+  }
 });

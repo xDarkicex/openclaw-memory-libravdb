@@ -36,7 +36,9 @@ func (fakeEmbedder) Profile() embed.Profile {
 		Dimensions: 3,
 	}
 }
-func (fakeEmbedder) Ready() bool { return true }
+func (fakeEmbedder) Ready() bool    { return true }
+func (fakeEmbedder) Reason() string { return "" }
+func (fakeEmbedder) Mode() string   { return "primary" }
 
 type fakeProfiledEmbedder struct {
 	fingerprint string
@@ -50,6 +52,8 @@ func (e fakeProfiledEmbedder) EmbedQuery(ctx context.Context, text string) ([]fl
 }
 func (e fakeProfiledEmbedder) Dimensions() int { return 3 }
 func (e fakeProfiledEmbedder) Ready() bool     { return true }
+func (e fakeProfiledEmbedder) Reason() string  { return "" }
+func (e fakeProfiledEmbedder) Mode() string    { return "primary" }
 func (e fakeProfiledEmbedder) Profile() embed.Profile {
 	return embed.Profile{
 		Backend:     "onnx-local",
@@ -422,6 +426,8 @@ func (fakeMatryoshkaEmbedder) EmbedQuery(_ context.Context, _ string) ([]float32
 
 func (fakeMatryoshkaEmbedder) Dimensions() int { return embed.DimsL3 }
 func (fakeMatryoshkaEmbedder) Ready() bool     { return true }
+func (fakeMatryoshkaEmbedder) Reason() string  { return "" }
+func (fakeMatryoshkaEmbedder) Mode() string    { return "primary" }
 func (fakeMatryoshkaEmbedder) Profile() embed.Profile {
 	return embed.Profile{
 		Backend:    "onnx-local",

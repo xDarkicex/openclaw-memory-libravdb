@@ -15,7 +15,16 @@ func Check(embedder embed.Embedder, st *store.Store) Status {
 		return Status{OK: false, Message: "embedder unavailable"}
 	}
 	if !embedder.Ready() {
+		if embedder.Reason() != "" {
+			return Status{OK: false, Message: embedder.Reason()}
+		}
 		return Status{OK: false, Message: "embedder not ready"}
+	}
+	if embedder.Mode() == "fallback" {
+		if embedder.Reason() != "" {
+			return Status{OK: false, Message: embedder.Reason()}
+		}
+		return Status{OK: false, Message: "embedder running in deterministic fallback mode"}
 	}
 	if st == nil {
 		return Status{OK: false, Message: "store unavailable"}

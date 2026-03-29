@@ -18,6 +18,12 @@ export interface SidecarRuntime {
   stop?(): void | Promise<void>;
 }
 
+type HostSignal = "exit" | "SIGINT" | "SIGTERM" | "SIGHUP";
+type HostProcessLike = {
+  once(event: HostSignal, handler: () => void): void;
+  off?(event: HostSignal, handler: () => void): void;
+};
+
 class PlaceholderSocket implements SidecarSocket {
   private readonly onData = new Set<DataHandler>();
   private readonly onClose = new Set<CloseHandler>();
@@ -350,9 +356,38 @@ export function buildSidecarEnv(cfg: PluginConfig): Record<string, string> {
   return env;
 }
 
+export function installSidecarProcessCleanup(host: HostProcessLike, stop: () => void): () => void {
+  const events: HostSignal[] = ["exit", "SIGINT", "SIGTERM", "SIGHUP"];
+  let stopped = false;
+  const stopOnce = () => {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    stop();
+  };
+  for (const event of events) {
+    host.once(event, stopOnce);
+  }
+  return () => {
+    for (const event of events) {
+      host.off?.(event, stopOnce);
+    }
+  };
+}
+
 function createDefaultRuntime(logger: LoggerLike): SidecarRuntime {
   let launchEnv: Record<string, string> = {};
   let proc: ReturnType<typeof spawn> | null = null;
+  const stopProc = () => {
+    if (!proc || proc.killed) {
+      proc = null;
+      return;
+    }
+    proc.kill();
+    proc = null;
+  };
+  const removeCleanup = installSidecarProcessCleanup(process, stopProc);
 
   return {
     prepareLaunch(_cfg, env) {
@@ -365,6 +400,7 @@ function createDefaultRuntime(logger: LoggerLike): SidecarRuntime {
 
       const binPath = resolveBinPath(cfg.sidecarPath);
       return await new Promise<string>((resolve, reject) => {
+        stopProc();
         const child = spawn(binPath, [], {
           env: {
             ...process.env,
@@ -438,12 +474,8 @@ function createDefaultRuntime(logger: LoggerLike): SidecarRuntime {
       setTimeout(restart, delayMs);
     },
     async stop() {
-      if (!proc || proc.killed) {
-        proc = null;
-        return;
-      }
-      proc.kill();
-      proc = null;
+      stopProc();
+      removeCleanup();
     },
   };
 }

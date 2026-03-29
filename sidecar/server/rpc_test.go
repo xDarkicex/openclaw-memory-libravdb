@@ -45,7 +45,9 @@ func (fakeEmbedder) Profile() embed.Profile {
 		Dimensions: 2,
 	}
 }
-func (fakeEmbedder) Ready() bool     { return true }
+func (fakeEmbedder) Ready() bool    { return true }
+func (fakeEmbedder) Reason() string { return "" }
+func (fakeEmbedder) Mode() string   { return "primary" }
 
 func TestRPCInsertSearchAndDelete(t *testing.T) {
 	ctx := context.Background()

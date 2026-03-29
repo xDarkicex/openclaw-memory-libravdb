@@ -34,7 +34,9 @@ func (f fakeEmbedder) Profile() embed.Profile {
 		Dimensions: 2,
 	}
 }
-func (f fakeEmbedder) Ready() bool     { return true }
+func (f fakeEmbedder) Ready() bool    { return true }
+func (f fakeEmbedder) Reason() string { return "" }
+func (f fakeEmbedder) Mode() string   { return "primary" }
 
 func (f fakeTokenizer) Encode(text string) ([]int64, error) { return []int64{0, 1}, nil }
 func (f fakeTokenizer) Decode(ids []int64) (string, error)  { return "decoded", nil }

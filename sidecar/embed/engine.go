@@ -38,6 +38,8 @@ type Embedder interface {
 	Dimensions() int
 	Profile() Profile
 	Ready() bool
+	Reason() string
+	Mode() string
 }
 
 type Engine struct {
