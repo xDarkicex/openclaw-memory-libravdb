@@ -1,0 +1,16 @@
+.cpan-home/
+.gocache/
+.models/
+.perl5/
+.sidecar-bin/
+.ts-build/
+.ts-toolchain/
+
+AGENTS.md
+docs/
+
+*.db
+*.docx
+*.pl
+
+node_modules/

@@ -1,0 +1,84 @@
+{
+  "id": "libravdb-memory",
+  "name": "LibraVDB Memory",
+  "description": "Persistent vector memory with three-tier hybrid scoring",
+  "version": "1.3.0",
+  "kind": "memory",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dbPath": { "type": "string" },
+      "sidecarPath": { "type": "string" },
+      "embeddingRuntimePath": { "type": "string" },
+      "embeddingBackend": { "type": "string", "enum": ["bundled", "onnx-local", "custom-local"] },
+      "embeddingProfile": {
+        "type": "string",
+        "default": "nomic-embed-text-v1.5"
+      },
+      "fallbackProfile": {
+        "type": "string",
+        "default": "all-minilm-l6-v2"
+      },
+      "embeddingModelPath": { "type": "string" },
+      "embeddingTokenizerPath": { "type": "string" },
+      "embeddingDimensions": { "type": "number" },
+      "embeddingNormalize": { "type": "boolean" },
+      "summarizerBackend": { "type": "string", "enum": ["bundled", "onnx-local", "ollama-local", "custom-local"] },
+      "summarizerProfile": { "type": "string" },
+      "summarizerRuntimePath": { "type": "string" },
+      "summarizerModelPath": { "type": "string" },
+      "summarizerTokenizerPath": { "type": "string" },
+      "summarizerModel": { "type": "string" },
+      "summarizerEndpoint": { "type": "string" },
+      "sessionTTL": { "type": "number" },
+      "topK": { "type": "number" },
+      "alpha": { "type": "number" },
+      "beta": { "type": "number" },
+      "gamma": { "type": "number" },
+      "ingestionGateThreshold": {
+        "type": "number",
+        "default": 0.35
+      },
+      "gatingWeights": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {
+          "w1c": 0.35, "w2c": 0.40, "w3c": 0.25,
+          "w1t": 0.40, "w2t": 0.35, "w3t": 0.25
+        },
+        "properties": {
+          "w1c": { "type": "number", "default": 0.35 },
+          "w2c": { "type": "number", "default": 0.40 },
+          "w3c": { "type": "number", "default": 0.25 },
+          "w1t": { "type": "number", "default": 0.40 },
+          "w2t": { "type": "number", "default": 0.35 },
+          "w3t": { "type": "number", "default": 0.25 }
+        }
+      },
+      "gatingTechNorm": {
+        "type": "number",
+        "default": 1.5
+      },
+      "gatingCentroidK": {
+        "type": "number",
+        "default": 10
+      },
+      "compactionQualityWeight": {
+        "type": "number",
+        "default": 0.5,
+        "description": "Controls how much summary confidence affects retrieval score. 0 ignores summary quality and 1 fully suppresses zero-confidence summaries."
+      },
+      "recencyLambdaSession": { "type": "number" },
+      "recencyLambdaUser": { "type": "number" },
+      "recencyLambdaGlobal": { "type": "number" },
+      "tokenBudgetFraction": { "type": "number" },
+      "compactThreshold": { "type": "number" },
+      "ollamaUrl": { "type": "string" },
+      "compactModel": { "type": "string" },
+      "rpcTimeoutMs": { "type": "number" },
+      "maxRetries": { "type": "number" },
+      "logLevel": { "type": "string" }
+    }
+  }
+}

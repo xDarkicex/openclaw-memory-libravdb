@@ -1,0 +1,466 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/embed"
+)
+
+type fakeEmbedder struct{}
+
+func (fakeEmbedder) EmbedDocument(_ context.Context, text string) ([]float32, error) {
+	switch text {
+	case "alpha":
+		return []float32{1, 0, 0}, nil
+	case "beta":
+		return []float32{0, 1, 0}, nil
+	case "query-alpha":
+		return []float32{1, 0, 0}, nil
+	default:
+		return []float32{0, 0, 1}, nil
+	}
+}
+
+func (fakeEmbedder) EmbedQuery(_ context.Context, text string) ([]float32, error) {
+	return fakeEmbedder{}.EmbedDocument(context.Background(), text)
+}
+
+func (fakeEmbedder) Dimensions() int { return 3 }
+func (fakeEmbedder) Profile() embed.Profile {
+	return embed.Profile{
+		Backend:    "test",
+		Family:     "test",
+		Dimensions: 3,
+	}
+}
+func (fakeEmbedder) Ready() bool { return true }
+
+type fakeProfiledEmbedder struct {
+	fingerprint string
+}
+
+func (e fakeProfiledEmbedder) EmbedDocument(ctx context.Context, text string) ([]float32, error) {
+	return fakeEmbedder{}.EmbedDocument(ctx, text)
+}
+func (e fakeProfiledEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	return fakeEmbedder{}.EmbedQuery(ctx, text)
+}
+func (e fakeProfiledEmbedder) Dimensions() int { return 3 }
+func (e fakeProfiledEmbedder) Ready() bool     { return true }
+func (e fakeProfiledEmbedder) Profile() embed.Profile {
+	return embed.Profile{
+		Backend:     "onnx-local",
+		Family:      "test",
+		Dimensions:  3,
+		Normalize:   true,
+		Fingerprint: e.fingerprint,
+	}
+}
+
+func TestInsertSearchAndDelete(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	if err := s.InsertText(ctx, "session:test", "a", "alpha", map[string]any{"type": "turn"}); err != nil {
+		t.Fatalf("InsertText(alpha) error = %v", err)
+	}
+	if err := s.InsertText(ctx, "session:test", "b", "beta", map[string]any{"type": "turn"}); err != nil {
+		t.Fatalf("InsertText(beta) error = %v", err)
+	}
+
+	results, err := s.SearchText(ctx, "session:test", "query-alpha", 5, nil)
+	if err != nil {
+		t.Fatalf("SearchText() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].ID != "a" {
+		t.Fatalf("expected alpha hit first, got %s", results[0].ID)
+	}
+
+	if err := s.Delete(ctx, "session:test", "a"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	results, err = s.SearchText(ctx, "session:test", "query-alpha", 5, nil)
+	if err != nil {
+		t.Fatalf("SearchText() after delete error = %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "b" {
+		t.Fatalf("expected only beta remaining, got %+v", results)
+	}
+}
+
+func TestListByMetaAndExclude(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	_ = s.InsertText(ctx, "global", "g1", "alpha", map[string]any{"type": "doc", "source": "spec"})
+	_ = s.InsertText(ctx, "global", "g2", "beta", map[string]any{"type": "doc", "source": "notes"})
+
+	listed, err := s.ListByMeta(ctx, "global", "source", "spec")
+	if err != nil {
+		t.Fatalf("ListByMeta() error = %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != "g1" {
+		t.Fatalf("expected only g1 from metadata filter, got %+v", listed)
+	}
+
+	results, err := s.SearchText(ctx, "global", "query-alpha", 5, []string{"g1"})
+	if err != nil {
+		t.Fatalf("SearchText() with exclude error = %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "g2" {
+		t.Fatalf("expected g2 after excluding g1, got %+v", results)
+	}
+}
+
+func TestEnsureCollectionIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	if err := s.EnsureCollection(ctx, "session:test"); err != nil {
+		t.Fatalf("first EnsureCollection() error = %v", err)
+	}
+	if err := s.EnsureCollection(ctx, "session:test"); err != nil {
+		t.Fatalf("second EnsureCollection() error = %v", err)
+	}
+}
+
+func TestFlushPersistsAndReloadsRecords(t *testing.T) {
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "store")
+
+	s, err := Open(storePath, fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	if err := s.InsertText(ctx, "global", "g1", "alpha", map[string]any{"source": "spec"}); err != nil {
+		t.Fatalf("InsertText() error = %v", err)
+	}
+	if err := s.Flush(ctx); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	reopened, err := Open(storePath, fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+
+	results, err := reopened.SearchText(ctx, "global", "query-alpha", 5, nil)
+	if err != nil {
+		t.Fatalf("SearchText() after reload error = %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "g1" {
+		t.Fatalf("expected persisted g1 after reload, got %+v", results)
+	}
+}
+
+func TestOpenRejectsEmbeddingFingerprintMismatch(t *testing.T) {
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "store")
+
+	s, err := Open(storePath, fakeProfiledEmbedder{fingerprint: "first"})
+	if err != nil {
+		t.Fatalf("Open(first) error = %v", err)
+	}
+	if err := s.InsertText(ctx, "global", "g1", "alpha", map[string]any{"source": "spec"}); err != nil {
+		t.Fatalf("InsertText() error = %v", err)
+	}
+	if err := s.Flush(ctx); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	if _, err := Open(storePath, fakeProfiledEmbedder{fingerprint: "second"}); err == nil {
+		t.Fatalf("expected embedding fingerprint mismatch to error")
+	}
+}
+
+func TestInsertRecordAndListCollection(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	if err := s.InsertRecord(ctx, "_tier_dirty", "session:test/doc1:64", make([]float32, 64), map[string]any{
+		"base_collection": "session:test",
+		"record_id":       "doc1",
+		"dims":            64,
+	}); err != nil {
+		t.Fatalf("InsertRecord() error = %v", err)
+	}
+	if err := s.InsertRecord(ctx, "_tier_dirty", "session:test/doc1:256", make([]float32, 256), map[string]any{
+		"base_collection": "session:test",
+		"record_id":       "doc1",
+		"dims":            256,
+	}); err != nil {
+		t.Fatalf("InsertRecord() second error = %v", err)
+	}
+
+	results, err := s.ListCollection(ctx, "_tier_dirty")
+	if err != nil {
+		t.Fatalf("ListCollection() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 dirty records, got %d", len(results))
+	}
+	if results[0].ID != "session:test/doc1:256" || results[1].ID != "session:test/doc1:64" {
+		t.Fatalf("expected stable id ordering, got %+v", results)
+	}
+	if results[0].Text != "" || results[1].Text != "" {
+		t.Fatalf("expected non-semantic records to preserve empty text, got %+v", results)
+	}
+}
+
+func TestInsertRecordRejectsDimensionMismatch(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	err = s.InsertRecord(ctx, "_tier_dirty", "bad", []float32{0, 0}, map[string]any{"dims": 64})
+	if err == nil {
+		t.Fatalf("expected dimension mismatch error")
+	}
+}
+
+func TestInsertMatryoshkaL3IsSourceOfTruth(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	s.beforeInsertRecord = func(collection, id string, vec []float32, meta map[string]any) error {
+		if collection == tierCollection("test", embed.DimsL2) {
+			return errors.New("injected L2 failure")
+		}
+		return nil
+	}
+
+	vec, err := embed.NewMatryoshkaVec(testMatryoshkaVector())
+	if err != nil {
+		t.Fatalf("NewMatryoshkaVec() error = %v", err)
+	}
+
+	err = s.InsertMatryoshka(ctx, "test", "doc1", vec, map[string]any{"kind": "memory"})
+	if err == nil {
+		t.Fatal("expected error on L2 insert failure")
+	}
+
+	if !recordExists(s, "test", "doc1") {
+		t.Error("L3 record missing after L2 failure")
+	}
+	if recordExists(s, tierCollection("test", embed.DimsL1), "doc1") {
+		t.Error("L1 record should not exist when L2 insert failed first")
+	}
+
+	dirty, err := s.ListCollection(ctx, dirtyTierCollection)
+	if err != nil {
+		t.Fatalf("ListCollection(_tier_dirty) error = %v", err)
+	}
+	if !containsDirty(dirty, "test", "doc1", embed.DimsL2) {
+		t.Error("dirty marker missing for failed L2 tier")
+	}
+	if containsDirty(dirty, "test", "doc1", embed.DimsL1) {
+		t.Error("spurious dirty marker for L1 tier")
+	}
+}
+
+func TestBackfillDirtyTiersRestoresMissingTier(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	vec, err := embed.NewMatryoshkaVec(testMatryoshkaVector())
+	if err != nil {
+		t.Fatalf("NewMatryoshkaVec() error = %v", err)
+	}
+	if err := s.InsertRecord(ctx, "test", "doc1", vec.L3, map[string]any{"kind": "memory"}); err != nil {
+		t.Fatalf("InsertRecord(L3) error = %v", err)
+	}
+	if err := s.InsertRecord(ctx, dirtyTierCollection, dirtyID("test", "doc1", embed.DimsL2), make([]float32, embed.DimsL2), map[string]any{
+		"base_collection": "test",
+		"record_id":       "doc1",
+		"dims":            embed.DimsL2,
+	}); err != nil {
+		t.Fatalf("InsertRecord(dirty) error = %v", err)
+	}
+
+	if err := s.BackfillDirtyTiers(ctx); err != nil {
+		t.Fatalf("BackfillDirtyTiers() error = %v", err)
+	}
+	if !recordExists(s, tierCollection("test", embed.DimsL2), "doc1") {
+		t.Fatalf("expected L2 tier record to be restored")
+	}
+	dirty, err := s.ListCollection(ctx, dirtyTierCollection)
+	if err != nil {
+		t.Fatalf("ListCollection(_tier_dirty) error = %v", err)
+	}
+	if len(dirty) != 0 {
+		t.Fatalf("expected dirty collection to be empty after restore, got %+v", dirty)
+	}
+}
+
+func TestCascadeExitsAtCorrectTier(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	cfg := CascadeConfig{
+		ExitThresholdL1: 0.92,
+		ExitThresholdL2: 0.80,
+		BudgetMs:        50,
+	}
+
+	vec, err := embed.NewMatryoshkaVec(testMatryoshkaVector())
+	if err != nil {
+		t.Fatalf("NewMatryoshkaVec() error = %v", err)
+	}
+	if err := s.InsertMatryoshka(ctx, "test", "doc1", vec, nil); err != nil {
+		t.Fatalf("InsertMatryoshka() error = %v", err)
+	}
+
+	result := s.CascadeSearch(ctx, "test", vec, 1, nil, cfg)
+	if result.TierUsed != 1 {
+		t.Errorf("expected L1 exit for identical vector, got tier %d", result.TierUsed)
+	}
+	if len(result.Exits) == 0 || result.Exits[0].BestScore < 0.92 {
+		t.Errorf("L1 best score %.4f below exit threshold", best(result.Hits))
+	}
+}
+
+func TestCascadeFallsThroughOnLowScore(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	cfg := CascadeConfig{
+		ExitThresholdL1: 0.92,
+		ExitThresholdL2: 0.80,
+		BudgetMs:        50,
+	}
+
+	vec, err := embed.NewMatryoshkaVec(testMatryoshkaVector())
+	if err != nil {
+		t.Fatalf("NewMatryoshkaVec() error = %v", err)
+	}
+	if err := s.InsertMatryoshka(ctx, "test", "doc1", vec, nil); err != nil {
+		t.Fatalf("InsertMatryoshka() error = %v", err)
+	}
+
+	orthogonal, err := embed.NewMatryoshkaVec(orthogonalMatryoshkaVector())
+	if err != nil {
+		t.Fatalf("NewMatryoshkaVec(orthogonal) error = %v", err)
+	}
+	result := s.CascadeSearch(ctx, "test", orthogonal, 1, nil, cfg)
+	if result.TierUsed != 3 {
+		t.Errorf("expected L3 fallthrough for orthogonal query, got tier %d", result.TierUsed)
+	}
+	if len(result.Exits) != 3 {
+		t.Errorf("expected 3 tier exit records, got %d", len(result.Exits))
+	}
+}
+
+func TestCascadeDegradesWhenTierEmpty(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	cfg := CascadeConfig{
+		ExitThresholdL1: 0.92,
+		ExitThresholdL2: 0.80,
+		BudgetMs:        50,
+	}
+
+	vec, err := embed.NewMatryoshkaVec(testMatryoshkaVector())
+	if err != nil {
+		t.Fatalf("NewMatryoshkaVec() error = %v", err)
+	}
+	if err := s.InsertRecord(ctx, "test", "doc1", vec.L3, nil); err != nil {
+		t.Fatalf("InsertRecord(L3) error = %v", err)
+	}
+
+	result := s.CascadeSearch(ctx, "test", vec, 1, nil, cfg)
+	if result.TierUsed != 3 {
+		t.Errorf("expected L3 fallthrough when lower tiers are empty, got tier %d", result.TierUsed)
+	}
+}
+
+type fakeMatryoshkaEmbedder struct{}
+
+func (fakeMatryoshkaEmbedder) EmbedDocument(_ context.Context, _ string) ([]float32, error) {
+	return testMatryoshkaVector(), nil
+}
+
+func (fakeMatryoshkaEmbedder) EmbedQuery(_ context.Context, _ string) ([]float32, error) {
+	return testMatryoshkaVector(), nil
+}
+
+func (fakeMatryoshkaEmbedder) Dimensions() int { return embed.DimsL3 }
+func (fakeMatryoshkaEmbedder) Ready() bool     { return true }
+func (fakeMatryoshkaEmbedder) Profile() embed.Profile {
+	return embed.Profile{
+		Backend:    "onnx-local",
+		Family:     "nomic-embed-text-v1.5",
+		Dimensions: embed.DimsL3,
+		Normalize:  true,
+	}
+}
+
+func testMatryoshkaVector() []float32 {
+	full := make([]float32, embed.DimsL3)
+	full[0] = 1
+	full[1] = 0.5
+	full[2] = 0.25
+	return full
+}
+
+func orthogonalMatryoshkaVector() []float32 {
+	full := make([]float32, embed.DimsL3)
+	full[10] = 1
+	full[11] = -0.5
+	full[12] = 0.25
+	return full
+}
+
+func recordExists(s *Store, collection, id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	col := s.collections[collection]
+	_, ok := col[id]
+	return ok
+}
+
+func containsDirty(records []SearchResult, base, id string, dims int) bool {
+	want := dirtyID(base, id, dims)
+	for _, rec := range records {
+		if rec.ID == want {
+			return true
+		}
+	}
+	return false
+}

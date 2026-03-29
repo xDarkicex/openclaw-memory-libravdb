@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./.ts-build"
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "openclaw.plugin.json"
+  ]
+}
