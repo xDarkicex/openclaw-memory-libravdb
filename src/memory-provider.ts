@@ -1,70 +1,24 @@
-import { buildMemoryHeader } from "./recall-utils.js";
-import { fitPromptBudget } from "./tokens.js";
-import { scoreCandidates } from "./scoring.js";
-import type { RpcGetter } from "./plugin-runtime.js";
-import type { MemoryMessage, PluginConfig, RecallCache, SearchResult } from "./types.js";
-
-export function buildMemoryPromptSection(
-  getRpc: RpcGetter,
-  cfg: PluginConfig,
-  recallCache: RecallCache<SearchResult>,
-) {
-  return async function memoryPromptSection(args: {
-    userId: string;
-    messages: MemoryMessage[];
-  }) {
-    const queryText = args.messages.at(-1)?.content ?? "";
-    if (!queryText) {
-      return {
-        id: "libravdb-memory",
-        content: "",
-        };
-    }
-
-    const rpc = await getRpc();
-    const [userHits, globalHits] = await Promise.all([
-      rpc.call<{ results: SearchResult[] }>("search_text", {
-        collection: `user:${args.userId}`,
-        text: queryText,
-        k: Math.ceil((cfg.topK ?? 8) / 2),
-      }).catch(() => ({ results: [] })),
-      rpc.call<{ results: SearchResult[] }>("search_text", {
-        collection: "global",
-        text: queryText,
-        k: Math.ceil((cfg.topK ?? 8) / 4),
-      }).catch(() => ({ results: [] })),
-    ]);
-
-    recallCache.put({
-      userId: args.userId,
-      queryText,
-      userHits: userHits.results,
-      globalHits: globalHits.results,
-    });
-
-    const ranked = scoreCandidates(
-      [
-        ...userHits.results,
-        ...globalHits.results,
-      ],
-      {
-        alpha: cfg.alpha,
-        beta: cfg.beta,
-        gamma: cfg.gamma,
-        recencyLambdaSession: cfg.recencyLambdaSession,
-        recencyLambdaUser: cfg.recencyLambdaUser,
-        recencyLambdaGlobal: cfg.recencyLambdaGlobal,
-        sessionId: "",
-        userId: args.userId,
-      },
-    );
-
-    const selected = fitPromptBudget(ranked, 800);
-    const body = buildMemoryHeader(selected);
-
-    return {
-      id: "libravdb-memory",
-      content: body,
-    };
+/**
+ * Builds the memory prompt section for the agent system prompt.
+ *
+ * As of OpenClaw 2026.3.28 the MemoryPromptSectionBuilder contract changed:
+ *   - Params: { availableTools: Set<string>, citationsMode?: string }
+ *   - Return: string[]  (lines to splice into the system prompt)
+ *
+ * Heavy recall (per-query vector search, scoring, budget fitting) is handled
+ * by the context engine's `assemble` hook, not here.  This builder only emits
+ * a short static section that tells the model LibraVDB memory is active.
+ */
+export function buildMemoryPromptSection(): (params: {
+  availableTools: Set<string>;
+  citationsMode?: string;
+}) => string[] {
+  return function memoryPromptSection(_params) {
+    return [
+      "## Memory",
+      "LibraVDB persistent memory is active. Recalled memories will appear",
+      "in context via the context-engine assembler when relevant.",
+      "",
+    ];
   };
 }
