@@ -78,10 +78,19 @@ $$
 R(d) = e^{-\lambda \Delta t_d}
 $$
 
-where $\Delta t_d$ is the age of the record in milliseconds and $\lambda$ is the
+where $\Delta t_d$ is the age of the record in seconds and $\lambda$ is the
 scope-specific decay constant.
 
 Implemented in [`src/scoring.ts`](../src/scoring.ts).
+
+In the current implementation, $\Delta t_d$ is measured in **seconds**, not
+milliseconds:
+
+$$
+\Delta t_d = \frac{\mathrm{Date.now()} - ts_d}{1000}
+$$
+
+and the $\lambda$ values are therefore **per-second** decay constants.
 
 The current implementation uses different constants by scope:
 
@@ -149,6 +158,21 @@ Greedy is optimal for this implementation because the ranking is already fixed.
 The problem is not "find the best weighted subset under a knapsack objective";
 it is "preserve rank order while honoring a hard prompt cap." Once rank order
 is fixed, prefix acceptance is the correct policy.
+
+**Note on estimator divergence.** The host estimator
+([`src/tokens.ts`](../src/tokens.ts)) is script-aware and is used for prompt
+budget fitting. The sidecar estimator
+([`sidecar/compact/tokens.go`](../sidecar/compact/tokens.go)) uses a fixed
+bytes-per-token rule:
+
+$$
+\widehat{T}_{sidecar}(t)=\max\left(\left\lfloor\frac{\mathrm{len}(t)}{4}\right\rfloor, 1\right)
+$$
+
+The two estimators are intentionally different. The host estimator optimizes
+prompt-budget accuracy. The sidecar estimator is used only as a stable
+normalization denominator in the technical specificity signal $P(t)$ of the
+gating scalar. They must not be substituted for each other.
 
 ## 4. Matryoshka Cascade
 
@@ -233,6 +257,49 @@ The output is a summary record $s(C_j)$ with:
 - confidence
 - method
 - `decay_rate = 1 - confidence`
+
+Implemented across [`sidecar/compact/summarize.go`](../sidecar/compact/summarize.go),
+[`sidecar/summarize/engine.go`](../sidecar/summarize/engine.go), and
+[`sidecar/summarize/onnx_local.go`](../sidecar/summarize/onnx_local.go).
+
+The confidence term is implemented as a bounded quality signal:
+
+$$
+\mathrm{confidence}(s) \in [0,1]
+$$
+
+with backend-specific definitions:
+
+$$
+\mathrm{confidence}_{extractive}(s) =
+\mathrm{mean\ cosine\ similarity\ of\ selected\ turns\ to\ the\ cluster\ centroid}
+$$
+
+$$
+\mathrm{confidence}_{onnx}(s) =
+\exp\left(\frac{\sum_{i=1}^{n}\log p(t_i \mid t_{<i}, C_j)}{n}\right)
+$$
+
+where $t_i$ are generated summary tokens and $C_j$ is the source cluster.
+
+The retrieval decay metadata is then:
+
+$$
+\mathrm{decay\_rate}(s)=1-\mathrm{confidence}(s)
+$$
+
+and the retrieval quality multiplier from Section 1 becomes:
+
+$$
+Q(s)=1-\delta\cdot\mathrm{decay\_rate}(s)
+$$
+
+At the shipped default $\delta = 0.5$, this constrains summary quality weights
+to:
+
+$$
+Q(s)\in[0.5,1.0]
+$$
 
 This makes compaction load-bearing in retrieval rather than archival only.
 

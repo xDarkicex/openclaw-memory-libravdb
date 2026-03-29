@@ -86,3 +86,31 @@ test("summary decay_rate lowers retrieval score relative to higher-quality summa
   assert.equal(ranked[2]?.id, "low-confidence-summary");
   assert.ok((ranked[1]?.finalScore ?? 0) > (ranked[2]?.finalScore ?? 0));
 });
+
+test("session recency decay uses seconds, not milliseconds", () => {
+  const now = Date.now();
+  const oneHourOld: SearchResult[] = [
+    {
+      id: "session-hour-old",
+      score: 0,
+      text: "hour old session memory",
+      metadata: { ts: now - 3_600_000, sessionId: "s1" },
+    },
+  ];
+
+  const ranked = scoreCandidates(oneHourOld, {
+    alpha: 0,
+    beta: 0.2,
+    gamma: 0.1,
+    recencyLambdaSession: 0.0001,
+    recencyLambdaUser: 0.00001,
+    recencyLambdaGlobal: 0.000002,
+    sessionId: "s1",
+    userId: "u1",
+  });
+
+  const expectedRecency = Math.exp(-0.0001 * 3600);
+  const expectedScore = 0.2 * expectedRecency + 0.1;
+  assert.ok(Math.abs((ranked[0]?.finalScore ?? 0) - expectedScore) < 0.01);
+  assert.ok((ranked[0]?.finalScore ?? 0) > 0.2);
+});

@@ -18,6 +18,7 @@ export function scoreCandidates(items: SearchResult[], opts: HybridOptions): Sea
   const beta = opts.beta ?? 0.2;
   const gamma = opts.gamma ?? 0.1;
   const delta = opts.delta ?? 0.5;
+  // Lambda units are per-second decay constants.
   const recencyLambdaSession = opts.recencyLambdaSession ?? 0.0001;
   const recencyLambdaUser = opts.recencyLambdaUser ?? 0.00001;
   const recencyLambdaGlobal = opts.recencyLambdaGlobal ?? 0.000002;
@@ -29,7 +30,8 @@ export function scoreCandidates(items: SearchResult[], opts: HybridOptions): Sea
         item.metadata.sessionId === opts.sessionId ? recencyLambdaSession
           : item.metadata.userId === opts.userId ? recencyLambdaUser
             : recencyLambdaGlobal;
-      const recency = Math.exp(-lambda * Math.max(0, now - ts));
+      const ageSeconds = Math.max(0, now - ts) / 1000;
+      const recency = Math.exp(-lambda * ageSeconds);
       const scopeBoost =
         item.metadata.sessionId === opts.sessionId ? 1.0
           : item.metadata.userId === opts.userId ? 0.6
