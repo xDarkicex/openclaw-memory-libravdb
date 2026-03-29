@@ -76,7 +76,7 @@
       "compactThreshold": { "type": "number" },
       "ollamaUrl": { "type": "string" },
       "compactModel": { "type": "string" },
-      "rpcTimeoutMs": { "type": "number" },
+      "rpcTimeoutMs": { "type": "number", "default": 30000 },
       "maxRetries": { "type": "number" },
       "logLevel": { "type": "string" }
     }

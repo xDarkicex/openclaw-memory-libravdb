@@ -7,9 +7,10 @@
 .ts-toolchain/
 
 AGENTS.md
-docs/
 
 *.db
+*.db-shm
+*.db-wal
 *.docx
 *.pl
 

@@ -40,7 +40,7 @@ export interface PluginConfig {
   compactThreshold?: number;
   ollamaUrl?: string;
   compactModel?: string;
-  rpcTimeoutMs: number;
+  rpcTimeoutMs?: number;
   maxRetries?: number;
   logLevel?: "debug" | "info" | "warn" | "error";
 }

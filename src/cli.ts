@@ -50,30 +50,41 @@ export function registerMemoryCli(
     return;
   }
 
-  api.registerCli(({ program }) => {
-    const root = ensureCommand(program, "memory")
-      .description("Manage LibraVDB memory");
+  api.registerCli(
+    ({ program }) => {
+      const root = ensureCommand(program, "memory")
+        .description("Manage LibraVDB memory");
 
-    ensureCommand(root, "status")
-      .description("Show sidecar health, record counts, and active thresholds")
-      .action(() => void runStatus(runtime, cfg, logger));
+      ensureCommand(root, "status")
+        .description("Show sidecar health, record counts, and active thresholds")
+        .action(() => void runStatus(runtime, cfg, logger));
 
-    const flush = ensureCommand(root, "flush")
-      .description("Wipe a user memory namespace after confirmation");
-    if (flush.requiredOption) {
-      flush.requiredOption("--user-id <userId>", "User id whose durable memory should be deleted");
-    } else {
-      flush.option("--user-id <userId>", "User id whose durable memory should be deleted");
-    }
-    flush
-      .option("--yes", "Skip the confirmation prompt")
-      .action((opts) => void runFlush(runtime, opts, logger));
+      const flush = ensureCommand(root, "flush")
+        .description("Wipe a user memory namespace after confirmation");
+      if (flush.requiredOption) {
+        flush.requiredOption("--user-id <userId>", "User id whose durable memory should be deleted");
+      } else {
+        flush.option("--user-id <userId>", "User id whose durable memory should be deleted");
+      }
+      flush
+        .option("--yes", "Skip the confirmation prompt")
+        .action((opts) => void runFlush(runtime, opts, logger));
 
-    const exportCmd = ensureCommand(root, "export")
-      .description("Stream stored memories as newline-delimited JSON");
-    exportCmd.option("--user-id <userId>", "Restrict export to a single user namespace");
-    exportCmd.action((opts) => void runExport(runtime, opts, logger));
-  });
+      const exportCmd = ensureCommand(root, "export")
+        .description("Stream stored memories as newline-delimited JSON");
+      exportCmd.option("--user-id <userId>", "Restrict export to a single user namespace");
+      exportCmd.action((opts) => void runExport(runtime, opts, logger));
+    },
+    {
+      descriptors: [
+        {
+          name: "memory",
+          description: "Manage LibraVDB memory",
+          hasSubcommands: true,
+        },
+      ],
+    },
+  );
 }
 
 function ensureCommand(parent: CliCommand, name: string): CliCommand {
@@ -176,7 +187,17 @@ function formatError(error: unknown): string {
 }
 
 type CliRegistrar = {
-  registerCli?(builder: (ctx: { program: CliProgram }) => void): void;
+  registerCli?(
+    builder: (ctx: { program: CliProgram }) => void,
+    opts?: {
+      commands?: string[];
+      descriptors?: Array<{
+        name: string;
+        description: string;
+        hasSubcommands: boolean;
+      }>;
+    },
+  ): void;
 };
 
 declare module "openclaw/plugin-sdk/plugin-entry" {

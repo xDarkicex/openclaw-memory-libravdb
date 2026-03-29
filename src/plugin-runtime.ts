@@ -3,6 +3,7 @@ import { startSidecar } from "./sidecar.js";
 import type { LoggerLike, PluginConfig, SidecarHandle } from "./types.js";
 
 export type RpcGetter = () => Promise<RpcClient>;
+export const DEFAULT_RPC_TIMEOUT_MS = 30000;
 
 export interface PluginRuntime {
   getRpc: RpcGetter;
@@ -23,7 +24,9 @@ export function createPluginRuntime(
     if (!started) {
       started = (async () => {
         const sidecar = await startSidecar(cfg, logger);
-        const rpc = new RpcClient(sidecar.socket, { timeoutMs: cfg.rpcTimeoutMs });
+        const rpc = new RpcClient(sidecar.socket, {
+          timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
+        });
         const health = await rpc.call<{ ok?: boolean }>("health", {});
         if (!health.ok) {
           try {

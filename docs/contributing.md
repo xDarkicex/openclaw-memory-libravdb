@@ -1,0 +1,76 @@
+# Contributing
+
+## Prerequisites
+
+- Node.js `>= 22`
+- Go `>= 1.22` for development and local fallback builds
+- `pnpm`
+- OpenClaw CLI for end-to-end plugin testing
+
+## Core Validation Commands
+
+TypeScript and unit checks:
+
+```bash
+pnpm check
+```
+
+Integration tests:
+
+```bash
+npm run test:integration
+```
+
+Go sidecar tests:
+
+```bash
+cd sidecar
+env GOCACHE=/tmp/openclaw-memory-libravdb-gocache go test ./...
+env GOCACHE=/tmp/openclaw-memory-libravdb-gocache go test -race ./...
+```
+
+## Local Sidecar Build
+
+```bash
+bash scripts/build-sidecar.sh
+```
+
+This creates `.sidecar-bin/libravdb-sidecar` and copies locally available bundled assets into `.sidecar-bin/`.
+
+## Gating Invariants
+
+Do not weaken the gate invariants casually. The tests in `sidecar/compact/gate_test.go` check structural properties:
+
+- empty-memory novelty
+- saturation veto
+- convex boundedness
+- conversational collapse at `T = 0`
+- technical collapse at `T = 1`
+- non-overfiring conversational structure on code
+
+If you add a new signal, it must preserve those invariants.
+
+## Calibration Coverage
+
+There is not yet a dedicated `gate_calibration_test.go` golden set in the
+repository. Current gating correctness is enforced by the invariant suite in
+[`sidecar/compact/gate_test.go`](../sidecar/compact/gate_test.go).
+
+If you introduce new signals or change weighting behavior, do not only update
+the implementation. Add one of:
+
+- a new invariant if the change alters a structural property of the gate
+- a dedicated calibration/golden test file if the change adds new labeled
+  examples or expected decompositions
+
+Do not rewrite expectations just to make regressions disappear.
+
+## PR Expectations
+
+Before opening a PR:
+
+- `pnpm check` must pass
+- `go test -race ./...` from `sidecar/` must pass
+- any new gating signal must come with calibration or invariant coverage
+- any retrieval math change must be reflected in [mathematics.md](/Users/z3robit/Development/golang/src/github.com/xDarkicex/openclaw-memory-libravdb/docs/mathematics.md)
+- any gating change must be reflected in [gating.md](/Users/z3robit/Development/golang/src/github.com/xDarkicex/openclaw-memory-libravdb/docs/gating.md)
