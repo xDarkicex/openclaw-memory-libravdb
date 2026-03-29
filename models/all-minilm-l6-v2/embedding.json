@@ -1,0 +1,13 @@
+{
+  "backend": "onnx-local",
+  "profile": "all-minilm-l6-v2",
+  "family": "all-minilm-l6-v2",
+  "model": "model.onnx",
+  "tokenizer": "tokenizer.json",
+  "dimensions": 384,
+  "normalize": true,
+  "inputNames": ["input_ids", "attention_mask", "token_type_ids"],
+  "outputName": "sentence_embedding",
+  "pooling": "mean",
+  "addSpecialTokens": true
+}

@@ -7,14 +7,170 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  ORT_VERSION: "1.23.0"
 
 jobs:
-  publish:
-    name: publish-package
+  build-sidecar:
+    name: build-${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+            target: darwin-arm64
+            asset_name: clawdb-sidecar-darwin-arm64
+            ort_archive: onnxruntime-osx-arm64-1.23.0.tgz
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-arm64-1.23.0.tgz
+            ort_sha256: "8182db0ebb5caa21036a3c78178f17fabb98a7916bdab454467c8f4cf34bcfdf"
+            ort_format: tgz
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            target: darwin-x64
+            asset_name: clawdb-sidecar-darwin-amd64
+            ort_archive: onnxruntime-osx-x86_64-1.23.0.tgz
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-x86_64-1.23.0.tgz
+            ort_sha256: ""
+            ort_format: tgz
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            target: linux-x64
+            asset_name: clawdb-sidecar-linux-amd64
+            ort_archive: onnxruntime-linux-x64-1.23.0.tgz
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-x64-1.23.0.tgz
+            ort_sha256: ""
+            ort_format: tgz
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            target: linux-arm64
+            asset_name: clawdb-sidecar-linux-arm64
+            ort_archive: onnxruntime-linux-aarch64-1.23.0.tgz
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-aarch64-1.23.0.tgz
+            ort_sha256: ""
+            ort_format: tgz
+          - runner: windows-2022
+            goos: windows
+            goarch: amd64
+            target: win-x64
+            asset_name: clawdb-sidecar-windows-amd64.exe
+            ort_archive: onnxruntime-win-x64-1.23.0.zip
+            ort_url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip
+            ort_sha256: ""
+            ort_format: zip
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+
+      - name: Build sidecar binary
+        working-directory: sidecar
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p ../dist/${{ matrix.target }}
+          go build -trimpath -ldflags="-s -w" -o "../dist/${{ matrix.target }}/${{ matrix.asset_name }}" .
+
+      - name: Generate sidecar checksum (unix)
+        if: runner.os != 'Windows'
+        working-directory: dist/${{ matrix.target }}
+        run: shasum -a 256 "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+
+      - name: Generate sidecar checksum (windows)
+        if: runner.os == 'Windows'
+        working-directory: dist/${{ matrix.target }}
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "${{ matrix.asset_name }}" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "${{ matrix.asset_name }}.sha256" -Value "$hash  ${{ matrix.asset_name }}"
+
+      - name: Download ONNX Runtime
+        run: |
+          mkdir -p dist/${{ matrix.target }}/onnxruntime
+          curl -fSL -o "dist/${{ matrix.target }}/onnxruntime/${{ matrix.ort_archive }}" "${{ matrix.ort_url }}"
+
+      - name: Verify ONNX Runtime checksum
+        if: matrix.ort_sha256 != ''
+        run: |
+          cd dist/${{ matrix.target }}/onnxruntime
+          echo "${{ matrix.ort_sha256 }}  ${{ matrix.ort_archive }}" | shasum -a 256 -c -
+
+      - name: Extract ONNX Runtime (tgz)
+        if: matrix.ort_format == 'tgz'
+        run: tar -xzf "dist/${{ matrix.target }}/onnxruntime/${{ matrix.ort_archive }}" -C "dist/${{ matrix.target }}/onnxruntime/"
+
+      - name: Extract ONNX Runtime (zip)
+        if: matrix.ort_format == 'zip'
+        shell: pwsh
+        run: |
+          Expand-Archive -Path "dist/${{ matrix.target }}/onnxruntime/${{ matrix.ort_archive }}" -DestinationPath "dist/${{ matrix.target }}/onnxruntime/" -Force
+
+      - name: Remove ONNX Runtime archive
+        run: rm -f "dist/${{ matrix.target }}/onnxruntime/${{ matrix.ort_archive }}"
+        shell: bash
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/
+          if-no-files-found: error
+
+  download-models:
+    name: download-embedding-models
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Nomic embed model
+        run: |
+          mkdir -p dist/models/nomic-embed-text-v1.5
+          curl -fSL -o dist/models/nomic-embed-text-v1.5/model.onnx \
+            "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx"
+          echo "147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965  dist/models/nomic-embed-text-v1.5/model.onnx" | shasum -a 256 -c -
+
+          curl -fSL -o dist/models/nomic-embed-text-v1.5/tokenizer.json \
+            "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer.json"
+          echo "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66  dist/models/nomic-embed-text-v1.5/tokenizer.json" | shasum -a 256 -c -
+
+          cp models/nomic-embed-text-v1.5/embedding.json dist/models/nomic-embed-text-v1.5/embedding.json
+
+      - name: Download MiniLM model
+        run: |
+          mkdir -p dist/models/all-minilm-l6-v2
+          curl -fSL -o dist/models/all-minilm-l6-v2/model.onnx \
+            "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
+
+          curl -fSL -o dist/models/all-minilm-l6-v2/tokenizer.json \
+            "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json"
+
+          cp models/all-minilm-l6-v2/embedding.json dist/models/all-minilm-l6-v2/embedding.json
+
+      - name: Upload models artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedding-models
+          path: dist/models/
+          if-no-files-found: error
+
+  publish:
+    name: publish-npm
+    runs-on: ubuntu-latest
+    needs: [build-sidecar, download-models]
     if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
 
     steps:
@@ -25,10 +181,48 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
 
-      - name: Verify published package contents
-        run: npm pack --dry-run
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+          merge-multiple: false
 
-      - name: Publish package
-        run: npm publish --access public
+      - name: Assemble .models directory for npm tarball
+        run: |
+          mkdir -p .models/nomic-embed-text-v1.5
+          mkdir -p .models/all-minilm-l6-v2
+          mkdir -p .models/onnxruntime
+
+          # Copy embedding models (shared across platforms)
+          cp -R staging/embedding-models/nomic-embed-text-v1.5/* .models/nomic-embed-text-v1.5/
+          cp -R staging/embedding-models/all-minilm-l6-v2/* .models/all-minilm-l6-v2/
+
+          # Copy platform-specific sidecar binaries and ONNX runtimes into
+          # per-platform directories under .models so postinstall can find them
+          for platform_dir in staging/platform-*/; do
+            platform=$(basename "$platform_dir" | sed 's/^platform-//')
+            mkdir -p ".sidecar-platforms/$platform"
+            cp -R "$platform_dir"/* ".sidecar-platforms/$platform/"
+          done
+
+          echo "=== .models contents ==="
+          find .models -type f | head -50
+          echo "=== .sidecar-platforms contents ==="
+          find .sidecar-platforms -type f | head -50
+
+      - name: Update package.json files array for publishing
+        run: |
+          node -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json', 'utf8'));
+            if (!pkg.files.includes('.models/')) pkg.files.push('.models/');
+            if (!pkg.files.includes('.sidecar-platforms/')) pkg.files.push('.sidecar-platforms/');
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Verify package contents
+        run: npm pack --dry-run 2>&1 | tail -40
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

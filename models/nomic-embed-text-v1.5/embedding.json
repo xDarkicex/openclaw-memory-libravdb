@@ -1,0 +1,13 @@
+{
+  "backend": "onnx-local",
+  "profile": "nomic-embed-text-v1.5",
+  "family": "nomic-embed-text-v1.5",
+  "model": "model.onnx",
+  "tokenizer": "tokenizer.json",
+  "dimensions": 768,
+  "normalize": true,
+  "inputNames": ["input_ids", "attention_mask", "token_type_ids"],
+  "outputName": "last_hidden_state",
+  "pooling": "mean",
+  "addSpecialTokens": true
+}
