@@ -42,15 +42,12 @@ $$
 $$
 Q(d)=
 \begin{cases}
-1 - \delta \cdot r_d & \text{if } d \text{ is a summary} \\
+1 - \delta \cdot \mathrm{decay\_rate}(d) & \text{if } d \text{ is a summary} \\
 1 & \text{otherwise}
 \end{cases}
 $$
 
 Implemented in [`src/scoring.ts`](../src/scoring.ts).
-
-Let $r_d = \texttt{decay\_rate}(d)$ denote the stored decay metadata on summary
-records.
 
 The current implementation defaults are:
 
@@ -300,17 +297,16 @@ $$
 
 where $t_i$ are generated summary tokens and $C_j$ is the source cluster.
 
-Let $r_d = \texttt{decay\_rate}(s)$ denote the stored decay metadata on summary
-record $s$. The retrieval decay metadata is then:
+The retrieval decay metadata is then:
 
 $$
-r_d=1-\mathrm{confidence}(s)
+\mathrm{decay\_rate}(s)=1-\mathrm{confidence}(s)
 $$
 
 and the retrieval quality multiplier from Section 1 becomes:
 
 $$
-Q(s)=1-\delta\cdot r_d
+Q(s)=1-\delta\cdot\mathrm{decay\_rate}(s)
 $$
 
 At the shipped default $\delta = 0.5$, this constrains summary quality weights
