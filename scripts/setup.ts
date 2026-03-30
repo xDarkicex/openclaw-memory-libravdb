@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { buildChildEnv } from "./child-env.js";
 
 type AssetSpec = {
   name: string;
@@ -137,7 +138,7 @@ const runtimeSpecs: Record<string, RuntimeSpec> = {
 };
 
 async function main(): Promise<void> {
-  console.log("[openclaw-memory-libravdb] Building Go sidecar...");
+  console.log("[openclaw-memory-libravdb] Installing published sidecar...");
   buildSidecar();
 
   mkdirSync(sidecarBinDir, { recursive: true });
@@ -170,7 +171,7 @@ function buildSidecar(): void {
   const result = spawnSync(process.execPath, [path.join(rootDir, "scripts", "postinstall.js")], {
     cwd: rootDir,
     stdio: "inherit",
-    env: process.env,
+    env: buildChildEnv(),
   });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
@@ -357,12 +358,11 @@ async function verifySidecarHealth(): Promise<void> {
   const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-memory-libravdb-setup-"));
   const child = spawn(sidecarBinary, [], {
     cwd: rootDir,
-    env: {
-      ...process.env,
+    env: buildChildEnv({
       LIBRAVDB_DB_PATH: tempDir,
       LIBRAVDB_SUMMARIZER_BACKEND: "bundled",
       LIBRAVDB_SUMMARIZER_PROFILE: "",
-    },
+    }),
     stdio: ["ignore", "pipe", "pipe"],
   });
 

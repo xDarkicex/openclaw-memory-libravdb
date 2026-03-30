@@ -23,7 +23,8 @@ explicitly rather than hand-waved away.
 Current implementation facts:
 
 - [`scripts/postinstall.js`](../scripts/postinstall.js) installs the sidecar
-  binary using a prebuilt-first strategy with a local Go fallback
+  binary from published release assets and fails closed if the matching asset is
+  missing or fails checksum verification
 - [`scripts/setup.ts`](../scripts/setup.ts) provisions model/runtime assets and
   verifies them before they are accepted
 - required downloaded assets are SHA-256 checked before use

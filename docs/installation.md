@@ -143,17 +143,16 @@ Exclusive slot "memory" switched from "memory-core" to "libravdb-memory".
 That slot-takeover line is the proof that OpenClaw is no longer using the stock
 memory provider.
 
-Development fallback shape when a prebuilt sidecar asset is not available:
+Failure shape when a published sidecar asset is missing or cannot be verified:
 
 ```text
-[openclaw-memory-libravdb] Prebuilt binary unavailable. Attempting local go build...
-[openclaw-memory-libravdb] This requires Go >= 1.22: https://go.dev/dl/
-[openclaw-memory-libravdb] Sidecar installed (local build)
-...
+[openclaw-memory-libravdb] Unable to install published sidecar clawdb-sidecar-darwin-arm64 for vX.Y.Z.
+[openclaw-memory-libravdb] FATAL: sidecar binary could not be installed.
 ```
 
-Published users should rarely see the fallback path. If they do, the plugin
-version likely has not published sidecar release assets for that platform yet.
+Published users should not see a local build fallback. If installation fails
+here, the plugin version is missing release assets, the download failed, or the
+published checksum does not match the asset.
 
 ## Activation
 
@@ -235,7 +234,7 @@ Common causes:
 
 - ONNX Runtime library missing or unpacked in the wrong place
 - downloaded model file hash mismatch
-- local Go fallback unavailable and no prebuilt asset for the requested version
+- published sidecar asset missing, unavailable, or failing checksum verification for the requested version
 
 Check:
 
@@ -267,6 +266,8 @@ Do not bypass this. Delete the asset and rerun setup, or republish the release w
 
 On Windows the sidecar advertises a loopback TCP endpoint instead of a Unix socket. This is expected. The plugin’s transport layer already handles the fallback.
 
-### Local fallback path
+### Published sidecar requirement
 
-If the installer logs that it is attempting a local `go build`, the prebuilt release asset was not available for the plugin version being installed. For published tags this should be unusual; for branch or unreleased work it is expected.
+The installer must obtain a published sidecar binary for the current platform.
+If that download or checksum verification fails, setup stops instead of falling
+back to a local `go build`.

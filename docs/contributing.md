@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Node.js `>= 22`
-- Go `>= 1.22` for development and local fallback builds
+- Go `>= 1.22` for sidecar development and release builds
 - `pnpm`
 - OpenClaw CLI for end-to-end plugin testing
 

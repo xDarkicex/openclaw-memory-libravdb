@@ -1,17 +1,14 @@
 #!/usr/bin/env node
 
 import { chmodSync, cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { buildSidecarReleaseAssetURL, detectSidecarReleaseTarget } from "./sidecar-release.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const sidecarDir = path.join(root, "sidecar");
 const outDir = path.join(root, ".sidecar-bin");
 const binary = process.platform === "win32" ? "libravdb-sidecar.exe" : "libravdb-sidecar";
 const modelsDir = path.join(root, ".models");
@@ -25,7 +22,7 @@ const installed = await installSidecar(pkg.version);
 if (!installed) {
   console.error("[openclaw-memory-libravdb] FATAL: sidecar binary could not be installed.");
   console.error("  1. Check your internet connection (prebuilt download failed)");
-  console.error("  2. Or install Go >= 1.22 and retry: https://go.dev/dl/");
+  console.error(`  2. Confirm release assets exist for v${pkg.version} and ${process.platform}-${process.arch}`);
   process.exit(1);
 }
 
@@ -50,20 +47,21 @@ if (existsSync(runtimeBundle)) {
 
 async function installSidecar(version) {
   const target = detectSidecarReleaseTarget();
-  if (target) {
-    const assetUrl = buildSidecarReleaseAssetURL(version, target);
-    const checksumUrl = `${assetUrl}.sha256`;
-    const downloaded = await tryDownloadPrebuilt(assetUrl, checksumUrl, path.join(outDir, binary));
-    if (downloaded) {
-      console.log(`[openclaw-memory-libravdb] Sidecar installed (prebuilt ${target})`);
-      return true;
-    }
-    console.warn("[openclaw-memory-libravdb] Prebuilt binary unavailable or failed verification; attempting local go build.");
-  } else {
-    console.warn(`[openclaw-memory-libravdb] No prebuilt target for ${process.platform}-${process.arch}; attempting local go build.`);
+  if (!target) {
+    console.error(`[openclaw-memory-libravdb] No published sidecar target exists for ${process.platform}-${process.arch}.`);
+    return false;
   }
 
-  return tryGoBuild(path.join(outDir, binary));
+  const assetUrl = buildSidecarReleaseAssetURL(version, target);
+  const checksumUrl = `${assetUrl}.sha256`;
+  const downloaded = await tryDownloadPrebuilt(assetUrl, checksumUrl, path.join(outDir, binary));
+  if (downloaded) {
+    console.log(`[openclaw-memory-libravdb] Sidecar installed (prebuilt ${target})`);
+    return true;
+  }
+
+  console.error(`[openclaw-memory-libravdb] Unable to install published sidecar ${target} for v${version}.`);
+  return false;
 }
 
 async function tryDownloadPrebuilt(assetUrl, checksumUrl, dest) {
@@ -88,48 +86,6 @@ async function tryDownloadPrebuilt(assetUrl, checksumUrl, dest) {
     console.warn(`[openclaw-memory-libravdb] Prebuilt sidecar download failed: ${formatError(error)}`);
     return false;
   }
-}
-
-function tryGoBuild(dest) {
-  const goCheck = spawnSync("go", ["version"], {
-    stdio: "pipe",
-    env: process.env,
-  });
-
-  if (goCheck.error && goCheck.error.code === "ENOENT") {
-    console.error("FATAL: Go toolchain not found on PATH. The LibraVDB sidecar cannot be built locally.");
-    return false;
-  }
-
-  if (goCheck.status !== 0) {
-    console.error("FATAL: Go toolchain check failed. The LibraVDB sidecar cannot be built locally.");
-    if (goCheck.stderr?.length) {
-      process.stderr.write(goCheck.stderr);
-    }
-    return false;
-  }
-
-  const result = spawnSync("go", ["build", "-o", dest, "."], {
-    cwd: sidecarDir,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      GOCACHE: process.env.GOCACHE ?? path.join(os.tmpdir(), "openclaw-memory-libravdb-gocache"),
-    },
-  });
-
-  if (result.error && result.error.code === "ENOENT") {
-    console.error("FATAL: Go toolchain disappeared while building the LibraVDB sidecar.");
-    return false;
-  }
-
-  if (result.status !== 0) {
-    console.error("FATAL: go build failed. The LibraVDB sidecar will not start.");
-    return false;
-  }
-
-  console.log("[openclaw-memory-libravdb] Sidecar installed (local build)");
-  return true;
 }
 
 async function fetchChecksum(url) {
