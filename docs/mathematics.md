@@ -444,7 +444,7 @@ r(d)=\exp\left(-\lambda_r\cdot \Delta t(d)\right)
 $$
 
 $$
-f(d)=\frac{\log(1+\operatorname{acc}(d))}{\log\left(1+\max_{d'\in\mathcal{V}}\operatorname{acc}(d')\right)}
+f(d)=\frac{\log(1+\mathrm{acc}(d))}{\log\left(1+\max_{d'\in\mathcal{V}}\mathrm{acc}(d')\right)}
 $$
 
 $$
@@ -459,19 +459,19 @@ and authored authority without baking those concerns into the raw cosine term.
 Pass 1 computes cosine similarity:
 
 $$
-\operatorname{sim}(q,d)=\varphi(q)^\top \varphi(d)
+\mathrm{sim}(q,d)=\varphi(q)^\top \varphi(d)
 $$
 
 and selects the coarse candidate set:
 
 $$
-\mathcal{C}_1(q)=\operatorname{top\text{-}k_1}_{d\in\mathcal{V}}\ \operatorname{sim}(q,d)
+\mathcal{C}_1(q)=\mathrm{TopK}_{d\in\mathcal{V}}\!\left(k_1,\mathrm{sim}(q,d)\right)
 $$
 
 with a hard similarity floor:
 
 $$
-\mathcal{C}_1(q)=\{d\in\mathcal{C}_1(q)\mid \operatorname{sim}(q,d)\ge \theta_1\}
+\mathcal{C}_1(q)=\{d\in\mathcal{C}_1(q)\mid \mathrm{sim}(q,d)\ge \theta_1\}
 $$
 
 The purpose of this pass is breadth with cheap semantic recall. Documents below
@@ -483,13 +483,13 @@ first pass must not admit semantically orthogonal noise into second-pass work.
 Let the query keyword extractor return:
 
 $$
-K = \operatorname{KeyExt}(q)
+K = \mathrm{KeyExt}(q)
 $$
 
 and define normalized keyword coverage:
 
 $$
-M_{norm}(K,d)=\frac{|K\cap \operatorname{terms}(d)|}{|K|}\in[0,1]
+M_{norm}(K,d)=\frac{|K\cap \mathrm{terms}(d)|}{|K|}\in[0,1]
 $$
 
 The proposed normalized second-pass score is:
@@ -497,7 +497,7 @@ The proposed normalized second-pass score is:
 $$
 S_{final}(d)=
 \frac{
-\omega(d)\cdot\max(\operatorname{sim}(q,d), 0)\cdot\left(1+\kappa\cdot M_{norm}(K,d)\right)
+\omega(d)\cdot\max(\mathrm{sim}(q,d), 0)\cdot\left(1+\kappa\cdot M_{norm}(K,d)\right)
 }{
 1+\kappa
 }
@@ -515,7 +515,7 @@ truncating the result.
 The second-pass candidate set is:
 
 $$
-\mathcal{C}_2(q)=\operatorname{top\text{-}k_2}_{d\in\mathcal{C}_1(q)}\ S_{final}(d)
+\mathcal{C}_2(q)=\mathrm{TopK}_{d\in\mathcal{C}_1(q)}\!\left(k_2,S_{final}(d)\right)
 $$
 
 with:
@@ -529,7 +529,7 @@ $$
 Let:
 
 $$
-s=\max(\operatorname{sim}(q,d),0)\in[0,1]
+s=\max(\mathrm{sim}(q,d),0)\in[0,1]
 $$
 
 Then:
@@ -611,19 +611,19 @@ $$
 Variant projection is:
 
 $$
-\operatorname{Proj}(\mathcal{V}, q)=\mathcal{C}_2(q)\cup\mathcal{C}_{hop}^{*}(q)
+\mathrm{Proj}(\mathcal{V}, q)=\mathcal{C}_2(q)\cup\mathcal{C}_{hop}^{*}(q)
 $$
 
 Total injected soul context is:
 
 $$
-C_{soul}(q)=\mathcal{I}\cup \operatorname{Proj}(\mathcal{V}, q)
+C_{soul}(q)=\mathcal{I}\cup \mathrm{Proj}(\mathcal{V}, q)
 $$
 
 Let the total prompt budget be $\tau$. If the invariant set consumes:
 
 $$
-\tau_{\mathcal{I}}=\sum_{d\in\mathcal{I}} \operatorname{toks}(d)
+\tau_{\mathcal{I}}=\sum_{d\in\mathcal{I}} \mathrm{toks}(d)
 $$
 
 then the variant budget is:
@@ -632,11 +632,11 @@ $$
 \tau_{\mathcal{V}}=\tau-\tau_{\mathcal{I}}
 $$
 
-Documents in $\operatorname{Proj}(\mathcal{V}, q)$ are injected in descending
+Documents in $\mathrm{Proj}(\mathcal{V}, q)$ are injected in descending
 score order until:
 
 $$
-\sum_{d\in \text{injected}} \operatorname{toks}(d)\le\tau_{\mathcal{V}}
+\sum_{d\in \text{injected}} \mathrm{toks}(d)\le\tau_{\mathcal{V}}
 $$
 
 The merged score sequence is:
@@ -684,7 +684,7 @@ $$
 4. Token budget respect:
 
 $$
-\sum_{d\in C_{soul}(q)} \operatorname{toks}(d)\le\tau
+\sum_{d\in C_{soul}(q)} \mathrm{toks}(d)\le\tau
 $$
 
 with the invariant set never truncated
