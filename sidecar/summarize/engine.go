@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -127,6 +129,10 @@ func NewWithDeps(cfg Config, deps Dependencies) *Engine {
 	if cfg.Backend == "bundled" {
 		if deps.Embedder != nil && strings.EqualFold(cfg.Profile, "extractive") {
 			return NewExtractive(deps.Embedder, firstNonEmpty(cfg.Profile, "extractive"))
+		}
+		resolved, err := resolveBundledSummarizer(cfg, deps)
+		if err == nil {
+			return resolved
 		}
 	}
 
@@ -273,6 +279,90 @@ func normalizeSummaryOpts(opts SummaryOpts) SummaryOpts {
 		opts.TargetDensity = 0.4
 	}
 	return opts
+}
+
+func resolveBundledSummarizer(cfg Config, deps Dependencies) (*Engine, error) {
+	profile := strings.TrimSpace(cfg.Profile)
+	if profile == "" {
+		profile = "t5-small"
+	}
+	modelDir, err := resolveBundledSummarizerModelDir(profile)
+	if err != nil {
+		return nil, err
+	}
+	runtimePath := strings.TrimSpace(cfg.RuntimePath)
+	backend, err := newONNXLocalBackend(Config{
+		Backend:       "onnx-local",
+		Profile:       profile,
+		RuntimePath:   runtimePath,
+		ModelPath:     modelDir,
+		TokenizerPath: cfg.TokenizerPath,
+	}, deps)
+	if err != nil {
+		return nil, err
+	}
+	return &Engine{backend: backend}, nil
+}
+
+var resolveBundledSummarizerModelDir = func(profile string) (string, error) {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		profile = "t5-small"
+	}
+
+	candidates := make([]string, 0, 16)
+	if exe, err := os.Executable(); err == nil && strings.TrimSpace(exe) != "" {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "models", profile),
+			filepath.Join(exeDir, "..", ".models", profile),
+			filepath.Join(exeDir, "..", "models", profile),
+		)
+		candidates = append(candidates, ancestorModelDirCandidates(exeDir, profile)...)
+	}
+	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+		candidates = append(candidates,
+			filepath.Join(cwd, "..", ".models", profile),
+			filepath.Join(cwd, ".models", profile),
+			filepath.Join(cwd, "models", profile),
+		)
+		candidates = append(candidates, ancestorModelDirCandidates(cwd, profile)...)
+	}
+
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(candidate)
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			manifestPath := filepath.Join(candidate, defaultManifestName)
+			if _, err := os.Stat(manifestPath); err == nil {
+				return candidate, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("bundled summarizer profile %q assets not found; expected summarizer.json under a shipped model directory", profile)
+}
+
+func ancestorModelDirCandidates(start, profile string) []string {
+	start = filepath.Clean(start)
+	var results []string
+	dir := start
+	for {
+		results = append(results,
+			filepath.Join(dir, ".models", profile),
+			filepath.Join(dir, "models", profile),
+		)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return results
 }
 
 func unavailableReason(cfg Config) string {

@@ -3,7 +3,7 @@
   "name": "LibraVDB Memory",
   "description": "Persistent vector memory with three-tier hybrid scoring",
   "version": "1.3.11",
-  "kind": "memory",
+  "kind": ["memory", "context-engine"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

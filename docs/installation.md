@@ -217,7 +217,7 @@ Installed plugin: libravdb-memory
 
 ## Activation
 
-The plugin declares `kind: "memory"` and is intended to occupy the `memory` slot. If your OpenClaw build also exposes legacy context-engine slotting, keep the memory slot authoritative and use the context-engine slot only for compatibility testing.
+The plugin declares `kind: ["memory", "context-engine"]` and registers for both the `memory` and `context-engine` slots. Either slot assignment activates the plugin.
 
 Add this to `~/.openclaw/openclaw.json`:
 
@@ -225,8 +225,19 @@ Add this to `~/.openclaw/openclaw.json`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "legacy"
+      "memory": "libravdb-memory"
+    }
+  }
+}
+```
+
+If your OpenClaw build uses the `contextEngine` slot instead, you can assign it there:
+
+```json
+{
+  "plugins": {
+    "slots": {
+      "contextEngine": "libravdb-memory"
     }
   }
 }
@@ -234,12 +245,10 @@ Add this to `~/.openclaw/openclaw.json`:
 
 Notes:
 
-- `memory: "libravdb-memory"` is the actual activation step.
-- `contextEngine: "legacy"` keeps the legacy engine explicit when the host still exposes that slot.
-- If you instead point `contextEngine` at another plugin, you are changing a separate slot from the memory replacement.
+- Either `memory` or `contextEngine` slot assignment activates the plugin. You do not need both.
 - The plugin id is `libravdb-memory`. The npm package name used at install time is `@xdarkicex/openclaw-memory-libravdb`.
 
-Without the `memory` slot entry, OpenClaw's default memory can continue to run in parallel.
+Without a slot entry, OpenClaw's default memory can continue to run in parallel.
 
 ## Verification
 

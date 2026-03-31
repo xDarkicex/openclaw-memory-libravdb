@@ -18,6 +18,8 @@ import (
 	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/summarize"
 )
 
+var Version = "dev"
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -25,7 +27,7 @@ func main() {
 			runServe()
 			return
 		case "version":
-			fmt.Println("libravdbd dev")
+			fmt.Printf("libravdbd %s\n", Version)
 			return
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command %q\nusage: libravdbd [serve|version]\n", os.Args[1])

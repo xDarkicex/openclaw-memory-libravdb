@@ -57,7 +57,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p ../dist
-          go build -trimpath -ldflags="-s -w" -o "../dist/${{ matrix.asset_name }}" .
+          go build -trimpath -ldflags="-s -w -X main.Version=${GITHUB_REF_NAME#v}" -o "../dist/${{ matrix.asset_name }}" .
 
       - name: Generate checksum (unix)
         if: runner.os != 'Windows'
