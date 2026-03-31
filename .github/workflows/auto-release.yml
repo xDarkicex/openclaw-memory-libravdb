@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:
@@ -35,11 +35,12 @@ jobs:
 
       - name: Determine bump type
         id: bump
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
-          labels='${{ toJSON(github.event.pull_request.labels.*.name) }}'
-          if echo "$labels" | grep -q '"release:major"'; then
+          if echo "$LABELS" | grep -q '"release:major"'; then
             echo "type=major" >> "$GITHUB_OUTPUT"
-          elif echo "$labels" | grep -q '"release:minor"'; then
+          elif echo "$LABELS" | grep -q '"release:minor"'; then
             echo "type=minor" >> "$GITHUB_OUTPUT"
           else
             echo "type=patch" >> "$GITHUB_OUTPUT"
