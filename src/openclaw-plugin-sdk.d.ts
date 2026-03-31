@@ -39,14 +39,14 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     id: string;
     name: string;
     description: string;
-    kind?: "memory" | "context-engine";
+    kind?: "memory" | "context-engine" | Array<"memory" | "context-engine">;
     configSchema?: unknown;
     register(api: OpenClawPluginApi): void | Promise<void>;
   }): {
     id: string;
     name: string;
     description: string;
-    kind?: "memory" | "context-engine";
+    kind?: "memory" | "context-engine" | Array<"memory" | "context-engine">;
     configSchema?: unknown;
     register(api: OpenClawPluginApi): void | Promise<void>;
   };
