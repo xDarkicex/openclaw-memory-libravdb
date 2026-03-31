@@ -10,7 +10,6 @@
     "openclaw.plugin.json",
     "package.json",
     "packaging/",
-    "scripts/",
     "src/",
     "docs/",
     "tsconfig.json",
@@ -22,11 +21,9 @@
   "openclaw": {
     "extensions": [
       "./src/index.ts"
-    ],
-    "setup": "./scripts/setup.ts"
+    ]
   },
   "scripts": {
-    "postinstall": "node scripts/postinstall.js",
     "check": "./.ts-toolchain/node_modules/.bin/tsc --noEmit && pnpm run test:ts",
     "test:ts": "./.ts-toolchain/node_modules/.bin/tsc -p tsconfig.tests.json && node --test .ts-build/test/unit/*.test.js",
     "test:integration": "./.ts-toolchain/node_modules/.bin/tsc -p tsconfig.tests.json && node --test .ts-build/test/integration/checklist-validation.test.js .ts-build/test/integration/host-flow.test.js .ts-build/test/integration/sidecar-lifecycle.test.js",
