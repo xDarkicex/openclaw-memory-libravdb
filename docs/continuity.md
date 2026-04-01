@@ -374,11 +374,12 @@ compaction boundary.
 In practical terms, continuity for this system is:
 
 $$
-\text{continuity} =
-\text{authored rules}
-+ \text{recent exact session state}
-+ \text{recoverable compacted history}
-+ \text{older retrieved memory}
+\begin{aligned}
+\text{continuity} ={}& \text{authored rules} \\
+&+ \text{recent exact session state} \\
+&+ \text{recoverable compacted history} \\
+&+ \text{older retrieved memory}
+\end{aligned}
 $$
 
 This avoids the failure mode where continuity depends entirely on a semantic
