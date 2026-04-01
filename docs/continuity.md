@@ -98,20 +98,49 @@ $$
 subject to the constraints:
 
 - at least the most recent $m$ raw turns are preserved
-- the preserved tail token cost does not exceed $\tau_{\mathrm{tail}}$
+- the preserved tail token target is $\tau_{\mathrm{tail}}$
 - preserved turns are never replaced by summaries while they remain in the tail
 
 The exact selection policy may be count-based, token-based, or both. A valid
 runtime policy is:
 
 $$
-T_{\mathrm{recent}} = \text{longest raw suffix satisfying }
-|T_{\mathrm{recent}}| \ge m
-\text{ and }
+T_{\mathrm{base}} = \text{shortest raw suffix of } \Sigma \text{ such that }
+|T_{\mathrm{base}}| \ge m
+$$
+
+If the base suffix fits within the tail token target:
+
+$$
+\sum_{d\in T_{\mathrm{base}}}\mathrm{toks}(d)\le \tau_{\mathrm{tail}}
+$$
+
+then the runtime may extend it backward to the longest raw suffix
+$T_{\mathrm{recent}}$ satisfying:
+
+$$
+T_{\mathrm{base}} \subseteq T_{\mathrm{recent}}
+\qquad\text{and}\qquad
 \sum_{d\in T_{\mathrm{recent}}}\mathrm{toks}(d)\le \tau_{\mathrm{tail}}
 $$
 
-This suffix is intentionally structural rather than semantic.
+If the most recent $m$ turns already exceed the tail target:
+
+$$
+\sum_{d\in T_{\mathrm{base}}}\mathrm{toks}(d) > \tau_{\mathrm{tail}}
+$$
+
+then continuity takes precedence and:
+
+$$
+T_{\mathrm{recent}} = T_{\mathrm{base}}
+$$
+
+with the overflow absorbed by reducing the retrievable variant budget
+accordingly. In other words, $m$ wins over $\tau_{\mathrm{tail}}$ whenever the
+two conflict.
+
+This selector is intentionally structural rather than semantic.
 
 The selector should also preserve small logically coupled turn bundles when a
 boundary would otherwise split an inseparable local unit. In practice, this
@@ -127,12 +156,24 @@ $$
 \tau = \tau_{\mathcal{I}} + \tau_{\mathrm{tail}} + \tau_{\mathcal{V}}
 $$
 
+equivalently:
+
+$$
+\tau_{\mathcal{V}} = \tau - \tau_{\mathcal{I}} - \tau_{\mathrm{tail}}
+$$
+
 with:
 
 - $\tau_{\mathcal{I}}$ reserved for invariant authored context
 - $\tau_{\mathrm{tail}}$ reserved for preserved recent raw context
 - $\tau_{\mathcal{V}}$ reserved for scored retrieval over
   $\mathcal{V}_{\mathrm{rest}}$
+
+The residual budget must satisfy:
+
+$$
+\tau_{\mathcal{V}} \ge 0
+$$
 
 Startup and runtime must preserve:
 
@@ -240,19 +281,21 @@ extend this metadata with parent-summary references so the compacted memory
 space remains navigable as a directed acyclic lineage graph rather than a flat
 bag of summaries.
 
-Formally, for each summary node $s$ we want a lineage map:
-
-$$
-L(s)=\{\mathrm{SourceIDs}(s), t_{\min}(s), t_{\max}(s), \mathrm{Method}(s), \mathrm{Confidence}(s)\}
-$$
-
-and potentially, in a hierarchical future:
+Formally, for each summary node $s$ we want a typed lineage record, and
+potentially, in a hierarchical future:
 
 $$
 P(s)\subseteq \mathbf{S}
 $$
 
 where $\mathbf{S}$ is the set of summary nodes.
+
+The object $L(s)$ is a typed tuple or record, not an unordered set. A more
+precise notation is:
+
+$$
+L(s)=\big(\mathrm{SourceIDs}(s), t_{\min}(s), t_{\max}(s), \mathrm{Method}(s), \mathrm{Confidence}(s)\big)
+$$
 
 This does not replace retrieval scoring. It guarantees that compressed history
 remains inspectable and attributable.
@@ -283,8 +326,17 @@ Independent summaries tend to repeat stable background context and waste both
 storage and retrieval budget. A stronger continuity formulation conditions new
 summaries on nearby previously compacted state.
 
-Let $B_j$ be bounded prior compacted context relevant to cluster $C_j$. Then a
-delta-conditioned summarizer computes:
+Let $B_j$ be bounded prior compacted context relevant to cluster $C_j$. A valid
+selection rule is that $B_j$ is drawn from temporally adjacent or topically
+adjacent compacted state and satisfies a fixed supporting-context cap:
+
+$$
+\mathrm{toks}(B_j)\le \tau_B
+$$
+
+for some configured constant $\tau_B$.
+
+Then a delta-conditioned summarizer computes:
 
 $$
 s(C_j \mid B_j)
@@ -337,6 +389,7 @@ $$
 
 $$
 \mathcal{I}\cap T_{\mathrm{recent}}=\emptyset,\qquad
+\mathcal{I}\cap\mathcal{V}_{\mathrm{rest}}=\emptyset,\qquad
 T_{\mathrm{recent}}\cap\mathcal{V}_{\mathrm{rest}}=\emptyset
 $$
 
