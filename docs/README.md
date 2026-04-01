@@ -3,7 +3,9 @@
 - [installation.md](./installation.md) - Complete install, activation, verification, and troubleshooting reference.
 - [architecture.md](./architecture.md) - End-to-end component model, turn lifecycle, compaction flow, and degraded behavior.
 - [problem.md](./problem.md) - Technical argument for replacing the stock OpenClaw memory lifecycle in this use case.
-- [mathematics.md](./mathematics.md) - Formal reference for hybrid scoring, decay, token budgeting, Matryoshka retrieval, and compaction.
+- [mathematics-v2.md](./mathematics-v2.md) - Formal reference for hybrid scoring, decay, token budgeting, Matryoshka retrieval, compaction, and planned two-pass retrieval.
+- [continuity.md](./continuity.md) - Continuity model for invariant context, preserved recent raw session tail, and retrieved older memory.
+- [ast.md](./ast.md) - AST-based partitioning rules that map authored Markdown into invariant and variant context sets.
 - [gating.md](./gating.md) - Full derivation and calibration guide for the domain-adaptive gating scalar.
 - [implementation.md](./implementation.md) - Non-obvious implementation decisions and their rationale.
 - [dependencies.md](./dependencies.md) - Why LibraVDB and slab-based storage were chosen for this plugin.
