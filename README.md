@@ -28,6 +28,11 @@ Then activate the plugin in `~/.openclaw/openclaw.json`:
   "plugins": {
     "slots": {
       "memory": "libravdb-memory"
+    },
+    "configs": {
+      "libravdb-memory": {
+        "sidecarPath": "auto"
+      }
     }
   }
 }
@@ -37,6 +42,10 @@ The published plugin is connect-only. It does not compile or spawn a local Go
 binary during install. The `libravdbd` daemon is managed separately and the
 plugin connects to an endpoint such as `unix:$HOME/.clawdb/run/libravdb.sock`
 or `tcp:127.0.0.1:37421`.
+
+Use `sidecarPath: "auto"` or omit the field to use the platform default
+endpoint. If your daemon listens elsewhere, set an explicit endpoint such as
+`unix:/custom/path/libravdb.sock` or `tcp:127.0.0.1:9999`.
 
 ## How It Works
 
