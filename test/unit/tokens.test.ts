@@ -71,6 +71,30 @@ test("buildInjectedMemoryMessageContent tags non-authored entries with provenanc
   );
 });
 
+test("buildInjectedMemoryMessageContent leaves authored invariant entries untagged", () => {
+  assert.equal(
+    buildInjectedMemoryMessageContent({
+      id: "a",
+      score: 1,
+      text: "Always cite the math.",
+      metadata: { authored: true, tier: 1 },
+    }),
+    "Always cite the math.",
+  );
+});
+
+test("buildInjectedMemoryMessageContent tags non-continuity entries as recalled", () => {
+  assert.equal(
+    buildInjectedMemoryMessageContent({
+      id: "a",
+      score: 1,
+      text: "Historical preference",
+      metadata: { role: "user", collection: "user:u1" },
+    }),
+    '<entry role="user" source="recalled">Historical preference</entry>',
+  );
+});
+
 test("buildInjectedMemoryMessageContent escapes XML-like text payloads", () => {
   assert.equal(
     buildInjectedMemoryMessageContent({
