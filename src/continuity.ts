@@ -1,5 +1,6 @@
 export const DEFAULT_CONTINUITY_MIN_TURNS = 4;
 export const DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS = 128;
+export const DEFAULT_CONTINUITY_PRIOR_CONTEXT_TOKENS = 96;
 
 export interface RecentTailSelection<T> {
   older: T[];

@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +27,12 @@ const (
 	NomicConfidenceWeight       = 0.80
 	DefaultContinuityMinTurns   = 4
 	DefaultContinuityTailTokens = 128
+	DefaultContinuityPriorTokens = 96
+)
+
+var (
+	longBase64ishTokenPattern = regexp.MustCompile(`(?i)\b(?:[A-Z0-9+/=_-]{80,})\b`)
+	longHexTokenPattern       = regexp.MustCompile(`(?i)\b[0-9a-f]{64,}\b`)
 )
 
 type Store interface {
@@ -46,6 +54,19 @@ type cluster struct {
 	turns []turnRecord
 }
 
+type priorSummaryRecord struct {
+	id         string
+	text       string
+	tokenCount int
+	ts         int64
+}
+
+type priorContextSelection struct {
+	summaryIDs []string
+	text       string
+	tokens     int
+}
+
 type turnRecord struct {
 	id       string
 	text     string
@@ -60,9 +81,16 @@ type qualityMetadata struct {
 	ConfNomic float64
 }
 
+type summarizeAttempt struct {
+	label      string
+	summarizer summarize.Summarizer
+	opts       summarize.SummaryOpts
+}
+
 type ContinuityConfig struct {
-	MinTurns         int
-	TailBudgetTokens int
+	MinTurns          int
+	TailBudgetTokens  int
+	PriorContextTokens int
 }
 
 func CompactSession(
@@ -96,6 +124,7 @@ func CompactSession(
 	}
 
 	turns := eligibleTurns(results)
+	priorSummaries := eligiblePriorSummaries(results)
 	if len(turns) < 2 {
 		return Result{DidCompact: false}, nil
 	}
@@ -136,37 +165,27 @@ func CompactSession(
 		for _, turn := range group.turns {
 			summaryTurns = append(summaryTurns, summarize.Turn{
 				ID:   turn.id,
-				Text: turn.text,
+				Text: sanitizeContinuityText(turn.text),
 			})
 			sourceIDs = append(sourceIDs, turn.id)
 		}
 
 		summarizer, meanGating := routeSummarizer(group.turns, extractive, abstractive)
-
-		summary, err := summarizer.Summarize(ctx, summaryTurns, summarize.SummaryOpts{
-			MinInputTurns:   1,
-			MaxOutputTokens: DefaultMaxOutputTokens,
-		})
+		priorContext := selectPriorCompactedContext(priorSummaries, group.turns, continuity)
+		summary, quality, err := summarizeWithEscalation(ctx, extractive, summarizer, summaryTurns, group.turns, priorContext)
+		if errors.Is(err, errStrictProgressDeclined) {
+			out.ClustersDeclined++
+			log.Printf("compaction: cluster_id=%d declined=strict-progress-after-escalation mean_gating_score=%.3f", idx, meanGating)
+			continue
+		}
 		if err != nil {
 			return Result{}, fmt.Errorf("cluster %d summarize failed: %w", idx, err)
 		}
-		quality, summary, err := finalizeSummaryQuality(ctx, extractive, summarizer, summaryTurns, summary)
-		if err != nil {
-			return Result{}, fmt.Errorf("cluster %d quality evaluation failed: %w", idx, err)
-		}
 		log.Printf("compaction: cluster_id=%d mean_gating_score=%.3f summarizer_used=%s", idx, meanGating, summary.Method)
-		if strings.TrimSpace(summary.Text) == "" {
-			return Result{}, fmt.Errorf("cluster %d summarize produced empty text", idx)
-		}
 
 		summary.SourceIDs = append([]string(nil), sourceIDs...)
-		if !hasStrictCompactionProgress(group.turns, summary) {
-			out.ClustersDeclined++
-			log.Printf("compaction: cluster_id=%d declined=strict-progress mean_gating_score=%.3f summarizer_used=%s", idx, meanGating, summary.Method)
-			continue
-		}
 
-		metadata := summaryMetadata(sessionID, now, summary, group.turns, quality)
+		metadata := summaryMetadata(sessionID, now, summary, group.turns, quality, priorContext)
 		summaryID := summaryRecordID(sessionID, summary.SourceIDs)
 		if err := st.InsertText(ctx, collection, summaryID, summary.Text, metadata); err != nil {
 			return Result{}, fmt.Errorf("summary insert failed, source turns preserved: %w", err)
@@ -200,6 +219,75 @@ func routeSummarizer(turns []turnRecord, extractive summarize.Summarizer, abstra
 	}
 	return extractive, meanGating
 }
+
+func summarizeWithEscalation(
+	ctx context.Context,
+	extractive summarize.Summarizer,
+	primary summarize.Summarizer,
+	summaryTurns []summarize.Turn,
+	sourceTurns []turnRecord,
+	priorContext priorContextSelection,
+) (summarize.Summary, qualityMetadata, error) {
+	attempts := buildSummarizeAttempts(extractive, primary)
+	for _, attempt := range attempts {
+		turns := applyPriorCompactedContext(summaryTurns, priorContext, attempt.summarizer)
+		summary, err := attempt.summarizer.Summarize(ctx, turns, attempt.opts)
+		if err != nil {
+			return summarize.Summary{}, qualityMetadata{}, fmt.Errorf("%s summarize failed: %w", attempt.label, err)
+		}
+		quality, summary, err := finalizeSummaryQuality(ctx, extractive, attempt.summarizer, summaryTurns, summary)
+		if err != nil {
+			return summarize.Summary{}, qualityMetadata{}, fmt.Errorf("%s quality evaluation failed: %w", attempt.label, err)
+		}
+		if strings.TrimSpace(summary.Text) == "" {
+			return summarize.Summary{}, qualityMetadata{}, fmt.Errorf("%s produced empty text", attempt.label)
+		}
+		if hasStrictCompactionProgress(sourceTurns, summary) {
+			return summary, quality, nil
+		}
+	}
+	return summarize.Summary{}, qualityMetadata{}, errStrictProgressDeclined
+}
+
+func buildSummarizeAttempts(extractive summarize.Summarizer, primary summarize.Summarizer) []summarizeAttempt {
+	attempts := []summarizeAttempt{{
+		label:      "primary",
+		summarizer: primary,
+		opts: summarize.SummaryOpts{
+			MinInputTurns:   1,
+			MaxOutputTokens: DefaultMaxOutputTokens,
+		},
+	}}
+
+	primaryAggressive := summarizeAttempt{
+		label:      "aggressive",
+		summarizer: primary,
+		opts: summarize.SummaryOpts{
+			MinInputTurns:   1,
+			MaxOutputTokens: DefaultMaxOutputTokens / 2,
+			TargetDensity:   0.25,
+		},
+	}
+	if primaryAggressive.opts.MaxOutputTokens < 16 {
+		primaryAggressive.opts.MaxOutputTokens = 16
+	}
+	attempts = append(attempts, primaryAggressive)
+
+	if extractive != nil && extractive.Ready() && primary != extractive {
+		attempts = append(attempts, summarizeAttempt{
+			label:      "deterministic-fallback",
+			summarizer: extractive,
+			opts: summarize.SummaryOpts{
+				MinInputTurns:   1,
+				MaxOutputTokens: 16,
+				TargetDensity:   0.25,
+			},
+		})
+	}
+	return attempts
+}
+
+var errStrictProgressDeclined = errors.New("strict progress not achieved after escalation ladder")
 
 func finalizeSummaryQuality(ctx context.Context, extractive summarize.Summarizer, used summarize.Summarizer, turns []summarize.Turn, summary summarize.Summary) (qualityMetadata, summarize.Summary, error) {
 	e := canonicalEmbedder(extractive)
@@ -328,6 +416,29 @@ func eligibleTurns(results []store.SearchResult) []turnRecord {
 	return turns
 }
 
+func eligiblePriorSummaries(results []store.SearchResult) []priorSummaryRecord {
+	out := make([]priorSummaryRecord, 0, len(results))
+	for _, result := range results {
+		typed, _ := result.Metadata["type"].(string)
+		if typed != "summary" {
+			continue
+		}
+		out = append(out, priorSummaryRecord{
+			id:         result.ID,
+			text:       sanitizeContinuityText(result.Text),
+			tokenCount: metadataInt(result.Metadata, "token_count"),
+			ts:         metadataTimestamp(result.Metadata),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ts == out[j].ts {
+			return out[i].id < out[j].id
+		}
+		return out[i].ts < out[j].ts
+	})
+	return out
+}
+
 func partitionChronological(turns []turnRecord, targetSize int) []cluster {
 	if len(turns) == 0 {
 		return nil
@@ -350,6 +461,70 @@ func partitionChronological(turns []turnRecord, targetSize int) []cluster {
 			out = append(out, group)
 		}
 	}
+	return out
+}
+
+func selectPriorCompactedContext(prior []priorSummaryRecord, turns []turnRecord, cfg ContinuityConfig) priorContextSelection {
+	if len(prior) == 0 || len(turns) == 0 {
+		return priorContextSelection{}
+	}
+	limit := cfg.PriorContextTokens
+	if limit <= 0 {
+		limit = DefaultContinuityPriorTokens
+	}
+	clusterStart := turns[0].ts
+	selected := make([]priorSummaryRecord, 0, 2)
+	used := 0
+	for i := len(prior) - 1; i >= 0; i-- {
+		item := prior[i]
+		if item.ts >= clusterStart {
+			continue
+		}
+		tokens := item.tokenCount
+		if tokens <= 0 {
+			tokens = EstimateTokens(item.text)
+		}
+		if tokens <= 0 || used+tokens > limit {
+			continue
+		}
+		selected = append(selected, item)
+		used += tokens
+	}
+	if len(selected) == 0 {
+		return priorContextSelection{}
+	}
+	sort.Slice(selected, func(i, j int) bool {
+		if selected[i].ts == selected[j].ts {
+			return selected[i].id < selected[j].id
+		}
+		return selected[i].ts < selected[j].ts
+	})
+	parts := make([]string, 0, len(selected))
+	ids := make([]string, 0, len(selected))
+	for _, item := range selected {
+		ids = append(ids, item.id)
+		parts = append(parts, item.text)
+	}
+	return priorContextSelection{
+		summaryIDs: ids,
+		text:       strings.TrimSpace(strings.Join(parts, "\n\n")),
+		tokens:     used,
+	}
+}
+
+func applyPriorCompactedContext(turns []summarize.Turn, prior priorContextSelection, summarizer summarize.Summarizer) []summarize.Turn {
+	if len(turns) == 0 || len(prior.summaryIDs) == 0 || strings.TrimSpace(prior.text) == "" {
+		return turns
+	}
+	if summarizer == nil || summarizer.Mode() == "extractive" {
+		return turns
+	}
+	out := make([]summarize.Turn, 0, len(turns)+1)
+	out = append(out, summarize.Turn{
+		ID:   "__continuity_prior__",
+		Text: "Prior compacted context:\n" + prior.text,
+	})
+	out = append(out, turns...)
 	return out
 }
 
@@ -450,17 +625,23 @@ func turnMetaString(meta map[string]any, key string) string {
 	return typed
 }
 
-func summaryMetadata(sessionID string, compactedAt int64, summary summarize.Summary, turns []turnRecord, quality qualityMetadata) map[string]any {
+func summaryMetadata(sessionID string, compactedAt int64, summary summarize.Summary, turns []turnRecord, quality qualityMetadata, prior priorContextSelection) map[string]any {
+	lineage := continuityLineage(summary, turns, compactedAt, prior)
 	meta := map[string]any{
-		"type":         "summary",
-		"ts":           compactedAt,
-		"sessionId":    sessionID,
-		"source_ids":   append([]string(nil), summary.SourceIDs...),
-		"method":       summary.Method,
-		"token_count":  summary.TokenCount,
-		"confidence":   clamp01(summary.Confidence),
-		"compacted_at": compactedAt,
-		"decay_rate":   clamp01(1.0 - summary.Confidence),
+		"type":               "summary",
+		"ts":                 compactedAt,
+		"sessionId":          sessionID,
+		"source_ids":         append([]string(nil), summary.SourceIDs...),
+		"method":             summary.Method,
+		"token_count":        summary.TokenCount,
+		"confidence":         clamp01(summary.Confidence),
+		"compacted_at":       compactedAt,
+		"decay_rate":         clamp01(1.0 - summary.Confidence),
+		"continuity_lineage": lineage,
+	}
+	if len(prior.summaryIDs) > 0 {
+		meta["continuity_support_summary_ids"] = append([]string(nil), prior.summaryIDs...)
+		meta["continuity_support_tokens"] = prior.tokens
 	}
 	if quality.Align != 0 || quality.Cover != 0 || quality.ConfT5 != 0 || quality.ConfNomic != 0 {
 		meta["nomic_align"] = quality.Align
@@ -478,6 +659,124 @@ func summaryMetadata(sessionID string, compactedAt int64, summary summarize.Summ
 		}
 	}
 	return meta
+}
+
+func continuityLineage(summary summarize.Summary, turns []turnRecord, compactedAt int64, prior priorContextSelection) map[string]any {
+	sourceIDs := append([]string(nil), summary.SourceIDs...)
+	sourceTurnIDs := make([]string, 0, len(turns))
+	parentSummaryIDs := make([]string, 0, len(turns))
+	var sourceMinTS int64
+	var sourceMaxTS int64
+	for idx, turn := range turns {
+		if idx == 0 || turn.ts < sourceMinTS {
+			sourceMinTS = turn.ts
+		}
+		if idx == 0 || turn.ts > sourceMaxTS {
+			sourceMaxTS = turn.ts
+		}
+		if turnMetaString(turn.metadata, "type") == "summary" {
+			parentSummaryIDs = append(parentSummaryIDs, turn.id)
+			continue
+		}
+		sourceTurnIDs = append(sourceTurnIDs, turn.id)
+	}
+	lineage := map[string]any{
+		"source_ids":         sourceIDs,
+		"source_turn_ids":    sourceTurnIDs,
+		"parent_summary_ids": parentSummaryIDs,
+		"source_ts_min":      sourceMinTS,
+		"source_ts_max":      sourceMaxTS,
+		"compacted_at":       compactedAt,
+		"method":             summary.Method,
+		"confidence":         clamp01(summary.Confidence),
+	}
+	if len(prior.summaryIDs) > 0 {
+		lineage["support_summary_ids"] = append([]string(nil), prior.summaryIDs...)
+		lineage["support_tokens"] = prior.tokens
+	}
+	return lineage
+}
+
+func sanitizeContinuityText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return trimmed
+	}
+
+	sanitized := replaceLargeFencedBlocks(trimmed)
+	sanitized = replaceOpaquePayloadLines(sanitized)
+	sanitized = collapseBlankLines(sanitized)
+	sanitized = strings.TrimSpace(sanitized)
+	if sanitized == "" {
+		return "[sanitized continuity payload]"
+	}
+	return sanitized
+}
+
+func replaceLargeFencedBlocks(text string) string {
+	lines := strings.Split(text, "\n")
+	var out []string
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		if !strings.HasPrefix(strings.TrimSpace(line), "```") {
+			out = append(out, line)
+			i++
+			continue
+		}
+
+		start := i
+		i++
+		for i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+			i++
+		}
+		end := i
+		if i < len(lines) {
+			i++
+		}
+
+		blockLines := lines[start:i]
+		blockText := strings.Join(blockLines, "\n")
+		innerLineCount := max(0, end-start-1)
+		if len(blockText) >= 240 || innerLineCount >= 8 {
+			out = append(out, "[sanitized fenced payload omitted for continuity]")
+			continue
+		}
+		out = append(out, blockLines...)
+	}
+	return strings.Join(out, "\n")
+}
+
+func replaceOpaquePayloadLines(text string) string {
+	lines := strings.Split(text, "\n")
+	for idx, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "data:") && len(trimmed) >= 64 {
+			lines[idx] = "[sanitized transport payload omitted for continuity]"
+			continue
+		}
+		if len(trimmed) >= 96 && (longBase64ishTokenPattern.MatchString(trimmed) || longHexTokenPattern.MatchString(trimmed)) {
+			lines[idx] = "[sanitized opaque payload omitted for continuity]"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func collapseBlankLines(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	previousBlank := false
+	for _, line := range lines {
+		blank := strings.TrimSpace(line) == ""
+		if blank && previousBlank {
+			continue
+		}
+		out = append(out, line)
+		previousBlank = blank
+	}
+	return strings.Join(out, "\n")
 }
 
 func summaryRecordID(sessionID string, sourceIDs []string) string {
@@ -506,6 +805,36 @@ func metadataTimestamp(meta map[string]any) int64 {
 		return n
 	case string:
 		n, err := strconv.ParseInt(typed, 10, 64)
+		if err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func metadataInt(meta map[string]any, key string) int {
+	value, ok := meta[key]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case int32:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	case jsonNumber:
+		n, err := typed.Int64()
+		if err == nil {
+			return int(n)
+		}
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(typed))
 		if err == nil {
 			return n
 		}

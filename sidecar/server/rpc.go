@@ -121,6 +121,7 @@ type compactParams struct {
 	TargetSize           int    `json:"targetSize,omitempty"`
 	ContinuityMinTurns   int    `json:"continuityMinTurns,omitempty"`
 	ContinuityTailTokens int    `json:"continuityTailBudgetTokens,omitempty"`
+	ContinuityPriorTokens int   `json:"continuityPriorContextTokens,omitempty"`
 }
 
 type searchTextResult struct {
@@ -363,8 +364,9 @@ func (s *Server) handleCompact(ctx context.Context, raw any) (any, error) {
 		params.Force,
 		params.TargetSize,
 		compact.ContinuityConfig{
-			MinTurns:         params.ContinuityMinTurns,
-			TailBudgetTokens: params.ContinuityTailTokens,
+			MinTurns:          params.ContinuityMinTurns,
+			TailBudgetTokens:  params.ContinuityTailTokens,
+			PriorContextTokens: params.ContinuityPriorTokens,
 		},
 	)
 	if err != nil {

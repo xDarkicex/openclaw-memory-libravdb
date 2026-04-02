@@ -42,6 +42,7 @@ export interface PluginConfig {
   section7StartupTokenBudgetTokens?: number;
   continuityMinTurns?: number;
   continuityTailBudgetTokens?: number;
+  continuityPriorContextTokens?: number;
   compactThreshold?: number;
   section7CoarseTopK?: number;
   section7SecondPassTopK?: number;

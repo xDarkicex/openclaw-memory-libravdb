@@ -149,6 +149,7 @@ test("context-engine bootstrap -> ingest -> assemble -> compact host flow", asyn
   assert.equal(compacted.compacted, true);
   assert.equal(rpc.compactParams?.continuityMinTurns, 4);
   assert.equal(rpc.compactParams?.continuityTailBudgetTokens, 128);
+  assert.equal(rpc.compactParams?.continuityPriorContextTokens, 96);
   assert.ok(rpc.inserted.some((item) => item.collection === "session:s1"));
   assert.ok(rpc.inserted.some((item) => item.collection === "turns:u1"));
   assert.ok(rpc.inserted.some((item) => item.collection === "user:u1"));
@@ -158,6 +159,38 @@ test("context-engine bootstrap -> ingest -> assemble -> compact host flow", asyn
   assert.equal(userInsert?.metadata?.gating_a, 0.5);
   assert.equal(userInsert?.metadata?.gating_gconv, 0.65);
   assert.equal(userInsert?.metadata?.gating_gtech, 0.85);
+});
+
+test("assemble respects the total token budget under the continuity partition", async () => {
+  const rpc = new FakeRpc();
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.6,
+    authoredHardBudgetFraction: 0.25,
+    authoredSoftBudgetFraction: 0.2,
+    continuityMinTurns: 1,
+    continuityTailBudgetTokens: 8,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.ingest({
+    sessionId: "s1",
+    userId: "u1",
+    message: { role: "user", content: "remember this exactly" },
+  });
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "what do you know?" }],
+    tokenBudget: 40,
+  });
+
+  assert.ok(assembled.estimatedTokens <= 40, `estimatedTokens=${assembled.estimatedTokens}`);
 });
 
 test("ingest skips durable user insert when gating score is below threshold", async () => {

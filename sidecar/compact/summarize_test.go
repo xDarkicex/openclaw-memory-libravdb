@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/embed"
@@ -347,6 +348,41 @@ func TestCompactSessionInsertsBeforeDeleteAndPreservesDataOnDeleteFailure(t *tes
 	if len(sourceIDs) != 2 || sourceIDs[0] != "a" || sourceIDs[1] != "b" {
 		t.Fatalf("unexpected source_ids: %+v", sourceIDs)
 	}
+
+	lineage, ok := meta["continuity_lineage"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected continuity_lineage map, got %T", meta["continuity_lineage"])
+	}
+	if got := lineage["method"]; got != "extractive" {
+		t.Fatalf("expected lineage method, got %+v", lineage)
+	}
+	if math.Abs(metaFloat(lineage, "confidence")-0.75) > 1e-9 {
+		t.Fatalf("expected lineage confidence, got %+v", lineage)
+	}
+	if math.Abs(metaFloat(lineage, "source_ts_min")-10) > 1e-9 || math.Abs(metaFloat(lineage, "source_ts_max")-20) > 1e-9 {
+		t.Fatalf("expected lineage source timestamp bounds, got %+v", lineage)
+	}
+	lineageSourceIDs, ok := lineage["source_ids"].([]string)
+	if !ok {
+		t.Fatalf("expected lineage source_ids to be []string, got %T", lineage["source_ids"])
+	}
+	if len(lineageSourceIDs) != 2 || lineageSourceIDs[0] != "a" || lineageSourceIDs[1] != "b" {
+		t.Fatalf("unexpected lineage source_ids: %+v", lineageSourceIDs)
+	}
+	lineageTurnIDs, ok := lineage["source_turn_ids"].([]string)
+	if !ok {
+		t.Fatalf("expected lineage source_turn_ids to be []string, got %T", lineage["source_turn_ids"])
+	}
+	if len(lineageTurnIDs) != 2 || lineageTurnIDs[0] != "a" || lineageTurnIDs[1] != "b" {
+		t.Fatalf("unexpected lineage source_turn_ids: %+v", lineageTurnIDs)
+	}
+	parentSummaryIDs, ok := lineage["parent_summary_ids"].([]string)
+	if !ok {
+		t.Fatalf("expected lineage parent_summary_ids to be []string, got %T", lineage["parent_summary_ids"])
+	}
+	if len(parentSummaryIDs) != 0 {
+		t.Fatalf("expected no parent summary IDs for raw-turn compaction, got %+v", parentSummaryIDs)
+	}
 }
 
 func TestCompactSessionPreservesSourceTurnsWhenInsertFails(t *testing.T) {
@@ -372,6 +408,151 @@ func TestCompactSessionPreservesSourceTurnsWhenInsertFails(t *testing.T) {
 	}
 	if len(st.deleteCalls) != 0 {
 		t.Fatalf("expected no delete call when insert fails, got %d", len(st.deleteCalls))
+	}
+}
+
+func TestSummaryMetadataCarriesParentSummaryLineage(t *testing.T) {
+	summary := summarize.Summary{
+		Text:       "rolled-up",
+		SourceIDs:  []string{"summary:1", "turn-b"},
+		Method:     "extractive",
+		TokenCount: 1,
+		Confidence: 0.6,
+	}
+	turns := []turnRecord{
+		{id: "summary:1", ts: 10, metadata: map[string]any{"type": "summary"}},
+		{id: "turn-b", ts: 20, metadata: map[string]any{"type": "turn"}},
+	}
+
+	meta := summaryMetadata("s1", 25, summary, turns, qualityMetadata{}, priorContextSelection{})
+	lineage, ok := meta["continuity_lineage"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected continuity_lineage map, got %T", meta["continuity_lineage"])
+	}
+
+	parentSummaryIDs, ok := lineage["parent_summary_ids"].([]string)
+	if !ok {
+		t.Fatalf("expected parent_summary_ids to be []string, got %T", lineage["parent_summary_ids"])
+	}
+	if len(parentSummaryIDs) != 1 || parentSummaryIDs[0] != "summary:1" {
+		t.Fatalf("unexpected parent_summary_ids: %+v", parentSummaryIDs)
+	}
+	sourceTurnIDs, ok := lineage["source_turn_ids"].([]string)
+	if !ok {
+		t.Fatalf("expected source_turn_ids to be []string, got %T", lineage["source_turn_ids"])
+	}
+	if len(sourceTurnIDs) != 1 || sourceTurnIDs[0] != "turn-b" {
+		t.Fatalf("unexpected source_turn_ids: %+v", sourceTurnIDs)
+	}
+}
+
+func TestCompactSessionAddsBoundedPriorCompactedContextForAbstractiveSummaries(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "summary:prev", Text: "Earlier compacted background", Metadata: map[string]any{"type": "summary", "sessionId": "s1", "ts": int64(5), "token_count": 3}},
+			{ID: "a", Text: "alpha", Metadata: map[string]any{"type": "turn", "sessionId": "s1", "ts": int64(10), "gating_score": 0.8}},
+			{ID: "b", Text: "beta", Metadata: map[string]any{"type": "turn", "sessionId": "s1", "ts": int64(20), "gating_score": 0.8}},
+		},
+	}
+	extractive := &fakeSummarizer{
+		mode: "extractive",
+		summaries: []summarize.Summary{{Text: "extractive", Method: "extractive", TokenCount: 1, Confidence: 0.6}},
+	}
+	abstractive := &fakeSummarizer{
+		mode: "onnx-local",
+		summaries: []summarize.Summary{{Text: "abstractive", Method: "onnx-t5", TokenCount: 1, Confidence: 0.8}},
+	}
+
+	_, err := CompactSession(context.Background(), st, extractive, abstractive, "s1", true, 20, ContinuityConfig{PriorContextTokens: 8})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if len(abstractive.calls) != 1 || len(abstractive.calls[0]) != 3 {
+		t.Fatalf("expected abstractive summarizer to receive prior context plus cluster turns, got %+v", abstractive.calls)
+	}
+	if abstractive.calls[0][0].ID != "__continuity_prior__" {
+		t.Fatalf("expected synthetic prior-context turn first, got %+v", abstractive.calls[0][0])
+	}
+	if !strings.Contains(abstractive.calls[0][0].Text, "Earlier compacted background") {
+		t.Fatalf("expected prior compacted context text, got %q", abstractive.calls[0][0].Text)
+	}
+	if got, ok := st.insertCalls[0].meta["continuity_support_summary_ids"].([]string); !ok || len(got) != 1 || got[0] != "summary:prev" {
+		t.Fatalf("expected continuity support summary IDs, got %+v", st.insertCalls[0].meta["continuity_support_summary_ids"])
+	}
+}
+
+func TestCompactSessionDoesNotConditionExtractiveSummariesOnPriorContext(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "summary:prev", Text: "Earlier compacted background", Metadata: map[string]any{"type": "summary", "sessionId": "s1", "ts": int64(5), "token_count": 3}},
+			{ID: "a", Text: "alpha", Metadata: map[string]any{"type": "turn", "sessionId": "s1", "ts": int64(10)}},
+			{ID: "b", Text: "beta", Metadata: map[string]any{"type": "turn", "sessionId": "s1", "ts": int64(20)}},
+		},
+	}
+	sum := &fakeSummarizer{
+		mode: "extractive",
+		summaries: []summarize.Summary{{Text: "summary", Method: "extractive", TokenCount: 1, Confidence: 0.8}},
+	}
+
+	_, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 20, ContinuityConfig{PriorContextTokens: 8})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if len(sum.calls) != 1 || len(sum.calls[0]) != 2 {
+		t.Fatalf("expected extractive summarizer to receive only cluster turns, got %+v", sum.calls)
+	}
+}
+
+func TestSanitizeContinuityTextReplacesLargeOpaquePayloads(t *testing.T) {
+	text := "Intro\n\ndata:text/plain;base64,QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ==\n\nTail"
+	got := sanitizeContinuityText(text)
+	if !strings.Contains(got, "[sanitized transport payload omitted for continuity]") {
+		t.Fatalf("expected transport payload marker, got %q", got)
+	}
+	if !strings.Contains(got, "Intro") || !strings.Contains(got, "Tail") {
+		t.Fatalf("expected surrounding continuity text preserved, got %q", got)
+	}
+}
+
+func TestSanitizeContinuityTextReplacesLargeFencedPayloads(t *testing.T) {
+	text := "Before\n```json\n{\n  \"payload\": \"abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789\"\n}\nline4\nline5\nline6\nline7\nline8\nline9\n```\nAfter"
+	got := sanitizeContinuityText(text)
+	if !strings.Contains(got, "[sanitized fenced payload omitted for continuity]") {
+		t.Fatalf("expected fenced payload marker, got %q", got)
+	}
+	if strings.Contains(got, "\"payload\"") {
+		t.Fatalf("expected bulky fenced payload removed, got %q", got)
+	}
+}
+
+func TestCompactSessionSanitizesSummarizerInputOnly(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "Context\ndata:text/plain;base64,QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ==", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10)}},
+			{ID: "b", Text: "Normal reply", Metadata: map[string]any{"sessionId": "s1", "ts": int64(20)}},
+		},
+	}
+	sum := &fakeSummarizer{
+		summaries: []summarize.Summary{{
+			Text:       "summary",
+			Method:     "extractive",
+			TokenCount: 1,
+			Confidence: 0.8,
+		}},
+	}
+
+	_, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 20, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if len(sum.calls) != 1 || len(sum.calls[0]) != 2 {
+		t.Fatalf("expected summarizer to receive one two-turn cluster, got %+v", sum.calls)
+	}
+	if !strings.Contains(sum.calls[0][0].Text, "[sanitized transport payload omitted for continuity]") {
+		t.Fatalf("expected sanitized summarizer input, got %q", sum.calls[0][0].Text)
+	}
+	if len(st.deleteCalls) != 1 || len(st.deleteCalls[0].ids) != 2 || st.deleteCalls[0].ids[0] != "a" || st.deleteCalls[0].ids[1] != "b" {
+		t.Fatalf("expected original source IDs preserved for deletion, got %+v", st.deleteCalls)
 	}
 }
 
@@ -426,6 +607,81 @@ func TestCompactSessionRoutesHighGatingClustersToAbstractive(t *testing.T) {
 	}
 	if got := st.insertCalls[0].meta["confidence_t5"]; got != 0.9 {
 		t.Fatalf("expected t5 confidence metadata, got %+v", got)
+	}
+}
+
+func TestCompactSessionEscalatesToMoreAggressivePrimaryBeforeDecline(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "alpha", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10), "gating_score": 0.8}},
+			{ID: "b", Text: "beta", Metadata: map[string]any{"sessionId": "s1", "ts": int64(20), "gating_score": 0.8}},
+		},
+	}
+	extractive := &fakeSummarizer{
+		mode: "extractive",
+	}
+	abstractive := &fakeSummarizer{
+		mode: "onnx-local",
+		summaries: []summarize.Summary{
+			{Text: "first-too-long", Method: "onnx-t5", TokenCount: 2, Confidence: 0.9},
+			{Text: "shorter", Method: "onnx-t5", TokenCount: 1, Confidence: 0.8},
+		},
+	}
+
+	got, err := CompactSession(context.Background(), st, extractive, abstractive, "s1", true, 20, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !got.DidCompact {
+		t.Fatalf("expected compaction after aggressive retry, got %+v", got)
+	}
+	if len(abstractive.calls) != 2 {
+		t.Fatalf("expected two abstractive attempts, got %d", len(abstractive.calls))
+	}
+	if len(extractive.calls) != 0 {
+		t.Fatalf("expected no deterministic fallback, got %d calls", len(extractive.calls))
+	}
+	if len(st.insertCalls) != 1 || st.insertCalls[0].text != "shorter" {
+		t.Fatalf("expected aggressive retry summary inserted, got %+v", st.insertCalls)
+	}
+}
+
+func TestCompactSessionEscalatesToDeterministicFallbackBeforeDecline(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "alpha", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10), "gating_score": 0.8}},
+			{ID: "b", Text: "beta", Metadata: map[string]any{"sessionId": "s1", "ts": int64(20), "gating_score": 0.8}},
+		},
+	}
+	extractive := &fakeSummarizer{
+		mode: "extractive",
+		summaries: []summarize.Summary{
+			{Text: "extractive-short", Method: "extractive", TokenCount: 1, Confidence: 0.7},
+		},
+	}
+	abstractive := &fakeSummarizer{
+		mode: "onnx-local",
+		summaries: []summarize.Summary{
+			{Text: "too-long-1", Method: "onnx-t5", TokenCount: 2, Confidence: 0.9},
+			{Text: "too-long-2", Method: "onnx-t5", TokenCount: 2, Confidence: 0.8},
+		},
+	}
+
+	got, err := CompactSession(context.Background(), st, extractive, abstractive, "s1", true, 20, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !got.DidCompact {
+		t.Fatalf("expected compaction after deterministic fallback, got %+v", got)
+	}
+	if len(abstractive.calls) != 2 {
+		t.Fatalf("expected two abstractive attempts, got %d", len(abstractive.calls))
+	}
+	if len(extractive.calls) != 1 {
+		t.Fatalf("expected one deterministic fallback call, got %d", len(extractive.calls))
+	}
+	if len(st.insertCalls) != 1 || st.insertCalls[0].text != "extractive-short" {
+		t.Fatalf("expected deterministic fallback summary inserted, got %+v", st.insertCalls)
 	}
 }
 

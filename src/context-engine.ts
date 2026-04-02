@@ -1,5 +1,6 @@
 import {
   DEFAULT_CONTINUITY_MIN_TURNS,
+  DEFAULT_CONTINUITY_PRIOR_CONTEXT_TOKENS,
   DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS,
   selectRecentTail,
 } from "./continuity.js";
@@ -305,6 +306,7 @@ export function buildContextEngineFactory(
         targetSize: targetSize ?? cfg.compactThreshold,
         continuityMinTurns: cfg.continuityMinTurns ?? DEFAULT_CONTINUITY_MIN_TURNS,
         continuityTailBudgetTokens: cfg.continuityTailBudgetTokens ?? DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS,
+        continuityPriorContextTokens: cfg.continuityPriorContextTokens ?? DEFAULT_CONTINUITY_PRIOR_CONTEXT_TOKENS,
       }).catch(() => ({ compacted: false }));
       const compacted = "didCompact" in result
         ? (result.didCompact ?? result.compacted ?? false)
