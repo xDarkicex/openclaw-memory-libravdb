@@ -9,7 +9,7 @@ import {
   mergeSection7VariantCandidates,
   rankSection7VariantCandidates,
 } from "./scoring.js";
-import { buildMemoryHeader, recentIds } from "./recall-utils.js";
+import { buildInjectedMemoryMessageContent, buildMemoryHeader, recentIds } from "./recall-utils.js";
 import { countTokens, estimateTokens, fitPromptBudget } from "./tokens.js";
 import type { RpcGetter } from "./plugin-runtime.js";
 import type {
@@ -97,6 +97,7 @@ export function buildContextEngineFactory(
               id: `${userId}:${ts}`,
               text: message.content,
               metadata: {
+                role: message.role,
                 ts,
                 sessionId,
                 type: "turn",
@@ -179,7 +180,7 @@ export function buildContextEngineFactory(
           const selected = [...hardItems, ...degradedTail];
           const selectedMessages = selected.map((item) => ({
             role: "system",
-            content: item.text,
+            content: buildInjectedMemoryMessageContent(item),
           }));
           return {
             messages: [...selectedMessages, ...messages],
@@ -282,7 +283,7 @@ export function buildContextEngineFactory(
 
         const selectedMessages = selected.map((item) => ({
           role: "system",
-          content: item.text,
+          content: buildInjectedMemoryMessageContent(item),
         }));
 
         return {
@@ -352,7 +353,7 @@ function tokenCost(item: SearchResult): number {
   if (typeof estimate === "number" && estimate > 0) {
     return estimate;
   }
-  return estimateTokens(item.text);
+  return estimateTokens(buildInjectedMemoryMessageContent(item));
 }
 
 function sortChronological(items: SearchResult[]): SearchResult[] {
