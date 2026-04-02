@@ -129,9 +129,9 @@ func envFloatOrDefault(key string, fallback float64) float64 {
 func defaultDBPath() string {
 	currentUser, err := user.Current()
 	if err != nil || strings.TrimSpace(currentUser.HomeDir) == "" {
-		return "./libravdb-data"
+		return "./libravdb-data.libravdb"
 	}
-	return filepath.Join(currentUser.HomeDir, ".clawdb", "data")
+	return filepath.Join(currentUser.HomeDir, ".clawdb", "data.libravdb")
 }
 
 func isWindows() bool {

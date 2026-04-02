@@ -156,7 +156,7 @@ func main() {
 			Turns: []summarize.Turn{
 				{ID: "1", Text: "The gating branch weights are 0.35, 0.40, 0.25 for conversational and 0.40, 0.35, 0.25 for technical, with threshold 0.35 and technical normalization 1.5."},
 				{ID: "2", Text: "Compaction routes clusters to the abstractive summarizer at mean gating score 0.60, uses max output tokens 64, and now applies a preservation threshold of 0.65 with lambda 0.8."},
-				{ID: "3", Text: "Matryoshka early exit thresholds remain 0.92 for 64d and 0.80 for 256d, with a 50 millisecond budget on the cascade search."},
+				{ID: "3", Text: "Matryoshka early exit thresholds remain 0.65 for 64d and 0.75 for 256d, with a 50 millisecond budget on the cascade search."},
 			},
 		},
 		{
@@ -181,7 +181,7 @@ func main() {
 			Name:  "adversarial_token_budget_rules",
 			Query: "What exact token-budget and estimator distinctions mattered?",
 			Turns: []summarize.Turn{
-				{ID: "1", Text: "The gating subsystem uses EstimateTokens(text) = max(floor(len(text)/4), 1), which is intentionally cheap and distinct from the host prompt-budget estimator."},
+				{ID: "1", Text: "The gating subsystem uses EstimateTokens(text) = max(floor(RuneCount(text)/4), 1), which is intentionally cheap and distinct from the host prompt-budget estimator."},
 				{ID: "2", Text: "Prompt packing is budgeted separately in the TypeScript host, so docs must not imply the gating byte heuristic is a true tokenizer or the same contract as prompt assembly."},
 				{ID: "3", Text: "That distinction matters because technical specificity normalizes by the cheap estimator while final retrieval assembly still obeys a real bounded prompt budget."},
 			},

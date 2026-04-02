@@ -19,7 +19,7 @@ $$
 where:
 
 - $\mathcal{I}$ is the invariant authored context from
-  [`ast.md`](./ast.md)
+  [`ast-v2.md`](./ast-v2.md)
 - $T_{\mathrm{recent}}$ is a preserved raw recent session tail
 - $\mathrm{Proj}(\mathcal{V}_{\mathrm{rest}}, q)$ is the scored retrieval
   output over the remaining variant memory corpus
@@ -51,7 +51,7 @@ $$
 \mathcal{I}\cap\mathcal{V}=\emptyset
 $$
 
-Following [`ast.md`](./ast.md), invariant authored directives are injected for
+Following [`ast-v2.md`](./ast-v2.md), invariant authored directives are injected for
 all queries:
 
 $$

@@ -56,7 +56,7 @@ Default normalization is $\theta_{\mathrm{norm}} = 1.5$. This means two strong t
 
 ### Novelty $H(t)$
 
-In the live implementation (`sidecar/compact/gate.go`), retrieval scores are computed dynamically as raw cosine similarity spanning $[-1, 1]$, not pre-normalized distances. To ensure the novelty term remains in $[0,1]$ for the convex mixture, the mathematical model applies a zero-clamp:
+In the live implementation (`sidecar/compact/gate.go`), retrieval scores reaching the gate use the public higher-is-better cosine-style relevance contract from the retrieval layer, spanning $[-1, 1]$ for cosine collections. To ensure the novelty term remains in $[0,1]$ for the convex mixture, the mathematical model applies a zero-clamp:
 
 \[ H(t) = \begin{cases} 
 1.0 & \text{if } |K| = 0 \\ 
@@ -94,7 +94,7 @@ Specificity measures concrete artifact density normalized by turn length:
 
 The numerator counts things like file paths, error codes, and API endpoints.
 The normalization denominator is the token estimator used by the gating subsystem (`sidecar/compact/tokens.go`):
-\[ L(t) = \max\left(\left\lfloor \frac{\mathrm{len}(t)}{4} \right\rfloor, 1\right) \]
+\[ L(t) = \max\left(\left\lfloor \frac{\mathrm{RuneCount}(t)}{4} \right\rfloor, 1\right) \]
 
 Length normalization matters. Without it, any long technical turn would score high simply because it contains more surface area, not because it is more memory-worthy.
 

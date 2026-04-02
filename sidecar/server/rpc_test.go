@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"math"
+	"path/filepath"
 	"testing"
 
 	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/compact"
@@ -51,7 +52,7 @@ func (fakeEmbedder) Mode() string   { return "primary" }
 
 func TestRPCInsertSearchAndDelete(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open("test-path", fakeEmbedder{})
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -94,7 +95,7 @@ func TestRPCInsertSearchAndDelete(t *testing.T) {
 
 func TestRPCHealthAndListByMeta(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open("test-path", fakeEmbedder{})
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -137,7 +138,7 @@ func TestRPCHealthAndListByMeta(t *testing.T) {
 
 func TestRPCUnknownMethodErrors(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open("test-path", fakeEmbedder{})
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -150,7 +151,7 @@ func TestRPCUnknownMethodErrors(t *testing.T) {
 
 func TestRPCMalformedParamsError(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open("test-path", fakeEmbedder{})
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -163,7 +164,7 @@ func TestRPCMalformedParamsError(t *testing.T) {
 
 func TestRPCCompactReturnsStructuredResult(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open("test-path", fakeEmbedder{})
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -209,7 +210,7 @@ func TestRPCCompactReturnsStructuredResult(t *testing.T) {
 
 func TestRPCGatingScalarReturnsDecomposedSignals(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open("test-path", fakeEmbedder{})
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -266,7 +267,7 @@ func TestRPCGatingScalarReturnsDecomposedSignals(t *testing.T) {
 
 func TestRPCStatusReportsCountsAndThreshold(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open("test-path", fakeEmbedder{})
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -303,7 +304,7 @@ func TestRPCStatusReportsCountsAndThreshold(t *testing.T) {
 
 func TestRPCExportMemoryAndFlushNamespace(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open("test-path", fakeEmbedder{})
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}

@@ -1,6 +1,10 @@
 # TITLE: Mathematical Reference - Abstract Syntax Tree (AST) Partitioning
 
-This document formalizes the heuristic mapping of user-authored Markdown documents (such as `agents.md` and `souls.md`) into the partitioned sets required by the two-pass retrieval system. It serves as the bridge between raw text ingestion and the rigorous corpus decomposition defined in `mathematics-3.3.md` Section 7.2.
+Historical note: this document is preserved to show the project's design
+evolution. The reviewed authoritative AST reference is
+[`ast-v2.md`](./ast-v2.md).
+
+This document formalizes the heuristic mapping of user-authored Markdown documents (such as `agents.md` and `souls.md`) into the partitioned sets required by the two-pass retrieval system. It serves as the bridge between raw text ingestion and the rigorous corpus decomposition defined in `mathematics-v2.md` Section 7.2.
 
 The design goal is to extract rigid behavioral rules (the invariant set) from contextual lore (the variant set) automatically, using structural types as a mathematically stable proxy for user intent. 
 
@@ -48,7 +52,7 @@ By definition, any chunk $n \in \mathcal{I}_d$ inherits the hard startup guarant
 
 ## 4. Authored Authority Boost for Variant Lore
 
-Chunks in $\mathcal{V}_d$ (such as standard paragraph nodes) lose their invariant guarantee and must survive the Pass 1 coarse semantic filter ($\lambda_1$) defined in `mathematics-3.3.md` Section 7.4.
+Chunks in $\mathcal{V}_d$ (such as standard paragraph nodes) lose their invariant guarantee and must survive the Pass 1 coarse semantic filter defined in `mathematics-v2.md` Section 7.4.
 
 To ensure that agent-specific lore outcompetes general conversational memory during Pass 2, we enforce a strict authority override. For all $n \in \mathcal{V}_d$ extracted from a core identity document:
 \[ a_n = 1.0 \]

@@ -4,7 +4,10 @@ This document is the formal reference for the scoring and optimization math used
 by the plugin. The gating scalar is documented separately in
 [gating.md](./gating.md). The continuity model and recent-tail preservation
 layer are documented in [continuity.md](./continuity.md). The authored
-invariant/variant partitioning rules are documented in [ast.md](./ast.md).
+invariant/variant partitioning rules are documented in
+[ast-v2.md](./ast-v2.md). Earlier non-versioned math docs are preserved for
+historical context, but the reviewed `*-v*` documents are authoritative when
+both forms exist.
 
 Every formula below points at the file that currently implements it. If the code
 changes first, this document must change with it.
@@ -271,13 +274,13 @@ $$
 \widehat{T}_{sidecar}(t)=\max\!\left(\left\lfloor\frac{C(t)}{4}\right\rfloor,\, 1\right)
 $$
 
-where $C(t)$ is the Unicode code-point count of the string. The sidecar should
-use `utf8.RuneCountInString()` rather than `len()`, because Go's `len()` returns
+where $C(t)$ is the Unicode code-point count of the string. The sidecar uses
+`utf8.RuneCountInString()` rather than `len()`, because Go's `len()` returns
 the UTF-8 byte length, not the code-point count; a CJK character occupies 3
-bytes, so `len()` produces a systematic over-count relative to the host
-estimator's character-based ratios. Until that fix is applied, the divergence is
-bounded in impact because the sidecar value appears only as a normalization
-denominator in $P(t)$, never in prompt-budget arithmetic.
+bytes, so `len()` would produce a systematic over-count relative to the host
+estimator's character-based ratios. The remaining divergence is bounded in
+impact because the sidecar value appears only as a normalization denominator
+in $P(t)$, never in prompt-budget arithmetic.
 
 The two estimators are intentionally different. The host estimator optimizes
 prompt-budget accuracy. The sidecar estimator is used only as a stable

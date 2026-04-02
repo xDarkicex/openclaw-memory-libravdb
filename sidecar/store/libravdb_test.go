@@ -66,7 +66,7 @@ func (e fakeProfiledEmbedder) Profile() embed.Profile {
 
 func TestInsertSearchAndDelete(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestInsertSearchAndDelete(t *testing.T) {
 
 func TestListByMetaAndExclude(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -130,7 +130,7 @@ func TestListByMetaAndExclude(t *testing.T) {
 
 func TestEnsureCollectionIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -145,7 +145,7 @@ func TestEnsureCollectionIsIdempotent(t *testing.T) {
 
 func TestFlushPersistsAndReloadsRecords(t *testing.T) {
 	ctx := context.Background()
-	storePath := filepath.Join(t.TempDir(), "store")
+	storePath := filepath.Join(t.TempDir(), "store.libravdb")
 
 	s, err := Open(storePath, fakeEmbedder{})
 	if err != nil {
@@ -175,7 +175,7 @@ func TestFlushPersistsAndReloadsRecords(t *testing.T) {
 
 func TestOpenRejectsEmbeddingFingerprintMismatch(t *testing.T) {
 	ctx := context.Background()
-	storePath := filepath.Join(t.TempDir(), "store")
+	storePath := filepath.Join(t.TempDir(), "store.libravdb")
 
 	s, err := Open(storePath, fakeProfiledEmbedder{fingerprint: "first"})
 	if err != nil {
@@ -195,19 +195,19 @@ func TestOpenRejectsEmbeddingFingerprintMismatch(t *testing.T) {
 
 func TestInsertRecordAndListCollection(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	if err := s.InsertRecord(ctx, "_tier_dirty", "session:test/doc1:64", make([]float32, 64), map[string]any{
+	if err := s.InsertRecord(ctx, "_tier_dirty", "session:test/doc1:64", []float32{0}, map[string]any{
 		"base_collection": "session:test",
 		"record_id":       "doc1",
 		"dims":            64,
 	}); err != nil {
 		t.Fatalf("InsertRecord() error = %v", err)
 	}
-	if err := s.InsertRecord(ctx, "_tier_dirty", "session:test/doc1:256", make([]float32, 256), map[string]any{
+	if err := s.InsertRecord(ctx, "_tier_dirty", "session:test/doc1:256", []float32{0}, map[string]any{
 		"base_collection": "session:test",
 		"record_id":       "doc1",
 		"dims":            256,
@@ -232,7 +232,7 @@ func TestInsertRecordAndListCollection(t *testing.T) {
 
 func TestInsertRecordRejectsDimensionMismatch(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -245,7 +245,7 @@ func TestInsertRecordRejectsDimensionMismatch(t *testing.T) {
 
 func TestInsertMatryoshkaL3IsSourceOfTruth(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeMatryoshkaEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -288,7 +288,7 @@ func TestInsertMatryoshkaL3IsSourceOfTruth(t *testing.T) {
 
 func TestBackfillDirtyTiersRestoresMissingTier(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeMatryoshkaEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -300,7 +300,7 @@ func TestBackfillDirtyTiersRestoresMissingTier(t *testing.T) {
 	if err := s.InsertRecord(ctx, "test", "doc1", vec.L3, map[string]any{"kind": "memory"}); err != nil {
 		t.Fatalf("InsertRecord(L3) error = %v", err)
 	}
-	if err := s.InsertRecord(ctx, dirtyTierCollection, dirtyID("test", "doc1", embed.DimsL2), make([]float32, embed.DimsL2), map[string]any{
+	if err := s.InsertRecord(ctx, dirtyTierCollection, dirtyID("test", "doc1", embed.DimsL2), []float32{0}, map[string]any{
 		"base_collection": "test",
 		"record_id":       "doc1",
 		"dims":            embed.DimsL2,
@@ -325,14 +325,14 @@ func TestBackfillDirtyTiersRestoresMissingTier(t *testing.T) {
 
 func TestCascadeExitsAtCorrectTier(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeMatryoshkaEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 
 	cfg := CascadeConfig{
-		ExitThresholdL1: 0.92,
-		ExitThresholdL2: 0.80,
+		ExitThresholdL1: 0.65,
+		ExitThresholdL2: 0.75,
 		BudgetMs:        50,
 	}
 
@@ -348,21 +348,21 @@ func TestCascadeExitsAtCorrectTier(t *testing.T) {
 	if result.TierUsed != 1 {
 		t.Errorf("expected L1 exit for identical vector, got tier %d", result.TierUsed)
 	}
-	if len(result.Exits) == 0 || result.Exits[0].BestScore < 0.92 {
+	if len(result.Exits) == 0 || result.Exits[0].BestScore < 0.65 {
 		t.Errorf("L1 best score %.4f below exit threshold", best(result.Hits))
 	}
 }
 
 func TestCascadeFallsThroughOnLowScore(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeMatryoshkaEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 
 	cfg := CascadeConfig{
-		ExitThresholdL1: 0.92,
-		ExitThresholdL2: 0.80,
+		ExitThresholdL1: 0.65,
+		ExitThresholdL2: 0.75,
 		BudgetMs:        50,
 	}
 
@@ -389,14 +389,14 @@ func TestCascadeFallsThroughOnLowScore(t *testing.T) {
 
 func TestCascadeDegradesWhenTierEmpty(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "store"), fakeMatryoshkaEmbedder{})
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeMatryoshkaEmbedder{})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 
 	cfg := CascadeConfig{
-		ExitThresholdL1: 0.92,
-		ExitThresholdL2: 0.80,
+		ExitThresholdL1: 0.65,
+		ExitThresholdL2: 0.75,
 		BudgetMs:        50,
 	}
 
@@ -454,11 +454,16 @@ func orthogonalMatryoshkaVector() []float32 {
 }
 
 func recordExists(s *Store, collection, id string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	col := s.collections[collection]
-	_, ok := col[id]
-	return ok
+	results, err := s.ListCollection(context.Background(), collection)
+	if err != nil {
+		return false
+	}
+	for _, rec := range results {
+		if rec.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func containsDirty(records []SearchResult, base, id string, dims int) bool {

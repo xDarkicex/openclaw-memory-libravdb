@@ -1,9 +1,11 @@
 package compact
 
+import "unicode/utf8"
+
 // EstimateTokens returns a stable token count approximation.
-// Contract: one token is approximated as four bytes of UTF-8 text.
+// Contract: one token is approximated as four Unicode code points.
 func EstimateTokens(t string) int {
-	n := len(t) / 4
+	n := utf8.RuneCountInString(t) / 4
 	if n < 1 {
 		return 1
 	}

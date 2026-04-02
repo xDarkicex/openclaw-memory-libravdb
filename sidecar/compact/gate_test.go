@@ -106,12 +106,18 @@ func TestDNLDoesNotFireOnCode(t *testing.T) {
 	}
 }
 
-func TestEstimateTokensUsesStableByteHeuristic(t *testing.T) {
+func TestEstimateTokensUsesStableCodePointHeuristic(t *testing.T) {
 	if got := EstimateTokens("abcd"); got != 1 {
 		t.Fatalf("EstimateTokens(\"abcd\") = %d, want 1", got)
 	}
 	if got := EstimateTokens("abcdefgh"); got != 2 {
 		t.Fatalf("EstimateTokens(\"abcdefgh\") = %d, want 2", got)
+	}
+	if got := EstimateTokens("界界界界"); got != 1 {
+		t.Fatalf("EstimateTokens(CJK runes) = %d, want 1", got)
+	}
+	if got := EstimateTokens("界界界界界界界界"); got != 2 {
+		t.Fatalf("EstimateTokens(8 CJK runes) = %d, want 2", got)
 	}
 }
 
