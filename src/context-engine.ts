@@ -1,3 +1,8 @@
+import {
+  DEFAULT_CONTINUITY_MIN_TURNS,
+  DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS,
+  selectRecentTail,
+} from "./continuity.js";
 import { scoreCandidates } from "./scoring.js";
 import { buildMemoryHeader, recentIds } from "./recall-utils.js";
 import { countTokens, estimateTokens, fitPromptBudget } from "./tokens.js";
@@ -123,12 +128,53 @@ export function buildContextEngineFactory(
         authoredHardCache = authoredHard;
         authoredSoftCache = authoredSoft;
 
+        const memoryBudget = tokenBudget * (cfg.tokenBudgetFraction ?? 0.25);
+        const hardItems = authoredHard;
+        const hardUsed = tokenCostSum(hardItems);
+        const sessionRecords = await rpc.call<{ results: SearchResult[] }>("list_by_meta", {
+          collection: `session:${sessionId}`,
+          key: "sessionId",
+          value: sessionId,
+        });
+        const rawSessionTurns = sortChronological(
+          sessionRecords.results.filter((item) => item.metadata.type !== "summary"),
+        );
+        const minTurns = cfg.continuityMinTurns ?? DEFAULT_CONTINUITY_MIN_TURNS;
+        const tailTarget = cfg.continuityTailBudgetTokens ?? DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS;
+        const baseTail = selectRecentTail(rawSessionTurns, {
+          minTurns,
+          tailBudgetTokens: 0,
+          tokenCost,
+        });
+        const baseTailUsed = baseTail.baseTokens;
+        const authoredSoftTarget = Math.max(0, memoryBudget * (cfg.authoredSoftBudgetFraction ?? 0.3));
+        const softBudget = Math.max(0, Math.min(authoredSoftTarget, memoryBudget - hardUsed - baseTailUsed));
+        const softItems = fitPromptBudget(authoredSoft, softBudget);
+        const remainingAfterHardSoft = Math.max(0, memoryBudget - hardUsed - tokenCostSum(softItems));
+        const effectiveTailBudget = Math.min(
+          Math.max(tailTarget, baseTailUsed),
+          remainingAfterHardSoft,
+        );
+        const recentTailSelection = selectRecentTail(rawSessionTurns, {
+          minTurns,
+          tailBudgetTokens: effectiveTailBudget,
+          tokenCost,
+        });
+        const recentTail = markRecentTail(
+          recentTailSelection.recent,
+          recentTailSelection.base.length,
+        );
+        const tailBaseItems = recentTail.slice(-recentTailSelection.base.length);
+        const tailExtensionItems = recentTail.slice(0, Math.max(0, recentTail.length - recentTailSelection.base.length));
+        const retrievalBudget = Math.max(0, memoryBudget - hardUsed - tokenCostSum(softItems) - tokenCostSum(recentTail));
+        const recentTailIDs = recentTail.map((item) => item.id);
+
         const [sessionHits, userHits, globalHits, authoredVariantHits] = await Promise.all([
           rpc.call<{ results: SearchResult[] }>("search_text", {
             collection: `session:${sessionId}`,
             text: queryText,
             k: cfg.topK ?? 8,
-            excludeIds: excluded,
+            excludeIds: [...excluded, ...recentTailIDs],
           }),
           cached
             ? Promise.resolve({ results: cached.userHits })
@@ -163,14 +209,6 @@ export function buildContextEngineFactory(
           });
         }
 
-        const memoryBudget = tokenBudget * (cfg.tokenBudgetFraction ?? 0.25);
-        const hardItems = authoredHard;
-        const hardUsed = tokenCostSum(hardItems);
-        const authoredSoftTarget = Math.max(0, memoryBudget * (cfg.authoredSoftBudgetFraction ?? 0.3));
-        const softBudget = Math.max(0, Math.min(authoredSoftTarget, memoryBudget - hardUsed));
-        const softItems = fitPromptBudget(authoredSoft, softBudget);
-        const retrievalBudget = Math.max(0, memoryBudget - hardUsed - tokenCostSum(softItems));
-
         const ranked = scoreCandidates(
           [
             ...authoredVariantHits.results,
@@ -193,7 +231,9 @@ export function buildContextEngineFactory(
 
         const selected = [
           ...hardItems,
+          ...tailBaseItems,
           ...softItems,
+          ...tailExtensionItems,
           ...fitPromptBudget(ranked, retrievalBudget),
         ];
 
@@ -221,6 +261,8 @@ export function buildContextEngineFactory(
         sessionId,
         force,
         targetSize: targetSize ?? cfg.compactThreshold,
+        continuityMinTurns: cfg.continuityMinTurns ?? DEFAULT_CONTINUITY_MIN_TURNS,
+        continuityTailBudgetTokens: cfg.continuityTailBudgetTokens ?? DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS,
       }).catch(() => ({ compacted: false }));
       const compacted = "didCompact" in result
         ? (result.didCompact ?? result.compacted ?? false)
@@ -264,4 +306,32 @@ function tokenCost(item: SearchResult): number {
     return estimate;
   }
   return estimateTokens(item.text);
+}
+
+function sortChronological(items: SearchResult[]): SearchResult[] {
+  return [...items].sort((left, right) => {
+    const leftTS = metadataTimestamp(left);
+    const rightTS = metadataTimestamp(right);
+    if (leftTS === rightTS) {
+      return left.id.localeCompare(right.id);
+    }
+    return leftTS - rightTS;
+  });
+}
+
+function metadataTimestamp(item: SearchResult): number {
+  const raw = item.metadata.ts;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
+}
+
+function markRecentTail(items: SearchResult[], baseCount: number): SearchResult[] {
+  const baseStart = Math.max(0, items.length - baseCount);
+  return items.map((item, idx) => ({
+    ...item,
+    metadata: {
+      ...item.metadata,
+      continuity_tail: true,
+      continuity_base: idx >= baseStart,
+    },
+  }));
 }

@@ -2,6 +2,7 @@ package summarize
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,6 +87,35 @@ func TestNewExtractiveSummarizerComputesConfidenceFromCentroidSimilarity(t *test
 	}
 	if summary.Confidence <= 0 || summary.Confidence > 1 {
 		t.Fatalf("expected confidence in (0,1], got %f", summary.Confidence)
+	}
+}
+
+func TestNewExtractiveSummarizerUsesExactMeanCentroidSimilarityForSelectedTurns(t *testing.T) {
+	engine := NewExtractive(fakeEmbedder{
+		vectors: map[string][]float32{
+			"a": {1, 0},
+			"b": {1, 0},
+			"c": {0, 1},
+		},
+	}, "extractive-test")
+
+	summary, err := engine.Summarize(context.Background(), []Turn{
+		{ID: "a", Text: "a"},
+		{ID: "b", Text: "b"},
+		{ID: "c", Text: "c"},
+	}, SummaryOpts{
+		MinInputTurns: 1,
+		TargetDensity: 2.0 / 3.0,
+	})
+	if err != nil {
+		t.Fatalf("Summarize() error = %v", err)
+	}
+	if len(summary.SourceIDs) != 2 || summary.SourceIDs[0] != "a" || summary.SourceIDs[1] != "b" {
+		t.Fatalf("unexpected source ids %#v", summary.SourceIDs)
+	}
+	want := 2.0 / math.Sqrt(5.0)
+	if math.Abs(summary.Confidence-want) > 1e-9 {
+		t.Fatalf("confidence = %.12f, want %.12f", summary.Confidence, want)
 	}
 }
 

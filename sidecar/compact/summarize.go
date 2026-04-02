@@ -23,6 +23,8 @@ const (
 	AbstractiveRoutingThreshold = 0.60
 	PreservationThreshold       = 0.65
 	NomicConfidenceWeight       = 0.80
+	DefaultContinuityMinTurns   = 4
+	DefaultContinuityTailTokens = 128
 )
 
 type Store interface {
@@ -57,6 +59,11 @@ type qualityMetadata struct {
 	ConfNomic float64
 }
 
+type ContinuityConfig struct {
+	MinTurns         int
+	TailBudgetTokens int
+}
+
 func CompactSession(
 	ctx context.Context,
 	st Store,
@@ -65,6 +72,7 @@ func CompactSession(
 	sessionID string,
 	force bool,
 	targetSize int,
+	continuity ContinuityConfig,
 ) (Result, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return Result{}, fmt.Errorf("session ID is required")
@@ -90,11 +98,16 @@ func CompactSession(
 	if len(turns) < 2 {
 		return Result{DidCompact: false}, nil
 	}
-	if !force && len(turns) < targetSize {
+	tail := selectRecentTail(turns, continuity)
+	compactable := tail.older
+	if len(compactable) < 2 {
+		return Result{DidCompact: false}, nil
+	}
+	if !force && len(compactable) < targetSize {
 		return Result{DidCompact: false}, nil
 	}
 
-	clusters := partitionChronological(turns, targetSize)
+	clusters := partitionChronological(compactable, targetSize)
 	if len(clusters) == 0 {
 		return Result{DidCompact: false}, nil
 	}
@@ -204,7 +217,7 @@ func finalizeSummaryQuality(ctx context.Context, extractive summarize.Summarizer
 	confNomic := clamp01((metrics.Align + metrics.Cover) / 2.0)
 	confT5 := clamp01(summary.Confidence)
 
-	if summary.Method == "onnx-t5" && metrics.Align < PreservationThreshold {
+	if summary.Method == "onnx-t5" && !passesPreservationGate(metrics.Align) {
 		fallback, err := extractive.Summarize(ctx, turns, summarize.SummaryOpts{
 			MinInputTurns:   1,
 			MaxOutputTokens: DefaultMaxOutputTokens,
@@ -238,6 +251,10 @@ func finalizeSummaryQuality(ctx context.Context, extractive summarize.Summarizer
 		ConfT5:    confT5,
 		ConfNomic: confNomic,
 	}, summary, nil
+}
+
+func passesPreservationGate(align float64) bool {
+	return align >= PreservationThreshold
 }
 
 func canonicalEmbedder(s summarize.Summarizer) embed.Embedder {
@@ -326,6 +343,70 @@ func partitionChronological(turns []turnRecord, targetSize int) []cluster {
 		}
 	}
 	return out
+}
+
+type recentTailSelection struct {
+	older  []turnRecord
+	base   []turnRecord
+	recent []turnRecord
+}
+
+func selectRecentTail(turns []turnRecord, cfg ContinuityConfig) recentTailSelection {
+	if len(turns) == 0 {
+		return recentTailSelection{}
+	}
+	minTurns := cfg.MinTurns
+	if minTurns <= 0 {
+		return recentTailSelection{
+			older: append([]turnRecord(nil), turns...),
+		}
+	}
+	tailBudget := cfg.TailBudgetTokens
+	if tailBudget <= 0 {
+		tailBudget = DefaultContinuityTailTokens
+	}
+	baseStart := len(turns) - minTurns
+	if baseStart < 0 {
+		baseStart = 0
+	}
+	base := append([]turnRecord(nil), turns[baseStart:]...)
+	baseTokens := turnTokenCostSum(base)
+	if baseTokens > tailBudget {
+		return recentTailSelection{
+			older:  append([]turnRecord(nil), turns[:baseStart]...),
+			base:   base,
+			recent: base,
+		}
+	}
+
+	start := baseStart
+	used := baseTokens
+	for i := baseStart - 1; i >= 0; i-- {
+		next := estimateTurnTokens(turns[i])
+		if used+next > tailBudget {
+			break
+		}
+		used += next
+		start = i
+	}
+
+	return recentTailSelection{
+		older:  append([]turnRecord(nil), turns[:start]...),
+		base:   base,
+		recent: append([]turnRecord(nil), turns[start:]...),
+	}
+}
+
+func turnTokenCostSum(turns []turnRecord) int {
+	sum := 0
+	for _, turn := range turns {
+		sum += estimateTurnTokens(turn)
+	}
+	return sum
+}
+
+func estimateTurnTokens(turn turnRecord) int {
+	return EstimateTokens(turn.text)
 }
 
 func summaryMetadata(sessionID string, compactedAt int64, summary summarize.Summary, turns []turnRecord, quality qualityMetadata) map[string]any {

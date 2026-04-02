@@ -55,10 +55,10 @@ with the current implementation constants:
 
 ## Baseline Corpus
 
-The first real-model pass used 13 fixed synthetic clusters:
+The current real-model pass uses 17 fixed synthetic clusters:
 
 - 5 normal engineering-memory clusters
-- 8 adversarial clusters designed to stress abstractive faithfulness
+- 12 adversarial clusters designed to stress abstractive faithfulness
 
 The adversarial set included:
 
@@ -69,6 +69,10 @@ The adversarial set included:
 - continuity vs progress tension
 - cross-domain product/math/infra mixtures
 - token-budget contract distinctions
+- conflicting proposed resolutions vs the actual root cause
+- long noisy code-trace clusters with one decisive invariant
+- topic-shift clusters that tempt generic summaries
+- near-duplicate threshold statements from different subsystems
 
 ## Results
 
@@ -89,10 +93,14 @@ The adversarial set included:
 | adversarial_conflicting_errors | 0.8540 | 0.8579 | 0.7440 | 0.8116 | -0.0424 |
 | adversarial_dense_go_code | 0.8945 | 0.9167 | 0.8212 | 0.8741 | -0.0205 |
 | adversarial_four_way_decision_bundle | 0.8451 | 0.8651 | 0.7598 | 0.8190 | -0.0261 |
-| adversarial_many_numbers | 0.6815 | 0.8554 | 0.7629 | 0.7836 | +0.1021 |
+| adversarial_many_numbers | 0.6915 | 0.8854 | 0.7900 | 0.8084 | +0.1170 |
 | adversarial_boundary_vs_progress | 0.7824 | 0.8993 | 0.8109 | 0.8406 | +0.0581 |
 | adversarial_cross_domain_mix | 0.5240 | 0.8099 | 0.7327 | 0.7218 | +0.1978 |
-| adversarial_token_budget_rules | 0.7889 | 0.9095 | 0.8307 | 0.8539 | +0.0649 |
+| adversarial_token_budget_rules | 0.7938 | 0.9060 | 0.8249 | 0.8511 | +0.0573 |
+| adversarial_conflicting_resolutions | 0.8600 | 0.9284 | 0.8560 | 0.8858 | +0.0258 |
+| adversarial_long_noisy_code_trace | 0.8144 | 0.8565 | 0.7893 | 0.8212 | +0.0068 |
+| adversarial_topic_shift_generic_bait | 0.8860 | 0.9166 | 0.8209 | 0.8722 | -0.0138 |
+| adversarial_near_duplicate_thresholds | 0.8731 | 0.9123 | 0.8266 | 0.8702 | -0.0029 |
 
 ## What We Learned
 
@@ -130,20 +138,35 @@ The largest penalty was:
 So even without fallback, the confidence signal is more retrieval-aware than the
 old T5-only design.
 
-### 3. The current adversarial corpus is not yet harsh enough
+### 3. Harsher corpus plus threshold sweep sharpened the evidence
 
-The fact that no case tripped the gate means one of two things:
+Even after expanding the corpus to 17 cases, the shipped gate still did not
+trip:
 
-- the local T5 model is more semantically faithful than expected on short
-  engineering clusters
-- the benchmark set is still not pathological enough to force geometric drift
+```text
+tau_preserve = 0.65  -> 0 trips
+tau_preserve = 0.75  -> 0 trips
+tau_preserve = 0.85  -> 2 trips
+```
 
-Future adversarial work should try:
+The two cases that fall below `0.85` are:
 
-- longer noisy code traces
-- clusters with mutually incompatible fixes or resolutions
-- topic-shifting mixed clusters designed to elicit generic summaries
-- threshold sweeps with higher `tau_preserve` during evaluation only
+- `compaction_boundary`
+- `adversarial_cross_domain_mix`
+
+So the section-5 preservation machinery is now evidenced in two ways:
+
+- unit tests prove the hard fallback path when `Q_align < tau_preserve`
+- real-model threshold sweeps show where the current corpus begins to stress
+  geometric drift, even though the shipped `0.65` threshold remains conservative
+
+This means the earlier evidence gap has narrowed: the corpus is now harsh enough
+to differentiate thresholds and expose weaker cases, even if it still does not
+force fallback at the default gate.
+
+Remaining interpretation questions are now about calibration, not about whether
+the gate machinery exists or whether the evaluation corpus can separate stronger
+and weaker summaries.
 
 ## Current Interpretation
 

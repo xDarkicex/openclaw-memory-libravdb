@@ -7,6 +7,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/compact"
@@ -27,7 +29,9 @@ type metrics struct {
 
 func main() {
 	var modelRoot string
+	var thresholdCSV string
 	flag.StringVar(&modelRoot, "models", "", "path to local model assets")
+	flag.StringVar(&thresholdCSV, "thresholds", "0.65,0.75,0.85", "comma-separated preservation thresholds to summarize")
 	flag.Parse()
 
 	if strings.TrimSpace(modelRoot) == "" {
@@ -186,7 +190,49 @@ func main() {
 				{ID: "3", Text: "That distinction matters because technical specificity normalizes by the cheap estimator while final retrieval assembly still obeys a real bounded prompt budget."},
 			},
 		},
+		{
+			Name:  "adversarial_conflicting_resolutions",
+			Query: "What exact root cause and fix was adopted?",
+			Turns: []summarize.Turn{
+				{ID: "1", Text: "One proposal blamed the socket timeout on the daemon failing to bind its Unix path because an old stale file was still present from a crashed process."},
+				{ID: "2", Text: "A conflicting proposal blamed the same timeout on the host speaking the old memoryPromptSection RPC name after the daemon had already upgraded to buildMemorySection."},
+				{ID: "3", Text: "The final resolution was neither of those: the real issue was the release installer never unpacked the ONNX runtime, so the daemon crashed before listening and the host only saw a downstream timeout."},
+			},
+		},
+		{
+			Name:  "adversarial_long_noisy_code_trace",
+			Query: "Which exact invariant and code change mattered?",
+			Turns: []summarize.Turn{
+				{ID: "1", Text: "panic: invariant violated in AssembleContext at context-engine.ts:171 because the previous implementation searched session memory and then also injected the same recent turns again in the prompt. Stack trace fragment: buildContextEngineFactory -> assemble -> scoreCandidates -> fitPromptBudget -> buildMemoryHeader. The crucial invariant was that only V_rest participates in semantic retrieval once T_recent is carved out."},
+				{ID: "2", Text: "The fix was to compute T_base and T_recent before session search, exclude every recent-tail record ID from search_text, and reserve tail tokens before ranking any remaining session summaries or turns. All other stack trace details were diagnostic noise around that single boundary invariant."},
+				{ID: "3", Text: "A follow-up test was required to prove the raw recent tail appears under recent_session_tail while recalled_memories only contains older V_rest hits. Without that test the double-injection bug could regress silently."},
+			},
+		},
+		{
+			Name:  "adversarial_topic_shift_generic_bait",
+			Query: "What specific product/math split was decided?",
+			Turns: []summarize.Turn{
+				{ID: "1", Text: "The product scope is agent memory and continuity, not whole-repository semantic search, so recall quality is defined around plans, user preferences, active tasks, and local discourse state."},
+				{ID: "2", Text: "The mathematical constraint is that authored I1, authored I2 prefix, exact T_recent, and retrieved V_rest must fit a single prompt budget without silently truncating the hard tiers."},
+				{ID: "3", Text: "A generic summary like 'the project improved its memory system and refined the architecture' would be locally fluent but semantically useless because it drops the product boundary and the specific assembly equation that actually govern the system."},
+			},
+		},
+		{
+			Name:  "adversarial_near_duplicate_thresholds",
+			Query: "Which threshold belonged to which subsystem?",
+			Turns: []summarize.Turn{
+				{ID: "1", Text: "The compaction preservation gate uses threshold 0.65 on centroid alignment Q_align before accepting an abstractive summary."},
+				{ID: "2", Text: "The Matryoshka search path uses 0.65 only for the 64d early-exit tier; the 256d early-exit threshold is 0.75 and should not be conflated with the compaction gate."},
+				{ID: "3", Text: "Another nearby constant is lambda = 0.8 for Nomic-heavy confidence mixing, which is not a search threshold at all and must not be collapsed into the gate or cascade logic."},
+			},
+		},
 	}
+	thresholds, err := parseThresholds(thresholdCSV)
+	if err != nil {
+		fail(err)
+	}
+	thresholdTrips := make(map[float64][]string, len(thresholds))
+	defaultTrips := make([]string, 0)
 
 	extractive := summarize.NewExtractive(embedder, "extractive")
 
@@ -207,6 +253,14 @@ func main() {
 		if err != nil {
 			fail(fmt.Errorf("%s: planned policy: %w", tc.Name, err))
 		}
+		if rawMetrics.Align < compact.PreservationThreshold {
+			defaultTrips = append(defaultTrips, tc.Name)
+		}
+		for _, threshold := range thresholds {
+			if rawMetrics.Align < threshold {
+				thresholdTrips[threshold] = append(thresholdTrips[threshold], tc.Name)
+			}
+		}
 		fmt.Printf("%s\t%s\t%.4f\t%.4f\t%.4f\t%s\t%.4f\t%.4f\t%.4f\t%.4f\t%s\t%s\n",
 			tc.Name,
 			raw.Method,
@@ -222,6 +276,15 @@ func main() {
 			oneLine(finalSummary.Text),
 		)
 	}
+
+	fmt.Println()
+	fmt.Printf("threshold\ttrip_count\tcases\n")
+	for _, threshold := range thresholds {
+		cases := append([]string(nil), thresholdTrips[threshold]...)
+		slices.Sort(cases)
+		fmt.Printf("%.2f\t%d\t%s\n", threshold, len(cases), strings.Join(cases, ","))
+	}
+	fmt.Printf("default_threshold_%.2f\t%d\t%s\n", compact.PreservationThreshold, len(defaultTrips), strings.Join(defaultTrips, ","))
 }
 
 func applyPlannedPolicy(ctx context.Context, extractive summarize.Summarizer, e embed.Embedder, turns []summarize.Turn, raw summarize.Summary) (summarize.Summary, float64, metrics, error) {
@@ -354,4 +417,31 @@ func resolveModelRoot() (string, error) {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, err.Error())
 	os.Exit(1)
+}
+
+func parseThresholds(raw string) ([]float64, error) {
+	parts := strings.Split(raw, ",")
+	out := make([]float64, 0, len(parts))
+	seen := make(map[float64]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		value, err := strconv.ParseFloat(part, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid threshold %q: %w", part, err)
+		}
+		value = clamp01(value)
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("at least one threshold is required")
+	}
+	slices.Sort(out)
+	return out, nil
 }

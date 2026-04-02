@@ -39,6 +39,8 @@ export interface PluginConfig {
   tokenBudgetFraction?: number;
   authoredHardBudgetFraction?: number;
   authoredSoftBudgetFraction?: number;
+  continuityMinTurns?: number;
+  continuityTailBudgetTokens?: number;
   compactThreshold?: number;
   ollamaUrl?: string;
   compactModel?: string;
@@ -83,6 +85,8 @@ export interface SearchResult {
     tier?: number;
     authored?: boolean;
     token_estimate?: number;
+    continuity_tail?: boolean;
+    continuity_base?: boolean;
     [key: string]: unknown;
   };
   finalScore?: number;

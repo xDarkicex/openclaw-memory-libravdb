@@ -87,6 +87,94 @@ test("summary decay_rate lowers retrieval score relative to higher-quality summa
   assert.ok((ranked[1]?.finalScore ?? 0) > (ranked[2]?.finalScore ?? 0));
 });
 
+test("summary quality multiplier matches Q(s) = 1 - delta * decay_rate exactly under equal base score", () => {
+  const now = Date.now();
+  const ranked = scoreCandidates([
+    {
+      id: "summary-hit",
+      score: 1,
+      text: "summary hit",
+      metadata: { type: "summary", decay_rate: 0.2, ts: now, sessionId: "s1" },
+    },
+  ], {
+    alpha: 1,
+    beta: 0,
+    gamma: 0,
+    delta: 0.5,
+    sessionId: "s1",
+    userId: "u1",
+  });
+
+  assert.equal(ranked[0]?.finalScore, 0.9);
+});
+
+test("section 6 downstream composition preserves confidence ordering under equal base score", () => {
+  const now = Date.now();
+  const baseScore = 0.8;
+  const delta = 0.5;
+  const highConfidence = 0.82;
+  const lowConfidence = 0.34;
+
+  const ranked = scoreCandidates([
+    {
+      id: "high-confidence-summary",
+      score: baseScore,
+      text: "high confidence summary",
+      metadata: { type: "summary", decay_rate: 1 - highConfidence, ts: now, sessionId: "s1" },
+    },
+    {
+      id: "low-confidence-summary",
+      score: baseScore,
+      text: "low confidence summary",
+      metadata: { type: "summary", decay_rate: 1 - lowConfidence, ts: now, sessionId: "s1" },
+    },
+  ], {
+    alpha: 1,
+    beta: 0,
+    gamma: 0,
+    delta,
+    sessionId: "s1",
+    userId: "u1",
+  });
+
+  const expectedHigh = baseScore * (1 - delta * (1 - highConfidence));
+  const expectedLow = baseScore * (1 - delta * (1 - lowConfidence));
+
+  assert.equal(ranked[0]?.id, "high-confidence-summary");
+  assert.equal(ranked[1]?.id, "low-confidence-summary");
+  assert.equal(ranked[0]?.finalScore, expectedHigh);
+  assert.equal(ranked[1]?.finalScore, expectedLow);
+  assert.ok(expectedHigh > expectedLow);
+});
+
+test("summary quality multiplier stays inside [1-delta, 1] at shipped delta", () => {
+  const now = Date.now();
+  const ranked = scoreCandidates([
+    {
+      id: "best-summary",
+      score: 1,
+      text: "best summary",
+      metadata: { type: "summary", decay_rate: 0, ts: now, sessionId: "s1" },
+    },
+    {
+      id: "worst-summary",
+      score: 1,
+      text: "worst summary",
+      metadata: { type: "summary", decay_rate: 1, ts: now, sessionId: "s1" },
+    },
+  ], {
+    alpha: 1,
+    beta: 0,
+    gamma: 0,
+    delta: 0.5,
+    sessionId: "s1",
+    userId: "u1",
+  });
+
+  assert.equal(ranked[0]?.finalScore, 1);
+  assert.equal(ranked[1]?.finalScore, 0.5);
+});
+
 test("session recency decay uses seconds, not milliseconds", () => {
   const now = Date.now();
   const oneHourOld: SearchResult[] = [

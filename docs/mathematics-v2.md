@@ -618,6 +618,35 @@ $$
 That is the system-level reason the math is distributed across ingestion,
 compaction, and retrieval instead of existing only in one scoring function.
 
+For rigor, this section should be read in two parts:
+
+- The upstream step
+  `high-value turns -> better clusters -> higher summary confidence`
+  is an engineering hypothesis supported by preservation metrics and empirical
+  calibration evidence. It is not a pure algebraic proof obligation because it
+  depends on learned-model behavior.
+- The downstream step
+  `higher summary confidence -> lower decay rate -> higher retrieval score`
+  is a formal and implementation-correspondence obligation. It follows from:
+
+$$
+\mathrm{decay\_rate}(s) = 1 - \mathrm{confidence}(s)
+$$
+
+and
+
+$$
+Q(s) = 1 - \delta \cdot \mathrm{decay\_rate}(s),
+\qquad
+S_{\mathrm{final}}(s) = S_{\mathrm{base}}(s) \cdot Q(s)
+$$
+
+Under equal base score $S_{\mathrm{base}}$ and fixed $\delta \in [0,1]$,
+higher confidence implies lower decay, larger $Q(s)$, and therefore a larger
+final retrieval score. This downstream monotonic composition is the part that
+must be locked by exact code-level tests before later retrieval architecture
+work proceeds.
+
 ## 7. Planned Two-Pass Discovery Scoring
 
 This section documents the planned scoring and assembly model for a future
