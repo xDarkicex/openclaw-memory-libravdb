@@ -5,6 +5,8 @@ legacy non-versioned predecessor also exists. Older non-versioned docs are kept
 to preserve project history and design evolution.
 
 - [installation.md](./installation.md) - Complete install, activation, verification, and troubleshooting reference.
+- [install.md](./install.md) - Practical lifecycle guide for Homebrew, the OpenClaw plugin, and manual daemon management.
+- [uninstall.md](./uninstall.md) - Clean shutdown and removal guide for the plugin, daemon, and optional local data.
 - [architecture.md](./architecture.md) - End-to-end component model, turn lifecycle, compaction flow, and degraded behavior.
 - [problem.md](./problem.md) - Technical argument for replacing the stock OpenClaw memory lifecycle in this use case.
 - [mathematics-v2.md](./mathematics-v2.md) - Formal reference for hybrid scoring, decay, token budgeting, Matryoshka retrieval, compaction, and planned two-pass retrieval.
