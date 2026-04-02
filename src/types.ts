@@ -39,9 +39,20 @@ export interface PluginConfig {
   tokenBudgetFraction?: number;
   authoredHardBudgetFraction?: number;
   authoredSoftBudgetFraction?: number;
+  section7StartupTokenBudgetTokens?: number;
   continuityMinTurns?: number;
   continuityTailBudgetTokens?: number;
   compactThreshold?: number;
+  section7CoarseTopK?: number;
+  section7SecondPassTopK?: number;
+  section7Theta1?: number;
+  section7Kappa?: number;
+  section7HopEta?: number;
+  section7HopThreshold?: number;
+  section7AuthorityRecencyLambda?: number;
+  section7AuthorityRecencyWeight?: number;
+  section7AuthorityFrequencyWeight?: number;
+  section7AuthorityAuthoredWeight?: number;
   ollamaUrl?: string;
   compactModel?: string;
   rpcTimeoutMs?: number;
@@ -84,9 +95,14 @@ export interface SearchResult {
     ordinal?: number;
     tier?: number;
     authored?: boolean;
+    authority?: number;
+    access_count?: number;
+    collection?: string;
+    hop_targets?: string[] | string;
     token_estimate?: number;
     continuity_tail?: boolean;
     continuity_base?: boolean;
+    continuity_bundle_id?: string;
     [key: string]: unknown;
   };
   finalScore?: number;
@@ -121,8 +137,9 @@ export interface RpcCallOptions {
 export interface RecallCacheEntry<T = unknown> {
   userId: string;
   queryText: string;
-  userHits: T[];
-  globalHits: T[];
+  durableVariantHits: T[];
+  userHits?: T[];
+  globalHits?: T[];
   authoredVariantHits?: T[];
 }
 

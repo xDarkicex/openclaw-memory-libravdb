@@ -40,3 +40,24 @@ test("selectRecentTail extends backward to the longest suffix within budget", ()
   assert.deepEqual(selected.base.map((item) => item.id), ["c", "d"]);
   assert.deepEqual(selected.recent.map((item) => item.id), ["b", "c", "d"]);
 });
+
+test("selectRecentTail extends backward to preserve a coupled bundle at the boundary", () => {
+  const items = [
+    { id: "a", cost: 1 },
+    { id: "b", cost: 5, bundle: "pair-1" },
+    { id: "c", cost: 1, bundle: "pair-1" },
+    { id: "d", cost: 1 },
+  ];
+
+  const selected = selectRecentTail(items, {
+    minTurns: 2,
+    tailBudgetTokens: 2,
+    tokenCost: (item) => item.cost,
+    sameBundle: (left, right) => left.bundle !== undefined && left.bundle === right.bundle,
+  });
+
+  assert.deepEqual(selected.older.map((item) => item.id), ["a"]);
+  assert.deepEqual(selected.base.map((item) => item.id), ["c", "d"]);
+  assert.deepEqual(selected.recent.map((item) => item.id), ["b", "c", "d"]);
+  assert.equal(selected.recentTokens, 7);
+});

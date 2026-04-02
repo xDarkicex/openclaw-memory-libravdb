@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { scoreCandidates } from "../../src/scoring.js";
+import {
+  expandSection7HopCandidates,
+  mergeSection7VariantCandidates,
+  rankSection7VariantCandidates,
+  scoreCandidates,
+} from "../../src/scoring.js";
 import type { SearchResult } from "../../src/types.js";
 
 test("scoreCandidates orders by combined weighting", () => {
@@ -243,4 +248,237 @@ test("scoreCandidates normalizes weights back onto the convex mixture", () => {
 
   assert.ok((ranked[0]?.finalScore ?? 0) <= 1);
   assert.ok((ranked[0]?.finalScore ?? 0) >= 0);
+});
+
+test("rankSection7VariantCandidates filters coarse candidates below theta1", () => {
+  const now = Date.now();
+  const ranked = rankSection7VariantCandidates([
+    {
+      id: "keep",
+      score: 0.8,
+      text: "governing math continuity budget",
+      metadata: { ts: now, collection: "global" },
+    },
+    {
+      id: "drop",
+      score: 0.1,
+      text: "irrelevant chatter",
+      metadata: { ts: now, collection: "global" },
+    },
+  ], {
+    queryText: "continuity math budget",
+    sessionId: "s1",
+    userId: "u1",
+    k1: 8,
+    k2: 8,
+    theta1: 0.2,
+    kappa: 0.3,
+    nowMs: now,
+  });
+
+  assert.deepEqual(ranked.map((item) => item.id), ["keep"]);
+});
+
+test("rankSection7VariantCandidates matches normalized second-pass law under fixed authority", () => {
+  const now = Date.now();
+  const ranked = rankSection7VariantCandidates([
+    {
+      id: "doc",
+      score: 0.8,
+      text: "math continuity budget",
+      metadata: {
+        ts: now,
+        authority: 1,
+        access_count: 0,
+        collection: "authored:variant",
+      },
+    },
+  ], {
+    queryText: "math continuity",
+    sessionId: "s1",
+    userId: "u1",
+    k1: 4,
+    k2: 4,
+    theta1: 0,
+    kappa: 0.3,
+    authorityRecencyLambda: 0,
+    authorityRecencyWeight: 0,
+    authorityFrequencyWeight: 0,
+    authorityAuthoredWeight: 1,
+    nowMs: now,
+  });
+
+  const expectedCoverage = 1;
+  const expectedFinal = 0.8 * ((1 + 0.3 * expectedCoverage) / (1 + 0.3));
+  assert.equal(ranked.length, 1);
+  assert.ok(Math.abs((ranked[0]?.finalScore ?? 0) - expectedFinal) < 1e-12);
+});
+
+test("rankSection7VariantCandidates favors higher authority at equal semantic similarity", () => {
+  const now = Date.now();
+  const ranked = rankSection7VariantCandidates([
+    {
+      id: "authoritative",
+      score: 0.7,
+      text: "math continuity budget",
+      metadata: { ts: now, authority: 1, collection: "authored:variant" },
+    },
+    {
+      id: "plain",
+      score: 0.7,
+      text: "math continuity budget",
+      metadata: { ts: now, authority: 0, collection: "global" },
+    },
+  ], {
+    queryText: "math continuity",
+    sessionId: "s1",
+    userId: "u1",
+    k1: 4,
+    k2: 4,
+    theta1: 0,
+    kappa: 0.3,
+    authorityRecencyLambda: 0,
+    authorityRecencyWeight: 0,
+    authorityFrequencyWeight: 0,
+    authorityAuthoredWeight: 1,
+    nowMs: now,
+  });
+
+  assert.equal(ranked[0]?.id, "authoritative");
+  assert.ok((ranked[0]?.finalScore ?? 0) > (ranked[1]?.finalScore ?? 0));
+});
+
+test("expandSection7HopCandidates applies etaHop to the best parent score", () => {
+  const expanded = expandSection7HopCandidates(
+    [
+      {
+        id: "parent-a",
+        score: 0.8,
+        finalScore: 0.9,
+        text: "parent a",
+        metadata: { hop_targets: ["hop-1", "hop-2"] },
+      },
+      {
+        id: "parent-b",
+        score: 0.6,
+        finalScore: 0.7,
+        text: "parent b",
+        metadata: { hop_targets: ["hop-1"] },
+      },
+    ],
+    [
+      {
+        id: "hop-1",
+        score: 0,
+        text: "hop one",
+        metadata: { authored: true, collection: "authored:variant" },
+      },
+      {
+        id: "hop-2",
+        score: 0,
+        text: "hop two",
+        metadata: { authored: true, collection: "authored:variant" },
+      },
+    ],
+    {
+      etaHop: 0.5,
+      thetaHop: 0.1,
+    },
+  );
+
+  assert.deepEqual(expanded.map((item) => item.id), ["hop-1", "hop-2"]);
+  assert.equal(expanded[0]?.finalScore, 0.45);
+  assert.equal(expanded[1]?.finalScore, 0.45);
+});
+
+test("expandSection7HopCandidates filters by thetaHop and excludes existing ranked docs", () => {
+  const expanded = expandSection7HopCandidates(
+    [
+      {
+        id: "parent",
+        score: 0.8,
+        finalScore: 0.3,
+        text: "parent",
+        metadata: { hop_targets: ["keep", "drop", "parent"] },
+      },
+    ],
+    [
+      {
+        id: "keep",
+        score: 0,
+        text: "keep me",
+        metadata: { authored: true, collection: "authored:variant" },
+      },
+      {
+        id: "drop",
+        score: 0,
+        text: "drop me",
+        metadata: { authored: true, collection: "authored:variant" },
+      },
+    ],
+    {
+      etaHop: 0.5,
+      thetaHop: 0.2,
+    },
+  );
+
+  assert.deepEqual(expanded.map((item) => item.id), []);
+});
+
+test("mergeSection7VariantCandidates sorts residual assembly by descending sigma across C2 and hop candidates", () => {
+  const merged = mergeSection7VariantCandidates(
+    [
+      {
+        id: "c2-high",
+        score: 0.8,
+        finalScore: 0.9,
+        text: "direct top result",
+        metadata: { collection: "global" },
+      },
+      {
+        id: "c2-low",
+        score: 0.3,
+        finalScore: 0.2,
+        text: "direct low result",
+        metadata: { collection: "global" },
+      },
+    ],
+    [
+      {
+        id: "hop-mid",
+        score: 0,
+        finalScore: 0.45,
+        text: "expanded hop result",
+        metadata: { collection: "authored:variant" },
+      },
+    ],
+  );
+
+  assert.deepEqual(merged.map((item) => item.id), ["c2-high", "hop-mid", "c2-low"]);
+});
+
+test("rankSection7VariantCandidates stays bounded with empty keywords and cold-start access counts", () => {
+  const now = Date.now();
+  const ranked = rankSection7VariantCandidates([
+    {
+      id: "doc",
+      score: 0.7,
+      text: "plain document text",
+      metadata: { ts: now, access_count: 0, authority: 0, collection: "global" },
+    },
+  ], {
+    queryText: "!!",
+    sessionId: "s1",
+    userId: "u1",
+    k1: 4,
+    k2: 4,
+    theta1: -1,
+    kappa: 0.3,
+    nowMs: now,
+  });
+
+  assert.equal(ranked.length, 1);
+  assert.ok(Number.isFinite(ranked[0]?.finalScore ?? NaN));
+  assert.ok((ranked[0]?.finalScore ?? -1) >= 0);
+  assert.ok((ranked[0]?.finalScore ?? 2) <= 1);
 });

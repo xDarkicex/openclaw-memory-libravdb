@@ -647,13 +647,15 @@ final retrieval score. This downstream monotonic composition is the part that
 must be locked by exact code-level tests before later retrieval architecture
 work proceeds.
 
-## 7. Planned Two-Pass Discovery Scoring
+## 7. Two-Pass Discovery Scoring
 
-This section documents the planned scoring and assembly model for a future
-two-pass retrieval system. It is a design target for optimization work after
-the OpenClaw `2026.3.28+` memory prompt contract change. It is **not** the
-current implementation in [`src/scoring.ts`](../src/scoring.ts) or
-[`src/context-engine.ts`](../src/context-engine.ts).
+This section documents the reviewed scoring and assembly model for the
+two-pass retrieval system. Parts of this section are now implemented in
+[`src/scoring.ts`](../src/scoring.ts),
+[`src/context-engine.ts`](../src/context-engine.ts),
+[`src/continuity.ts`](../src/continuity.ts), and the sidecar store/RPC
+adapter. Remaining unimplemented or approximate pieces should be treated as
+explicit follow-on work, not as permission to relax the mathematical contract.
 
 The design goal is to separate:
 
@@ -683,7 +685,7 @@ $$
 \lVert \varphi(x) \rVert_2 = 1 \qquad \forall x \in \mathbf{D}\cup\mathbf{Q}
 $$
 
-The planned gating function is:
+The gating function is:
 
 $$
 G : \mathbf{Q}\times\mathbf{D}\rightarrow \{0,1\}

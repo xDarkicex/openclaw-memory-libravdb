@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -198,6 +199,9 @@ func (s *Store) insertRecord(ctx context.Context, collection, id, text string, v
 	if text != "" {
 		entryMeta["text"] = text
 	}
+	if _, ok := entryMeta["access_count"]; !ok {
+		entryMeta["access_count"] = 0
+	}
 	return col.Insert(ctx, id, cloneVector(vec), entryMeta)
 }
 
@@ -217,6 +221,47 @@ func (s *Store) InsertMatryoshka(ctx context.Context, collection, id string, vec
 }
 
 func (s *Store) SearchText(ctx context.Context, collection, query string, k int, exclude []string) ([]SearchResult, error) {
+	results, err := s.searchText(ctx, collection, query, k, exclude)
+	if err != nil {
+		return nil, err
+	}
+	return annotateCollectionResults(results, collection), nil
+}
+
+func (s *Store) SearchTextCollections(
+	ctx context.Context,
+	collections []string,
+	query string,
+	k int,
+	excludeByCollection map[string][]string,
+) ([]SearchResult, error) {
+	if k <= 0 || len(collections) == 0 {
+		return []SearchResult{}, nil
+	}
+	merged := make([]SearchResult, 0, len(collections)*k)
+	for _, collection := range collections {
+		hits, err := s.searchText(ctx, collection, query, k, excludeByCollection[collection])
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, annotateCollectionResults(hits, collection)...)
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].Score == merged[j].Score {
+			if collectionI, collectionJ := metaString(merged[i].Metadata, "collection"), metaString(merged[j].Metadata, "collection"); collectionI != collectionJ {
+				return collectionI < collectionJ
+			}
+			return merged[i].ID < merged[j].ID
+		}
+		return merged[i].Score > merged[j].Score
+	})
+	if len(merged) > k {
+		merged = merged[:k]
+	}
+	return merged, nil
+}
+
+func (s *Store) searchText(ctx context.Context, collection, query string, k int, exclude []string) ([]SearchResult, error) {
 	if me, ok := s.embedder.(embed.MatryoshkaEmbedder); ok && embed.SupportsMatryoshka(s.embedder) {
 		queryVec, err := me.EmbedQueryM(ctx, query)
 		if err == nil {
@@ -498,6 +543,41 @@ func (s *Store) DeleteBatch(ctx context.Context, collection string, ids []string
 	return col.DeleteBatch(ctx, ids)
 }
 
+func (s *Store) IncrementAccessCounts(ctx context.Context, collection string, ids []string) error {
+	col, err := s.getCollection(collection)
+	if err != nil {
+		if isCollectionNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if col == nil || len(ids) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+
+		record, err := s.getRecord(ctx, collection, id)
+		if err != nil {
+			return err
+		}
+		meta := fromStringMap(record.Metadata)
+		meta["access_count"] = metaInt(meta, "access_count") + 1
+		if err := col.Update(ctx, id, nil, toStringMap(meta)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) Flush(_ context.Context) error {
 	// libravdb persists writes directly to the backing .libravdb file.
 	return nil
@@ -663,7 +743,7 @@ func authoredMetadata(doc astv2.Document, node astv2.Node, coreDoc bool) map[str
 	if coreDoc {
 		authority = 1.0
 	}
-	return map[string]any{
+	meta := map[string]any{
 		"source_doc":     doc.SourceDoc,
 		"tokenizer_id":   doc.TokenizerID,
 		"cache_key":      doc.CacheKey,
@@ -676,7 +756,12 @@ func authoredMetadata(doc astv2.Document, node astv2.Node, coreDoc bool) map[str
 		"modality_mask":  int(node.ModalityMask),
 		"authored":       true,
 		"is_core_doc":    coreDoc,
+		"access_count":   0,
 	}
+	if len(node.HopTargets) > 0 {
+		meta["hop_targets"] = append([]string(nil), node.HopTargets...)
+	}
+	return meta
 }
 
 func (s *Store) deleteAuthoredSourceDoc(ctx context.Context, sourceDoc string) error {
@@ -814,6 +899,22 @@ func recordsToResults(records []libravdb.Record, score float64) []SearchResult {
 
 func sortByID(results []SearchResult) {
 	sort.Slice(results, func(i, j int) bool { return results[i].ID < results[j].ID })
+}
+
+func annotateCollectionResults(results []SearchResult, collection string) []SearchResult {
+	out := make([]SearchResult, 0, len(results))
+	for _, result := range results {
+		meta := result.Metadata
+		if meta == nil {
+			meta = map[string]any{}
+		} else {
+			meta = maps.Clone(meta)
+		}
+		meta["collection"] = collection
+		result.Metadata = meta
+		out = append(out, result)
+	}
+	return out
 }
 
 func isCollectionNotFound(err error) bool {

@@ -12,6 +12,40 @@ interface HybridOptions {
   userId: string;
 }
 
+interface Section7Options {
+  queryText: string;
+  sessionId: string;
+  userId: string;
+  k1?: number;
+  k2?: number;
+  theta1?: number;
+  kappa?: number;
+  authorityRecencyLambda?: number;
+  authorityRecencyWeight?: number;
+  authorityFrequencyWeight?: number;
+  authorityAuthoredWeight?: number;
+  nowMs?: number;
+}
+
+interface HopOptions {
+  etaHop?: number;
+  thetaHop?: number;
+}
+
+export function mergeSection7VariantCandidates(
+  ranked: SearchResult[],
+  hopExpanded: SearchResult[],
+): SearchResult[] {
+  const byID = new Map<string, SearchResult>();
+  for (const item of [...ranked, ...hopExpanded]) {
+    const existing = byID.get(item.id);
+    if (!existing || (item.finalScore ?? 0) > (existing.finalScore ?? 0)) {
+      byID.set(item.id, item);
+    }
+  }
+  return [...byID.values()].sort((left, right) => (right.finalScore ?? 0) - (left.finalScore ?? 0));
+}
+
 export function scoreCandidates(items: SearchResult[], opts: HybridOptions): SearchResult[] {
   const now = Date.now();
   const { alpha, beta, gamma } = normalizeWeights(
@@ -60,8 +94,96 @@ export function scoreCandidates(items: SearchResult[], opts: HybridOptions): Sea
     .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0));
 }
 
+export function rankSection7VariantCandidates(items: SearchResult[], opts: Section7Options): SearchResult[] {
+  const now = opts.nowMs ?? Date.now();
+  const k1 = Math.max(1, Math.floor(opts.k1 ?? 16));
+  const k2 = Math.max(1, Math.floor(opts.k2 ?? 8));
+  const theta1 = clampSimilarity(opts.theta1 ?? 0.2);
+  const kappa = Math.max(0, opts.kappa ?? 0.3);
+  const { alpha: alphaR, beta: alphaF, gamma: alphaA } = normalizeWeights(
+    opts.authorityRecencyWeight ?? 0.5,
+    opts.authorityFrequencyWeight ?? 0.2,
+    opts.authorityAuthoredWeight ?? 0.3,
+  );
+  const authorityRecencyLambda = Math.max(0, opts.authorityRecencyLambda ?? 0.00001);
+
+  const deduped = dedupeCandidates(items);
+  const coarseRaw = [...deduped]
+    .sort((left, right) => similarity(right) - similarity(left))
+    .slice(0, k1);
+  const coarseFiltered = coarseRaw.filter((item) => similarity(item) >= theta1);
+  const maxAccessCount = coarseFiltered.reduce((max, item) => Math.max(max, accessCount(item)), 0);
+  const keywords = extractKeywords(opts.queryText);
+
+  return coarseFiltered
+    .map((item) => {
+      const omega = authorityWeight(item, {
+        now,
+        authorityRecencyLambda,
+        alphaR,
+        alphaF,
+        alphaA,
+        maxAccessCount,
+      });
+      const sim = Math.max(similarity(item), 0);
+      const keywordCoverage = normalizedKeywordCoverage(keywords, item.text);
+      const finalScore = omega * sim * ((1 + kappa * keywordCoverage) / (1 + kappa));
+
+      return {
+        ...item,
+        finalScore: clamp01(finalScore),
+      };
+    })
+    .sort((left, right) => (right.finalScore ?? 0) - (left.finalScore ?? 0))
+    .slice(0, Math.min(k2, coarseFiltered.length));
+}
+
+export function expandSection7HopCandidates(
+  ranked: SearchResult[],
+  authoredVariantRecords: SearchResult[],
+  opts: HopOptions,
+): SearchResult[] {
+  const etaHop = clampOpenUnit(opts.etaHop ?? 0.5);
+  const thetaHop = clamp01(opts.thetaHop ?? 0.15);
+  const rankedIDs = new Set(ranked.map((item) => item.id));
+  const authoredByID = new Map(authoredVariantRecords.map((item) => [item.id, item] as const));
+  const bestScores = new Map<string, number>();
+
+  for (const parent of ranked) {
+    const parentScore = clamp01(parent.finalScore ?? 0);
+    for (const targetID of hopTargets(parent)) {
+      if (rankedIDs.has(targetID)) {
+        continue;
+      }
+      if (!authoredByID.has(targetID)) {
+        continue;
+      }
+      const candidateScore = etaHop * parentScore;
+      if (candidateScore > (bestScores.get(targetID) ?? -1)) {
+        bestScores.set(targetID, candidateScore);
+      }
+    }
+  }
+
+  return [...bestScores.entries()]
+    .filter(([, score]) => score >= thetaHop)
+    .map(([id, score]) => ({
+      ...authoredByID.get(id)!,
+      finalScore: score,
+    }))
+    .sort((left, right) => (right.finalScore ?? 0) - (left.finalScore ?? 0));
+}
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function clampSimilarity(value: number): number {
+  return Math.min(1, Math.max(-1, value));
+}
+
+function clampOpenUnit(value: number): number {
+  return Math.min(0.999999, Math.max(0.000001, value));
 }
 
 function normalizeWeights(alpha: number, beta: number, gamma: number): { alpha: number; beta: number; gamma: number } {
@@ -79,4 +201,112 @@ function normalizeWeights(alpha: number, beta: number, gamma: number): { alpha: 
     beta: beta / sum,
     gamma: gamma / sum,
   };
+}
+
+function dedupeCandidates(items: SearchResult[]): SearchResult[] {
+  const seen = new Set<string>();
+  const out: SearchResult[] = [];
+  for (const item of items) {
+    const key = `${typeof item.metadata.collection === "string" ? item.metadata.collection : ""}::${item.id}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function similarity(item: SearchResult): number {
+  return clampSimilarity(typeof item.score === "number" ? item.score : 0);
+}
+
+function accessCount(item: SearchResult): number {
+  const raw = item.metadata.access_count;
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function authorityWeight(
+  item: SearchResult,
+  opts: {
+    now: number;
+    authorityRecencyLambda: number;
+    alphaR: number;
+    alphaF: number;
+    alphaA: number;
+    maxAccessCount: number;
+  },
+): number {
+  const ts = typeof item.metadata.ts === "number" ? item.metadata.ts : opts.now;
+  const ageSeconds = Math.max(0, opts.now - ts) / 1000;
+  const recency = Math.exp(-opts.authorityRecencyLambda * ageSeconds);
+  const frequency = normalizedFrequency(accessCount(item), opts.maxAccessCount);
+  const authoredAuthority = clamp01(
+    typeof item.metadata.authority === "number"
+      ? item.metadata.authority
+      : item.metadata.authored === true
+        ? 1
+        : 0,
+  );
+  return clamp01(
+    opts.alphaR * recency +
+      opts.alphaF * frequency +
+      opts.alphaA * authoredAuthority,
+  );
+}
+
+function normalizedFrequency(accessCount: number, maxAccessCount: number): number {
+  if (accessCount <= 0 || maxAccessCount <= 0) {
+    return 0;
+  }
+  return Math.log(1 + accessCount) / Math.log(1 + maxAccessCount + 1);
+}
+
+function extractKeywords(text: string): string[] {
+  const tokens = normalizeTerms(text);
+  const seen = new Set<string>();
+  const keywords: string[] = [];
+  for (const token of tokens) {
+    if (token.length < 3 || seen.has(token)) {
+      continue;
+    }
+    seen.add(token);
+    keywords.push(token);
+  }
+  return keywords;
+}
+
+function normalizedKeywordCoverage(keywords: string[], text: string): number {
+  if (keywords.length === 0) {
+    return 0;
+  }
+  const docTerms = new Set(normalizeTerms(text));
+  let matches = 0;
+  for (const keyword of keywords) {
+    if (docTerms.has(keyword)) {
+      matches += 1;
+    }
+  }
+  return matches / Math.max(keywords.length, 1);
+}
+
+function normalizeTerms(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/i)
+    .filter((term) => term.length > 0);
+}
+
+function hopTargets(item: SearchResult): string[] {
+  const raw = item.metadata.hop_targets;
+  if (Array.isArray(raw)) {
+    return raw.filter((target): target is string => typeof target === "string" && target.length > 0);
+  }
+  if (typeof raw === "string") {
+    return raw
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+  }
+  return [];
 }

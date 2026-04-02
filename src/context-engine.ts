@@ -3,7 +3,11 @@ import {
   DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS,
   selectRecentTail,
 } from "./continuity.js";
-import { scoreCandidates } from "./scoring.js";
+import {
+  expandSection7HopCandidates,
+  mergeSection7VariantCandidates,
+  rankSection7VariantCandidates,
+} from "./scoring.js";
 import { buildMemoryHeader, recentIds } from "./recall-utils.js";
 import { countTokens, estimateTokens, fitPromptBudget } from "./tokens.js";
 import type { RpcGetter } from "./plugin-runtime.js";
@@ -29,6 +33,7 @@ export function buildContextEngineFactory(
 ) {
   let authoredHardCache: SearchResult[] | null = null;
   let authoredSoftCache: SearchResult[] | null = null;
+  let authoredVariantCache: SearchResult[] | null = null;
 
   return {
     ownsCompaction: true,
@@ -45,6 +50,15 @@ export function buildContextEngineFactory(
           AUTHORED_VARIANT_COLLECTION,
         ],
       });
+      const [authoredHard, authoredSoft, authoredVariantRecords] = await loadAuthoredCollections(rpc, {
+        hard: authoredHardCache,
+        soft: authoredSoftCache,
+        variant: authoredVariantCache,
+      });
+      authoredHardCache = authoredHard;
+      authoredSoftCache = authoredSoft;
+      authoredVariantCache = authoredVariantRecords;
+      validateSection7StartupHardReserve(cfg, authoredHard);
       return { ok: true };
     },
     async ingest({ sessionId, userId, message, isHeartbeat }: ContextIngestArgs) {
@@ -121,12 +135,14 @@ export function buildContextEngineFactory(
 
       try {
         const rpc = await getRpc();
-        const [authoredHard, authoredSoft] = await loadAuthoredCollections(rpc, {
+        const [authoredHard, authoredSoft, authoredVariantRecords] = await loadAuthoredCollections(rpc, {
           hard: authoredHardCache,
           soft: authoredSoftCache,
+          variant: authoredVariantCache,
         });
         authoredHardCache = authoredHard;
         authoredSoftCache = authoredSoft;
+        authoredVariantCache = authoredVariantRecords;
 
         const memoryBudget = tokenBudget * (cfg.tokenBudgetFraction ?? 0.25);
         const hardItems = authoredHard;
@@ -145,8 +161,31 @@ export function buildContextEngineFactory(
           minTurns,
           tailBudgetTokens: 0,
           tokenCost,
+          sameBundle: isContinuityBundleCoupled,
         });
         const baseTailUsed = baseTail.baseTokens;
+        const configuredHardFraction = clampFraction(cfg.authoredHardBudgetFraction);
+        const hardBudget = configuredHardFraction > 0 ? memoryBudget * configuredHardFraction : hardUsed;
+        const degradedReasons: string[] = [];
+        if (hardUsed > hardBudget + 1e-9) {
+          degradedReasons.push("hard authored invariants exceed configured hard budget reserve");
+        }
+        if (hardUsed + baseTailUsed > memoryBudget + 1e-9) {
+          degradedReasons.push("hard authored invariants plus mandatory recent-tail base exceed available memory budget");
+        }
+        if (degradedReasons.length > 0) {
+          const degradedTail = markRecentTail(baseTail.base, baseTail.base.length);
+          const selected = [...hardItems, ...degradedTail];
+          const selectedMessages = selected.map((item) => ({
+            role: "system",
+            content: item.text,
+          }));
+          return {
+            messages: [...selectedMessages, ...messages],
+            estimatedTokens: countTokens(selectedMessages) + countTokens(messages),
+            systemPromptAddition: buildDegradedMemoryHeader(degradedReasons, selected),
+          };
+        }
         const authoredSoftTarget = Math.max(0, memoryBudget * (cfg.authoredSoftBudgetFraction ?? 0.3));
         const softBudget = Math.max(0, Math.min(authoredSoftTarget, memoryBudget - hardUsed - baseTailUsed));
         const softItems = fitPromptBudget(authoredSoft, softBudget);
@@ -159,6 +198,7 @@ export function buildContextEngineFactory(
           minTurns,
           tailBudgetTokens: effectiveTailBudget,
           tokenCost,
+          sameBundle: isContinuityBundleCoupled,
         });
         const recentTail = markRecentTail(
           recentTailSelection.recent,
@@ -169,33 +209,22 @@ export function buildContextEngineFactory(
         const retrievalBudget = Math.max(0, memoryBudget - hardUsed - tokenCostSum(softItems) - tokenCostSum(recentTail));
         const recentTailIDs = recentTail.map((item) => item.id);
 
-        const [sessionHits, userHits, globalHits, authoredVariantHits] = await Promise.all([
+        const coarseTopK = Math.max(cfg.section7CoarseTopK ?? Math.max((cfg.topK ?? 8) * 2, 8), 1);
+        const secondPassTopK = Math.max(cfg.section7SecondPassTopK ?? (cfg.topK ?? 8), 1);
+        const [sessionHits, durableHits] = await Promise.all([
           rpc.call<{ results: SearchResult[] }>("search_text", {
             collection: `session:${sessionId}`,
             text: queryText,
-            k: cfg.topK ?? 8,
+            k: coarseTopK,
             excludeIds: [...excluded, ...recentTailIDs],
           }),
           cached
-            ? Promise.resolve({ results: cached.userHits })
-            : rpc.call<{ results: SearchResult[] }>("search_text", {
-                collection: `user:${userId}`,
+            ? Promise.resolve({ results: cached.durableVariantHits })
+            : rpc.call<{ results: SearchResult[] }>("search_text_collections", {
+                collections: [`user:${userId}`, "global", AUTHORED_VARIANT_COLLECTION],
                 text: queryText,
-                k: Math.ceil((cfg.topK ?? 8) / 2),
-              }),
-          cached
-            ? Promise.resolve({ results: cached.globalHits })
-            : rpc.call<{ results: SearchResult[] }>("search_text", {
-                collection: "global",
-                text: queryText,
-                k: Math.ceil((cfg.topK ?? 8) / 4),
-              }),
-          cached?.authoredVariantHits
-            ? Promise.resolve({ results: cached.authoredVariantHits })
-            : rpc.call<{ results: SearchResult[] }>("search_text", {
-                collection: AUTHORED_VARIANT_COLLECTION,
-                text: queryText,
-                k: Math.ceil((cfg.topK ?? 8) / 2),
+                k: coarseTopK,
+                excludeByCollection: {},
               }),
         ]);
 
@@ -203,39 +232,52 @@ export function buildContextEngineFactory(
           recallCache.put({
             userId,
             queryText,
-            userHits: userHits.results,
-            globalHits: globalHits.results,
-            authoredVariantHits: authoredVariantHits.results,
+            durableVariantHits: durableHits.results,
           });
         }
 
-        const ranked = scoreCandidates(
+        const ranked = rankSection7VariantCandidates(
           [
-            ...authoredVariantHits.results,
-            ...sessionHits.results,
-            ...userHits.results,
-            ...globalHits.results,
+            ...annotateCollection(sessionHits.results, `session:${sessionId}`),
+            ...durableHits.results,
           ],
           {
-            alpha: cfg.alpha,
-            beta: cfg.beta,
-            gamma: cfg.gamma,
-            delta: cfg.compactionQualityWeight ?? 0.5,
-            recencyLambdaSession: cfg.recencyLambdaSession,
-            recencyLambdaUser: cfg.recencyLambdaUser,
-            recencyLambdaGlobal: cfg.recencyLambdaGlobal,
+            queryText,
+            k1: coarseTopK,
+            k2: secondPassTopK,
+            theta1: cfg.section7Theta1,
+            kappa: cfg.section7Kappa,
+            authorityRecencyLambda: cfg.section7AuthorityRecencyLambda,
+            authorityRecencyWeight: cfg.section7AuthorityRecencyWeight,
+            authorityFrequencyWeight: cfg.section7AuthorityFrequencyWeight,
+            authorityAuthoredWeight: cfg.section7AuthorityAuthoredWeight,
             sessionId,
             userId,
           },
         );
+        const hopExpanded = expandSection7HopCandidates(
+          ranked,
+          annotateCollection(authoredVariantRecords, AUTHORED_VARIANT_COLLECTION),
+          {
+            etaHop: cfg.section7HopEta,
+            thetaHop: cfg.section7HopThreshold,
+          },
+        );
 
+        const variantItems = fitPromptBudget(
+          mergeSection7VariantCandidates(ranked, hopExpanded),
+          retrievalBudget,
+        );
         const selected = [
           ...hardItems,
           ...tailBaseItems,
           ...softItems,
           ...tailExtensionItems,
-          ...fitPromptBudget(ranked, retrievalBudget),
+          ...variantItems,
         ];
+        void rpc.call("bump_access_counts", {
+          updates: groupAccessCountUpdates(variantItems),
+        }).catch(() => {});
 
         const selectedMessages = selected.map((item) => ({
           role: "system",
@@ -278,22 +320,25 @@ export function buildContextEngineFactory(
 
 async function loadAuthoredCollections(
   rpc: Awaited<ReturnType<RpcGetter>>,
-  cached: { hard: SearchResult[] | null; soft: SearchResult[] | null },
-): Promise<[SearchResult[], SearchResult[]]> {
-  if (cached.hard && cached.soft) {
-    return [cached.hard, cached.soft];
+  cached: { hard: SearchResult[] | null; soft: SearchResult[] | null; variant: SearchResult[] | null },
+): Promise<[SearchResult[], SearchResult[], SearchResult[]]> {
+  if (cached.hard && cached.soft && cached.variant) {
+    return [cached.hard, cached.soft, cached.variant];
   }
 
-  const [hard, soft] = await Promise.all([
+  const [hard, soft, variant] = await Promise.all([
     cached.hard
       ? Promise.resolve({ results: cached.hard })
       : rpc.call<{ results: SearchResult[] }>("list_collection", { collection: AUTHORED_HARD_COLLECTION }),
     cached.soft
       ? Promise.resolve({ results: cached.soft })
       : rpc.call<{ results: SearchResult[] }>("list_collection", { collection: AUTHORED_SOFT_COLLECTION }),
+    cached.variant
+      ? Promise.resolve({ results: cached.variant })
+      : rpc.call<{ results: SearchResult[] }>("list_collection", { collection: AUTHORED_VARIANT_COLLECTION }),
   ]);
 
-  return [hard.results, soft.results];
+  return [hard.results, soft.results, variant.results];
 }
 
 function tokenCostSum(items: SearchResult[]): number {
@@ -334,4 +379,85 @@ function markRecentTail(items: SearchResult[], baseCount: number): SearchResult[
       continuity_base: idx >= baseStart,
     },
   }));
+}
+
+function annotateCollection(items: SearchResult[], collection: string): SearchResult[] {
+  return items.map((item) => ({
+    ...item,
+    metadata: {
+      ...item.metadata,
+      collection,
+    },
+  }));
+}
+
+function groupAccessCountUpdates(items: SearchResult[]): Array<{ collection: string; ids: string[] }> {
+  const grouped = new Map<string, string[]>();
+  for (const item of items) {
+    const collection = typeof item.metadata.collection === "string" ? item.metadata.collection : "";
+    if (collection === "") {
+      continue;
+    }
+    const ids = grouped.get(collection) ?? [];
+    ids.push(item.id);
+    grouped.set(collection, ids);
+  }
+  return [...grouped.entries()].map(([collection, ids]) => ({ collection, ids }));
+}
+
+function clampFraction(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function validateSection7StartupHardReserve(cfg: PluginConfig, authoredHard: SearchResult[]): void {
+  if (authoredHard.length === 0) {
+    return;
+  }
+  const hardFraction = clampFraction(cfg.authoredHardBudgetFraction);
+  if (hardFraction <= 0) {
+    return;
+  }
+  const startupTokenBudget = cfg.section7StartupTokenBudgetTokens;
+  if (typeof startupTokenBudget !== "number" || !Number.isFinite(startupTokenBudget) || startupTokenBudget <= 0) {
+    throw new Error(
+      "section7StartupTokenBudgetTokens is required to validate the authored hard reserve at bootstrap when authoredHardBudgetFraction is configured",
+    );
+  }
+  const memoryBudget = startupTokenBudget * (cfg.tokenBudgetFraction ?? 0.25);
+  const hardBudget = memoryBudget * hardFraction;
+  const hardUsed = tokenCostSum(authoredHard);
+  if (hardUsed > hardBudget + 1e-9) {
+    throw new Error(
+      `authored hard invariants require ${hardUsed} tokens but the configured startup reserve allows only ${hardBudget}`,
+    );
+  }
+}
+
+function buildDegradedMemoryHeader(reasons: string[], selected: SearchResult[]): string {
+  const header = [
+    "<memory_degraded>",
+    "Memory assembly is in degraded mode.",
+    ...reasons.map((reason, idx) => `[D${idx + 1}] ${reason}.`),
+    "Hard invariants and the mandatory recent-tail base were preserved without silent truncation.",
+    "</memory_degraded>",
+  ].join("\n");
+  const body = buildMemoryHeader(selected);
+  return body === "" ? header : `${header}\n\n${body}`;
+}
+
+function isContinuityBundleCoupled(left: SearchResult, right: SearchResult): boolean {
+  const leftBundle = typeof left.metadata.continuity_bundle_id === "string" ? left.metadata.continuity_bundle_id : "";
+  const rightBundle = typeof right.metadata.continuity_bundle_id === "string" ? right.metadata.continuity_bundle_id : "";
+  if (leftBundle !== "" && leftBundle === rightBundle) {
+    return true;
+  }
+  const leftRole = typeof left.metadata.role === "string" ? left.metadata.role : "";
+  const rightRole = typeof right.metadata.role === "string" ? right.metadata.role : "";
+  return (
+    (leftRole === "user" && rightRole === "assistant") ||
+    (leftRole === "assistant" && rightRole === "user")
+  );
 }

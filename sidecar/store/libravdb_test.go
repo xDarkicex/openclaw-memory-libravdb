@@ -348,6 +348,50 @@ Plain lore here.
 	if got := metaFloat(hard[0].Metadata, "authority"); got != 1.0 {
 		t.Fatalf("hard authority = %v, want 1.0", got)
 	}
+	if got := metaFloat(variant[0].Metadata, "access_count"); got != 0 {
+		t.Fatalf("variant access_count = %v, want 0", got)
+	}
+}
+
+func TestPersistAuthoredDocumentStoresHopTargetsFromASTMetadata(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	doc, err := astv2.ExtractDocument("AGENTS.md", []byte(`---
+hop_targets: [souls.md#000007]
+---
+
+Regular narrative lore goes here.
+`), "tok-v1")
+	if err != nil {
+		t.Fatalf("ExtractDocument() error = %v", err)
+	}
+	if err := s.PersistAuthoredDocument(ctx, doc, true); err != nil {
+		t.Fatalf("PersistAuthoredDocument() error = %v", err)
+	}
+
+	variant, err := s.ListCollection(ctx, AuthoredVariantCollection)
+	if err != nil {
+		t.Fatalf("ListCollection(variant) error = %v", err)
+	}
+	if len(variant) != 1 {
+		t.Fatalf("len(variant) = %d, want 1", len(variant))
+	}
+	switch hopTargets := variant[0].Metadata["hop_targets"].(type) {
+	case []string:
+		if len(hopTargets) != 1 || hopTargets[0] != "souls.md#000007" {
+			t.Fatalf("hop_targets = %+v, want [souls.md#000007]", hopTargets)
+		}
+	case []any:
+		if len(hopTargets) != 1 || hopTargets[0] != "souls.md#000007" {
+			t.Fatalf("hop_targets = %+v, want [souls.md#000007]", hopTargets)
+		}
+	default:
+		t.Fatalf("hop_targets type = %T, want []string or []any", variant[0].Metadata["hop_targets"])
+	}
 }
 
 func TestPersistAuthoredDocumentReplacesPreviousSourceDocRecords(t *testing.T) {

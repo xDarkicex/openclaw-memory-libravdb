@@ -34,11 +34,12 @@ type Store interface {
 }
 
 type Result struct {
-	DidCompact     bool    `json:"didCompact"`
-	ClustersFormed int     `json:"clustersFormed"`
-	TurnsRemoved   int     `json:"turnsRemoved"`
-	SummaryMethod  string  `json:"summaryMethod,omitempty"`
-	MeanConfidence float64 `json:"meanConfidence"`
+	DidCompact       bool    `json:"didCompact"`
+	ClustersFormed   int     `json:"clustersFormed"`
+	ClustersDeclined int     `json:"clustersDeclined"`
+	TurnsRemoved     int     `json:"turnsRemoved"`
+	SummaryMethod    string  `json:"summaryMethod,omitempty"`
+	MeanConfidence   float64 `json:"meanConfidence"`
 }
 
 type cluster struct {
@@ -114,10 +115,10 @@ func CompactSession(
 
 	now := time.Now().UnixMilli()
 	out := Result{
-		DidCompact:     true,
 		ClustersFormed: len(clusters),
 	}
 	var totalConfidence float64
+	replacedClusters := 0
 
 	for idx, group := range clusters {
 		if len(group.turns) == 0 {
@@ -125,20 +126,8 @@ func CompactSession(
 		}
 
 		if len(group.turns) == 1 {
-			summary := trivialSummary(group.turns[0])
-			metadata := summaryMetadata(sessionID, now, summary, group.turns, qualityMetadata{})
-			summaryID := summaryRecordID(sessionID, summary.SourceIDs)
-			if err := st.InsertText(ctx, collection, summaryID, summary.Text, metadata); err != nil {
-				return Result{}, fmt.Errorf("summary insert failed, source turns preserved: %w", err)
-			}
-			if err := st.DeleteBatch(ctx, collection, summary.SourceIDs); err != nil {
-				log.Printf("compaction: summary %s inserted but source delete failed: %v", summaryID, err)
-			} else {
-				out.TurnsRemoved += len(summary.SourceIDs)
-			}
-			totalConfidence += summary.Confidence
-			out.SummaryMethod = mergeMethod(out.SummaryMethod, summary.Method)
-			log.Printf("compaction: cluster_id=%d mean_gating_score=%.3f summarizer_used=%s", idx, meanGatingScore(group.turns), summary.Method)
+			out.ClustersDeclined++
+			log.Printf("compaction: cluster_id=%d declined=strict-progress-singleton", idx)
 			continue
 		}
 
@@ -171,6 +160,11 @@ func CompactSession(
 		}
 
 		summary.SourceIDs = append([]string(nil), sourceIDs...)
+		if !hasStrictCompactionProgress(group.turns, summary) {
+			out.ClustersDeclined++
+			log.Printf("compaction: cluster_id=%d declined=strict-progress mean_gating_score=%.3f summarizer_used=%s", idx, meanGating, summary.Method)
+			continue
+		}
 
 		metadata := summaryMetadata(sessionID, now, summary, group.turns, quality)
 		summaryID := summaryRecordID(sessionID, summary.SourceIDs)
@@ -185,11 +179,13 @@ func CompactSession(
 		}
 
 		totalConfidence += summary.Confidence
+		replacedClusters++
 		out.SummaryMethod = mergeMethod(out.SummaryMethod, summary.Method)
 	}
 
-	if out.ClustersFormed > 0 {
-		out.MeanConfidence = clamp01(totalConfidence / float64(out.ClustersFormed))
+	out.DidCompact = replacedClusters > 0
+	if replacedClusters > 0 {
+		out.MeanConfidence = clamp01(totalConfidence / float64(replacedClusters))
 	}
 	return out, nil
 }
@@ -295,6 +291,18 @@ func trivialSummary(turn turnRecord) summarize.Summary {
 	}
 }
 
+func hasStrictCompactionProgress(turns []turnRecord, summary summarize.Summary) bool {
+	if len(turns) == 0 {
+		return false
+	}
+	sourceTokens := turnTokenCostSum(turns)
+	summaryTokens := summary.TokenCount
+	if summaryTokens <= 0 {
+		summaryTokens = EstimateTokens(summary.Text)
+	}
+	return summaryTokens < sourceTokens
+}
+
 func eligibleTurns(results []store.SearchResult) []turnRecord {
 	turns := make([]turnRecord, 0, len(results))
 	for _, result := range results {
@@ -372,10 +380,11 @@ func selectRecentTail(turns []turnRecord, cfg ContinuityConfig) recentTailSelect
 	base := append([]turnRecord(nil), turns[baseStart:]...)
 	baseTokens := turnTokenCostSum(base)
 	if baseTokens > tailBudget {
+		recentStart := extendTurnBundleBoundary(turns, baseStart)
 		return recentTailSelection{
-			older:  append([]turnRecord(nil), turns[:baseStart]...),
+			older:  append([]turnRecord(nil), turns[:recentStart]...),
 			base:   base,
-			recent: base,
+			recent: append([]turnRecord(nil), turns[recentStart:]...),
 		}
 	}
 
@@ -389,6 +398,7 @@ func selectRecentTail(turns []turnRecord, cfg ContinuityConfig) recentTailSelect
 		used += next
 		start = i
 	}
+	start = extendTurnBundleBoundary(turns, start)
 
 	return recentTailSelection{
 		older:  append([]turnRecord(nil), turns[:start]...),
@@ -407,6 +417,37 @@ func turnTokenCostSum(turns []turnRecord) int {
 
 func estimateTurnTokens(turn turnRecord) int {
 	return EstimateTokens(turn.text)
+}
+
+func extendTurnBundleBoundary(turns []turnRecord, start int) int {
+	for start > 0 && coupledTurnBundle(turns[start-1], turns[start]) {
+		start--
+	}
+	return start
+}
+
+func coupledTurnBundle(left, right turnRecord) bool {
+	if leftBundle, rightBundle := turnMetaString(left.metadata, "continuity_bundle_id"), turnMetaString(right.metadata, "continuity_bundle_id"); leftBundle != "" && leftBundle == rightBundle {
+		return true
+	}
+	leftRole := turnMetaString(left.metadata, "role")
+	rightRole := turnMetaString(right.metadata, "role")
+	return (leftRole == "user" && rightRole == "assistant") || (leftRole == "assistant" && rightRole == "user")
+}
+
+func turnMetaString(meta map[string]any, key string) string {
+	if meta == nil {
+		return ""
+	}
+	value, ok := meta[key]
+	if !ok {
+		return ""
+	}
+	typed, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return typed
 }
 
 func summaryMetadata(sessionID string, compactedAt int64, summary summarize.Summary, turns []turnRecord, quality qualityMetadata) map[string]any {

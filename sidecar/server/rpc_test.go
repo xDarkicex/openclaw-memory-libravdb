@@ -93,6 +93,60 @@ func TestRPCInsertSearchAndDelete(t *testing.T) {
 	}
 }
 
+func TestRPCSearchTextCollectionsMergesExactTopKAcrossCollections(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+
+	srv := New(fakeEmbedder{}, nil, nil, st, compact.DefaultGatingConfig())
+
+	for _, item := range []struct {
+		collection string
+		id         string
+		text       string
+	}{
+		{collection: "session:test", id: "s1", text: "alpha"},
+		{collection: "user:u1", id: "u1", text: "alpha"},
+		{collection: "global", id: "g1", text: "alpha"},
+	} {
+		if _, err := srv.Call(ctx, "insert_text", map[string]any{
+			"collection": item.collection,
+			"id":         item.id,
+			"text":       item.text,
+			"metadata":   map[string]any{"type": "turn"},
+		}); err != nil {
+			t.Fatalf("insert_text(%s) error = %v", item.collection, err)
+		}
+	}
+
+	got, err := srv.Call(ctx, "search_text_collections", map[string]any{
+		"collections": []string{"session:test", "user:u1", "global"},
+		"text":        "query-alpha",
+		"k":           2,
+		"excludeByCollection": map[string]any{
+			"session:test": []string{"s1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("search_text_collections error = %v", err)
+	}
+
+	search := got.(searchTextResult)
+	if len(search.Results) != 2 {
+		t.Fatalf("len(results) = %d, want 2", len(search.Results))
+	}
+	if search.Results[0].Metadata["collection"] == "session:test" || search.Results[1].Metadata["collection"] == "session:test" {
+		t.Fatalf("excluded session hit leaked into merged results: %+v", search.Results)
+	}
+	for _, result := range search.Results {
+		if result.Metadata["collection"] == nil {
+			t.Fatalf("result missing collection metadata: %+v", result)
+		}
+	}
+}
+
 func TestRPCHealthAndListByMeta(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
@@ -162,6 +216,51 @@ func TestRPCListCollection(t *testing.T) {
 	listed := got.(searchTextResult)
 	if len(listed.Results) != 1 || listed.Results[0].Text != "Always cite the governing math." {
 		t.Fatalf("unexpected list_collection results: %+v", listed.Results)
+	}
+}
+
+func TestRPCBumpAccessCountsUpdatesMetadata(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	srv := New(fakeEmbedder{}, nil, nil, st, compact.DefaultGatingConfig())
+
+	if _, err := srv.Call(ctx, "insert_text", map[string]any{
+		"collection": "global",
+		"id":         "g1",
+		"text":       "alpha",
+		"metadata":   map[string]any{"source": "spec"},
+	}); err != nil {
+		t.Fatalf("insert_text error = %v", err)
+	}
+
+	if _, err := srv.Call(ctx, "bump_access_counts", map[string]any{
+		"updates": []map[string]any{
+			{
+				"collection": "global",
+				"ids":        []string{"g1"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("bump_access_counts error = %v", err)
+	}
+
+	got, err := srv.Call(ctx, "list_by_meta", map[string]any{
+		"collection": "global",
+		"key":        "source",
+		"value":      "spec",
+	})
+	if err != nil {
+		t.Fatalf("list_by_meta error = %v", err)
+	}
+	listed := got.(searchTextResult)
+	if len(listed.Results) != 1 {
+		t.Fatalf("unexpected list_by_meta results: %+v", listed.Results)
+	}
+	if got := listed.Results[0].Metadata["access_count"]; got != 1 {
+		t.Fatalf("access_count = %+v, want 1", got)
 	}
 }
 

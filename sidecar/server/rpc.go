@@ -39,6 +39,8 @@ func New(embedder embed.Embedder, extractive summarize.Summarizer, abstractive s
 		"insert_text":        s.handleInsertText,
 		"gating_scalar":      s.handleGatingScalar,
 		"search_text":        s.handleSearchText,
+		"search_text_collections": s.handleSearchTextCollections,
+		"bump_access_counts": s.handleBumpAccessCounts,
 		"list_collection":    s.handleListCollection,
 		"list_by_meta":       s.handleListByMeta,
 		"export_memory":      s.handleExportMemory,
@@ -77,6 +79,13 @@ type searchTextParams struct {
 	ExcludeIDs []string `json:"excludeIds"`
 }
 
+type searchTextCollectionsParams struct {
+	Collections        []string              `json:"collections"`
+	Text               string                `json:"text"`
+	K                  int                   `json:"k"`
+	ExcludeByCollection map[string][]string  `json:"excludeByCollection"`
+}
+
 type listByMetaParams struct {
 	Collection string `json:"collection"`
 	Key        string `json:"key"`
@@ -85,6 +94,15 @@ type listByMetaParams struct {
 
 type listCollectionParams struct {
 	Collection string `json:"collection"`
+}
+
+type bumpAccessCountsParams struct {
+	Updates []accessCountUpdate `json:"updates"`
+}
+
+type accessCountUpdate struct {
+	Collection string   `json:"collection"`
+	IDs        []string `json:"ids"`
 }
 
 type deleteParams struct {
@@ -193,6 +211,18 @@ func (s *Server) handleSearchText(ctx context.Context, raw any) (any, error) {
 	return searchTextResult{Results: results}, nil
 }
 
+func (s *Server) handleSearchTextCollections(ctx context.Context, raw any) (any, error) {
+	var params searchTextCollectionsParams
+	if err := decode(raw, &params); err != nil {
+		return nil, err
+	}
+	results, err := s.Store.SearchTextCollections(ctx, params.Collections, params.Text, params.K, params.ExcludeByCollection)
+	if err != nil {
+		return nil, err
+	}
+	return searchTextResult{Results: results}, nil
+}
+
 func (s *Server) handleGatingScalar(ctx context.Context, raw any) (any, error) {
 	var params gatingScalarParams
 	if err := decode(raw, &params); err != nil {
@@ -231,6 +261,19 @@ func (s *Server) handleListCollection(ctx context.Context, raw any) (any, error)
 		return nil, err
 	}
 	return searchTextResult{Results: results}, nil
+}
+
+func (s *Server) handleBumpAccessCounts(ctx context.Context, raw any) (any, error) {
+	var params bumpAccessCountsParams
+	if err := decode(raw, &params); err != nil {
+		return nil, err
+	}
+	for _, update := range params.Updates {
+		if err := s.Store.IncrementAccessCounts(ctx, update.Collection, update.IDs); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]any{"ok": true}, nil
 }
 
 func (s *Server) handleExportMemory(ctx context.Context, raw any) (any, error) {

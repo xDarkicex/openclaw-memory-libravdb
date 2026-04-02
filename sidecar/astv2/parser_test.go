@@ -5,9 +5,10 @@ import "testing"
 func TestExtractDocumentPartitionsMarkdownIntoOrderedTiers(t *testing.T) {
 	t.Parallel()
 
-	raw := []byte(`---
+raw := []byte(`---
 name: Codex
 style: rigorous
+hop_targets: [souls.md#000007, souls.md#000008]
 ---
 
 # Identity
@@ -33,6 +34,9 @@ Regular narrative lore goes here.
 	}
 	if doc.CacheKey == "" {
 		t.Fatalf("expected cache key")
+	}
+	if len(doc.HopTargets) != 2 || doc.HopTargets[0] != "souls.md#000007" || doc.HopTargets[1] != "souls.md#000008" {
+		t.Fatalf("HopTargets = %+v, want frontmatter hop targets", doc.HopTargets)
 	}
 	if len(doc.Nodes) != 8 {
 		t.Fatalf("len(Nodes) = %d, want 8", len(doc.Nodes))
@@ -71,6 +75,9 @@ Regular narrative lore goes here.
 	}
 	if doc.Nodes[6].Tier != TierVariant {
 		t.Fatalf("plain paragraph should remain variant: %+v", doc.Nodes[6])
+	}
+	if len(doc.Nodes[6].HopTargets) != 2 {
+		t.Fatalf("variant node should inherit hop targets: %+v", doc.Nodes[6])
 	}
 
 	if len(doc.Hard) != 3 {

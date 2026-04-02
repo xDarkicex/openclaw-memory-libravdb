@@ -15,10 +15,12 @@ export function selectRecentTail<T>(
     minTurns = DEFAULT_CONTINUITY_MIN_TURNS,
     tailBudgetTokens = DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS,
     tokenCost,
+    sameBundle,
   }: {
     minTurns?: number;
     tailBudgetTokens?: number;
     tokenCost: (item: T) => number;
+    sameBundle?: (left: T, right: T) => boolean;
   },
 ): RecentTailSelection<T> {
   if (items.length === 0 || minTurns <= 0) {
@@ -38,12 +40,14 @@ export function selectRecentTail<T>(
   const baseTokens = tokenCostSum(base, tokenCost);
 
   if (baseTokens > normalizedTailBudget) {
+    const recentStart = extendBundleBoundary(items, baseStart, sameBundle);
+    const recent = items.slice(recentStart);
     return {
-      older: items.slice(0, baseStart),
+      older: items.slice(0, recentStart),
       base,
-      recent: base,
+      recent,
       baseTokens,
-      recentTokens: baseTokens,
+      recentTokens: tokenCostSum(recent, tokenCost),
     };
   }
 
@@ -57,16 +61,32 @@ export function selectRecentTail<T>(
     used += nextCost;
     start = i;
   }
+  start = extendBundleBoundary(items, start, sameBundle);
+  const recent = items.slice(start);
 
   return {
     older: items.slice(0, start),
     base,
-    recent: items.slice(start),
+    recent,
     baseTokens,
-    recentTokens: used,
+    recentTokens: tokenCostSum(recent, tokenCost),
   };
 }
 
 function tokenCostSum<T>(items: T[], tokenCost: (item: T) => number): number {
   return items.reduce((sum, item) => sum + tokenCost(item), 0);
+}
+
+function extendBundleBoundary<T>(
+  items: T[],
+  start: number,
+  sameBundle?: (left: T, right: T) => boolean,
+): number {
+  if (!sameBundle) {
+    return start;
+  }
+  while (start > 0 && sameBundle(items[start - 1]!, items[start]!)) {
+    start -= 1;
+  }
+  return start;
 }

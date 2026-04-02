@@ -35,12 +35,14 @@ type Node struct {
 	TokenEstimate int
 	Promoted      bool
 	ModalityMask  ModalityMask
+	HopTargets    []string
 }
 
 type Document struct {
 	SourceDoc   string
 	TokenizerID string
 	CacheKey    string
+	HopTargets  []string
 	Nodes       []Node
 	Hard        []Node
 	Soft        []Node

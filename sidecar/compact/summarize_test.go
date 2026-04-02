@@ -183,8 +183,8 @@ func TestCompactSessionPartitionsDeterministicallyByTimestamp(t *testing.T) {
 	}
 	sum := &fakeSummarizer{
 		summaries: []summarize.Summary{
-			{Text: "summary-1", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 2, Confidence: 0.6},
-			{Text: "summary-2", SourceIDs: []string{"c", "d"}, Method: "extractive", TokenCount: 2, Confidence: 0.8},
+			{Text: "summary-1", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 1, Confidence: 0.6},
+			{Text: "summary-2", SourceIDs: []string{"c", "d"}, Method: "extractive", TokenCount: 1, Confidence: 0.8},
 		},
 	}
 
@@ -237,7 +237,7 @@ func TestCompactSessionProtectsRecentTailFromCompaction(t *testing.T) {
 	}
 	sum := &fakeSummarizer{
 		summaries: []summarize.Summary{
-			{Text: "older summary", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 4, Confidence: 0.7},
+			{Text: "older summary", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 1, Confidence: 0.7},
 		},
 	}
 
@@ -275,7 +275,7 @@ func TestCompactSessionMandatoryTailWinsWhenTailBudgetIsTooSmall(t *testing.T) {
 	}
 	sum := &fakeSummarizer{
 		summaries: []summarize.Summary{
-			{Text: "older summary", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 4, Confidence: 0.7},
+			{Text: "older summary", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 1, Confidence: 0.7},
 		},
 	}
 
@@ -302,7 +302,7 @@ func TestCompactSessionInsertsBeforeDeleteAndPreservesDataOnDeleteFailure(t *tes
 	}
 	sum := &fakeSummarizer{
 		summaries: []summarize.Summary{
-			{Text: "summary-1", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 5, Confidence: 0.75},
+			{Text: "summary-1", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 1, Confidence: 0.75},
 		},
 	}
 
@@ -357,7 +357,14 @@ func TestCompactSessionPreservesSourceTurnsWhenInsertFails(t *testing.T) {
 		},
 		insertErr: errors.New("insert failed"),
 	}
-	sum := &fakeSummarizer{}
+	sum := &fakeSummarizer{
+		summaries: []summarize.Summary{{
+			Text:       "summary",
+			Method:     "extractive",
+			TokenCount: 1,
+			Confidence: 0.8,
+		}},
+	}
 
 	_, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 20, ContinuityConfig{})
 	if err == nil {
@@ -383,12 +390,12 @@ func TestCompactSessionRoutesHighGatingClustersToAbstractive(t *testing.T) {
 		},
 	}
 	extractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 2, Confidence: 0.5}},
+		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 1, Confidence: 0.5}},
 		mode:      "extractive",
 		embedder:  embedder,
 	}
 	abstractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "abstractive-summary", Method: "onnx-t5", TokenCount: 3, Confidence: 0.9}},
+		summaries: []summarize.Summary{{Text: "abstractive-summary", Method: "onnx-t5", TokenCount: 1, Confidence: 0.9}},
 		mode:      "onnx-local",
 	}
 
@@ -430,11 +437,11 @@ func TestCompactSessionRoutesMissingGatingScoreToExtractiveAndLogsDecision(t *te
 		},
 	}
 	extractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 2, Confidence: 0.5}},
+		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 1, Confidence: 0.5}},
 		mode:      "extractive",
 	}
 	abstractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "abstractive-summary", Method: "onnx-t5", TokenCount: 3, Confidence: 0.9}},
+		summaries: []summarize.Summary{{Text: "abstractive-summary", Method: "onnx-t5", TokenCount: 1, Confidence: 0.9}},
 		mode:      "onnx-local",
 	}
 
@@ -478,12 +485,12 @@ func TestCompactSessionFallsBackToExtractiveWhenAbstractiveFailsPreservationGate
 		},
 	}
 	extractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 2, Confidence: 0.2}},
+		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 1, Confidence: 0.2}},
 		mode:      "extractive",
 		embedder:  embedder,
 	}
 	abstractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "drifted-summary", Method: "onnx-t5", TokenCount: 2, Confidence: 0.95}},
+		summaries: []summarize.Summary{{Text: "drifted-summary", Method: "onnx-t5", TokenCount: 1, Confidence: 0.95}},
 		mode:      "onnx-local",
 	}
 
@@ -540,12 +547,12 @@ func TestCompactSessionAcceptsAbstractiveSummaryAtPreservationBoundary(t *testin
 		},
 	}
 	extractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 2, Confidence: 0.2}},
+		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 1, Confidence: 0.2}},
 		mode:      "extractive",
 		embedder:  embedder,
 	}
 	abstractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "threshold-summary", Method: "onnx-t5", TokenCount: 2, Confidence: 0.9}},
+		summaries: []summarize.Summary{{Text: "threshold-summary", Method: "onnx-t5", TokenCount: 1, Confidence: 0.9}},
 		mode:      "onnx-local",
 	}
 
@@ -588,12 +595,12 @@ func TestCompactSessionFallsBackJustBelowPreservationThreshold(t *testing.T) {
 		},
 	}
 	extractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 2, Confidence: 0.2}},
+		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 1, Confidence: 0.2}},
 		mode:      "extractive",
 		embedder:  embedder,
 	}
 	abstractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "below-threshold", Method: "onnx-t5", TokenCount: 2, Confidence: 0.95}},
+		summaries: []summarize.Summary{{Text: "below-threshold", Method: "onnx-t5", TokenCount: 1, Confidence: 0.95}},
 		mode:      "onnx-local",
 	}
 
@@ -626,12 +633,12 @@ func TestCompactSessionStoresExactHybridConfidenceForAcceptedAbstractiveSummary(
 		},
 	}
 	extractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 2, Confidence: 0.2}},
+		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 1, Confidence: 0.2}},
 		mode:      "extractive",
 		embedder:  embedder,
 	}
 	abstractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "hybrid-summary", Method: "onnx-t5", TokenCount: 2, Confidence: 0.9}},
+		summaries: []summarize.Summary{{Text: "hybrid-summary", Method: "onnx-t5", TokenCount: 1, Confidence: 0.9}},
 		mode:      "onnx-local",
 	}
 
@@ -672,7 +679,7 @@ func TestCompactSessionStoresExactNomicConfidenceForExtractiveSummary(t *testing
 		},
 	}
 	extractive := &fakeSummarizer{
-		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 2, Confidence: 0.1}},
+		summaries: []summarize.Summary{{Text: "extractive-summary", Method: "extractive", TokenCount: 1, Confidence: 0.1}},
 		mode:      "extractive",
 		embedder:  embedder,
 	}
@@ -698,7 +705,7 @@ func TestCompactSessionStoresExactNomicConfidenceForExtractiveSummary(t *testing
 	assertBoundedSummaryMeta(t, meta)
 }
 
-func TestCompactSessionTagsSingleMemberClustersAsTrivial(t *testing.T) {
+func TestCompactSessionDeclinesSingleMemberClustersUnderStrictProgressRule(t *testing.T) {
 	st := &fakeStore{
 		results: []store.SearchResult{
 			{ID: "a", Text: "alpha", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10)}},
@@ -708,7 +715,7 @@ func TestCompactSessionTagsSingleMemberClustersAsTrivial(t *testing.T) {
 	}
 	sum := &fakeSummarizer{
 		summaries: []summarize.Summary{
-			{Text: "summary-1", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 2, Confidence: 0.8},
+			{Text: "summary-1", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 1, Confidence: 0.8},
 		},
 	}
 
@@ -717,19 +724,44 @@ func TestCompactSessionTagsSingleMemberClustersAsTrivial(t *testing.T) {
 		t.Fatalf("CompactSession() error = %v", err)
 	}
 	if !got.DidCompact {
-		t.Fatalf("expected compaction, got %+v", got)
+		t.Fatalf("expected non-singleton cluster to compact, got %+v", got)
 	}
-	if len(st.insertCalls) != 2 {
-		t.Fatalf("expected two summary inserts, got %d", len(st.insertCalls))
+	if len(st.insertCalls) != 1 {
+		t.Fatalf("expected only one summary insert, got %d", len(st.insertCalls))
 	}
-	if st.insertCalls[1].meta["method"] != "trivial" {
-		t.Fatalf("expected trivial method for single-member cluster, got %+v", st.insertCalls[1].meta["method"])
-	}
-	if st.insertCalls[1].text != "gamma" {
-		t.Fatalf("expected trivial summary to preserve raw text, got %q", st.insertCalls[1].text)
+	if got.ClustersDeclined != 1 {
+		t.Fatalf("expected one declined singleton cluster, got %+v", got)
 	}
 	if len(sum.calls) != 1 {
 		t.Fatalf("expected only one real summarizer call for the non-trivial cluster, got %d", len(sum.calls))
+	}
+}
+
+func TestCompactSessionDeclinesClusterWhenSummaryDoesNotShrinkSource(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "alpha", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10)}},
+			{ID: "b", Text: "beta", Metadata: map[string]any{"sessionId": "s1", "ts": int64(20)}},
+		},
+	}
+	sum := &fakeSummarizer{
+		summaries: []summarize.Summary{
+			{Text: "alpha beta gamma delta", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 4, Confidence: 0.8},
+		},
+	}
+
+	got, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 20, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if got.DidCompact {
+		t.Fatalf("expected compaction to decline non-shrinking summary, got %+v", got)
+	}
+	if got.ClustersDeclined != 1 {
+		t.Fatalf("expected one declined cluster, got %+v", got)
+	}
+	if len(st.insertCalls) != 0 || len(st.deleteCalls) != 0 {
+		t.Fatalf("expected no insert/delete on declined cluster, got inserts=%d deletes=%d", len(st.insertCalls), len(st.deleteCalls))
 	}
 }
 
@@ -774,6 +806,24 @@ func TestSelectRecentTailBaseIsSubsetOfRecentAndOlderIsDisjoint(t *testing.T) {
 	assertClusterTurnIDs(t, got.older, []string{"a", "b"})
 }
 
+func TestSelectRecentTailExtendsBackwardToPreserveCoupledBundleAtBoundary(t *testing.T) {
+	turns := []turnRecord{
+		{id: "a", text: "a", ts: 10},
+		{id: "b", text: "bundle-left", ts: 20, metadata: map[string]any{"continuity_bundle_id": "pair-1"}},
+		{id: "c", text: "c", ts: 30, metadata: map[string]any{"continuity_bundle_id": "pair-1"}},
+		{id: "d", text: "d", ts: 40},
+	}
+
+	got := selectRecentTail(turns, ContinuityConfig{
+		MinTurns:         2,
+		TailBudgetTokens: 2,
+	})
+
+	assertClusterTurnIDs(t, got.base, []string{"c", "d"})
+	assertClusterTurnIDs(t, got.recent, []string{"b", "c", "d"})
+	assertClusterTurnIDs(t, got.older, []string{"a"})
+}
+
 func TestSection6QualityLoopHighValueClusterLiftsRetrievalWeight(t *testing.T) {
 	embedder := fakeEmbedder{
 		vectors: map[string][]float32{
@@ -795,14 +845,14 @@ func TestSection6QualityLoopHighValueClusterLiftsRetrievalWeight(t *testing.T) {
 	}
 	extractive := &fakeSummarizer{
 		summaries: []summarize.Summary{
-			{Text: "low-summary", Method: "extractive", TokenCount: 2, Confidence: 0.4},
+			{Text: "low-summary", Method: "extractive", TokenCount: 1, Confidence: 0.4},
 		},
 		mode:     "extractive",
 		embedder: embedder,
 	}
 	abstractive := &fakeSummarizer{
 		summaries: []summarize.Summary{
-			{Text: "high-summary", Method: "onnx-t5", TokenCount: 2, Confidence: 0.9},
+			{Text: "high-summary", Method: "onnx-t5", TokenCount: 1, Confidence: 0.9},
 		},
 		mode: "onnx-local",
 	}
