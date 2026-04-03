@@ -253,7 +253,7 @@ test("assemble caches user and global hits under the new memory prompt contract"
   assert.match(second.systemPromptAddition, /recalled_memories/);
   assert.equal(searchCallsAfterFirst, 1);
   assert.equal(searchCallsAfterSecond, 2);
-  assert.equal(rpc.calls.get("search_text_collections") ?? 0, 1);
+  assert.equal(rpc.calls.get("search_text_collections") ?? 0, 3);
   assert.equal(rpc.calls.get("list_collection") ?? 0, 3);
   assert.equal(rpc.calls.get("list_by_meta") ?? 0, 2);
   assert.equal(rpc.calls.get("bump_access_counts") ?? 0, 2);
@@ -439,6 +439,7 @@ test("assemble surfaces degraded mode when hard authored reserve is violated", a
   assert.match(assembled.systemPromptAddition, /hard authored invariants exceed configured hard budget reserve/i);
   assert.match(assembled.systemPromptAddition, /\[A1\] Always cite the governing math\./);
   assert.match(assembled.systemPromptAddition, /\[T1\] <entry role="user" source="session">remember this<\/entry>/);
+  assert.doesNotMatch(assembled.systemPromptAddition, /Prefer exact formulas\./);
 });
 
 test("bootstrap fast-fails when authored hard invariants exceed the configured startup reserve", async () => {
@@ -520,6 +521,48 @@ test("assemble preserves soft invariant prefix order under a tight soft budget",
   assert.doesNotMatch(assembled.systemPromptAddition, /Second soft invariant should be truncated\./);
 });
 
+test("assemble sorts authored soft invariants by source position before truncation", async () => {
+  const rpc = new FakeRpc();
+  const originalCall = rpc.call.bind(rpc);
+  rpc.call = async function<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    if (method === "list_collection" && String(params.collection) === "authored:soft") {
+      return {
+        results: [
+          { id: "AGENTS.md#000003", score: 0, text: "Late soft.", metadata: { authored: true, tier: 2, ordinal: 3, position: 30, source_doc: "AGENTS.md", token_estimate: 3 } },
+          { id: "AGENTS.md#000002", score: 0, text: "Early soft.", metadata: { authored: true, tier: 2, ordinal: 2, position: 20, source_doc: "AGENTS.md", token_estimate: 3 } },
+        ],
+      } as T;
+    }
+    return originalCall(method, params);
+  };
+
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.25,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.ingest({
+    sessionId: "s1",
+    userId: "u1",
+    message: { role: "user", content: "remember this" },
+  });
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "what do you know?" }],
+    tokenBudget: 68,
+  });
+
+  assert.match(assembled.systemPromptAddition, /Early soft\./);
+  assert.doesNotMatch(assembled.systemPromptAddition, /Late soft\./);
+});
+
 test("assemble keeps recent-tail items out of recalled memories", async () => {
   const rpc = new FakeRpc();
   const recallCache = createRecallCache<SearchResult>();
@@ -549,6 +592,95 @@ test("assemble keeps recent-tail items out of recalled memories", async () => {
   assert.match(assembled.systemPromptAddition, /<recent_session_tail>/);
   assert.ok((assembled.systemPromptAddition.match(/remember this/g) ?? []).length >= 1);
   assert.doesNotMatch(recalledSection, /remember this/);
+});
+
+test("assemble elevates protected guidance shards ahead of recalled memories", async () => {
+  const rpc = new FakeRpc();
+  const originalCall = rpc.call.bind(rpc);
+  rpc.call = async function<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    if (method === "search_text" && String(params.collection) === "session:s1") {
+      return {
+        results: [
+          {
+            id: "guidance:s1:t1",
+            score: 0.92,
+            text: "Prefer arena allocators for the radix tree.",
+            metadata: {
+              sessionId: "s1",
+              ts: Date.now(),
+              collection: "session:s1",
+              elevated_guidance: true,
+              type: "guidance_shard",
+            },
+          },
+          {
+            id: "turn:s1:t2",
+            score: 0.70,
+            text: "ordinary historical recall",
+            metadata: {
+              sessionId: "s1",
+              ts: Date.now(),
+              collection: "session:s1",
+            },
+          },
+        ],
+      } as T;
+    }
+    if (method === "search_text_collections") {
+      const collections = Array.isArray(params.collections) ? params.collections.map(String) : [];
+      if (collections.includes("elevated:user:u1") || collections.includes("elevated:session:s1")) {
+        return {
+          results: [
+            {
+              id: "guidance:u1:t1",
+              score: 0.94,
+              text: "Prefer arena allocators for the radix tree.",
+              metadata: {
+                userId: "u1",
+                sessionId: "s1",
+                ts: Date.now(),
+                collection: "elevated:user:u1",
+                elevated_guidance: true,
+                type: "guidance_shard",
+                stability_weight: 0.8,
+                provenance_class: "session_turn",
+              },
+            },
+          ],
+        } as T;
+      }
+      return {
+        results: [],
+      } as T;
+    }
+    return originalCall(method, params);
+  };
+
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.25,
+    elevatedGuidanceBudgetFraction: 0.3,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "what allocator should the radix tree use?" }],
+    tokenBudget: 240,
+  });
+
+  assert.match(assembled.systemPromptAddition, /<elevated_guidance>/);
+  assert.match(assembled.systemPromptAddition, /Prefer arena allocators for the radix tree\./);
+  assert.match(assembled.systemPromptAddition, /<recalled_memories>/);
+  assert.ok(
+    assembled.systemPromptAddition.indexOf("<elevated_guidance>") <
+      assembled.systemPromptAddition.indexOf("<recalled_memories>"),
+  );
 });
 
 test("assemble preserves an adjacent user-assistant bundle across the recent-tail boundary", async () => {
@@ -720,5 +852,5 @@ test("user ingest invalidates cached durable recall for that user", async () => 
 
   assert.equal(searchCallsAfterFirst, 1);
   assert.equal(searchCallsAfterSecond, 2);
-  assert.equal(rpc.calls.get("search_text_collections") ?? 0, 2);
+  assert.equal(rpc.calls.get("search_text_collections") ?? 0, 4);
 });

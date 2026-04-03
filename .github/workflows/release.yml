@@ -44,6 +44,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout local-replace Go dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/xDarkicex/libraVDB.git" ../libraVDB
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/xDarkicex/slabby.git" ../slabby
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: sidecar/go.mod

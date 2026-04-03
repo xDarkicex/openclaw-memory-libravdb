@@ -29,6 +29,7 @@ const (
 
 type Node struct {
 	Ordinal       int
+	Position      int
 	Kind          NodeKind
 	Tier          Tier
 	Text          string

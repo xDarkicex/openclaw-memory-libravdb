@@ -39,6 +39,7 @@ export interface PluginConfig {
   tokenBudgetFraction?: number;
   authoredHardBudgetFraction?: number;
   authoredSoftBudgetFraction?: number;
+  elevatedGuidanceBudgetFraction?: number;
   section7StartupTokenBudgetTokens?: number;
   continuityMinTurns?: number;
   continuityTailBudgetTokens?: number;
@@ -94,6 +95,7 @@ export interface SearchResult {
     source_doc?: string;
     node_kind?: string;
     ordinal?: number;
+    position?: number;
     tier?: number;
     authored?: boolean;
     authority?: number;
@@ -104,6 +106,11 @@ export interface SearchResult {
     continuity_tail?: boolean;
     continuity_base?: boolean;
     continuity_bundle_id?: string;
+    elevated_guidance?: boolean;
+    source_turn_id?: string;
+    source_turn_ts?: number;
+    provenance_class?: string;
+    stability_weight?: number;
     [key: string]: unknown;
   };
   finalScore?: number;

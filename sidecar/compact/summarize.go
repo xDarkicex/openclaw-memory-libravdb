@@ -14,25 +14,36 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/astv2"
 	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/embed"
 	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/store"
 	"github.com/xDarkicex/openclaw-memory-libravdb/sidecar/summarize"
 )
 
 const (
-	DefaultTargetSize           = 20
-	DefaultMaxOutputTokens      = 64
-	AbstractiveRoutingThreshold = 0.60
-	PreservationThreshold       = 0.65
-	NomicConfidenceWeight       = 0.80
-	DefaultContinuityMinTurns   = 4
-	DefaultContinuityTailTokens = 128
+	DefaultTargetSize            = 20
+	DefaultMaxOutputTokens       = 64
+	AbstractiveRoutingThreshold  = 0.60
+	PreservationThreshold        = 0.65
+	NomicConfidenceWeight        = 0.80
+	DefaultContinuityMinTurns    = 4
+	DefaultContinuityTailTokens  = 128
 	DefaultContinuityPriorTokens = 96
+	guidanceShardType            = "guidance_shard"
+	ElevatedGuidanceMinStability = 0.35
+	ElevatedGuidanceBoosterFloor = 0.78
 )
 
 var (
-	longBase64ishTokenPattern = regexp.MustCompile(`(?i)\b(?:[A-Z0-9+/=_-]{80,})\b`)
-	longHexTokenPattern       = regexp.MustCompile(`(?i)\b[0-9a-f]{64,}\b`)
+	longBase64ishTokenPattern  = regexp.MustCompile(`(?i)\b(?:[A-Z0-9+/=_-]{80,})\b`)
+	longHexTokenPattern        = regexp.MustCompile(`(?i)\b[0-9a-f]{64,}\b`)
+	guidanceSurfaceHintPattern = regexp.MustCompile(`(?i)\b(?:prefer|prioriti[sz]e|focus|avoid|reject|keep|ensure|consider|should|must|never|do not|don't|use)\b`)
+	guidancePrototypeTexts     = []string{
+		"Prefer deterministic operational guidance over generic defaults.",
+		"Avoid unsafe or undesired implementation choices in hot paths.",
+		"Use the specified approach when implementing core project logic.",
+		"Keep the implementation aligned with project-specific engineering rules.",
+	}
 )
 
 type Store interface {
@@ -88,8 +99,8 @@ type summarizeAttempt struct {
 }
 
 type ContinuityConfig struct {
-	MinTurns          int
-	TailBudgetTokens  int
+	MinTurns           int
+	TailBudgetTokens   int
 	PriorContextTokens int
 }
 
@@ -148,6 +159,7 @@ func CompactSession(
 	}
 	var totalConfidence float64
 	replacedClusters := 0
+	deonticFrame := astv2.NewDeonticFrame()
 
 	for idx, group := range clusters {
 		if len(group.turns) == 0 {
@@ -160,9 +172,29 @@ func CompactSession(
 			continue
 		}
 
-		summaryTurns := make([]summarize.Turn, 0, len(group.turns))
-		sourceIDs := make([]string, 0, len(group.turns))
-		for _, turn := range group.turns {
+		protectedTurns, compressibleTurns := partitionProtectedTurns(ctx, group.turns, deonticFrame, canonicalEmbedder(extractive))
+		shardIDs, err := persistProtectedGuidanceShards(ctx, st, collection, sessionID, protectedTurns, now)
+		if err != nil {
+			return Result{}, fmt.Errorf("cluster %d protected shard insert failed: %w", idx, err)
+		}
+
+		if len(compressibleTurns) == 0 {
+			sourceIDs := turnIDs(group.turns)
+			if err := st.DeleteBatch(ctx, collection, sourceIDs); err != nil {
+				log.Printf("compaction: protected shards persisted but source delete failed for cluster %d: %v", idx, err)
+			} else {
+				out.TurnsRemoved += len(sourceIDs)
+			}
+			totalConfidence += 1.0
+			replacedClusters++
+			out.SummaryMethod = mergeMethod(out.SummaryMethod, guidanceShardType)
+			_ = shardIDs
+			continue
+		}
+
+		summaryTurns := make([]summarize.Turn, 0, len(compressibleTurns))
+		sourceIDs := make([]string, 0, len(compressibleTurns))
+		for _, turn := range compressibleTurns {
 			summaryTurns = append(summaryTurns, summarize.Turn{
 				ID:   turn.id,
 				Text: sanitizeContinuityText(turn.text),
@@ -188,13 +220,15 @@ func CompactSession(
 		metadata := summaryMetadata(sessionID, now, summary, group.turns, quality, priorContext)
 		summaryID := summaryRecordID(sessionID, summary.SourceIDs)
 		if err := st.InsertText(ctx, collection, summaryID, summary.Text, metadata); err != nil {
+			rollbackShardInserts(ctx, st, collection, shardIDs)
 			return Result{}, fmt.Errorf("summary insert failed, source turns preserved: %w", err)
 		}
 
-		if err := st.DeleteBatch(ctx, collection, summary.SourceIDs); err != nil {
+		allSourceIDs := turnIDs(group.turns)
+		if err := st.DeleteBatch(ctx, collection, allSourceIDs); err != nil {
 			log.Printf("compaction: summary %s inserted but source delete failed: %v", summaryID, err)
 		} else {
-			out.TurnsRemoved += len(summary.SourceIDs)
+			out.TurnsRemoved += len(allSourceIDs)
 		}
 
 		totalConfidence += summary.Confidence
@@ -395,7 +429,7 @@ func eligibleTurns(results []store.SearchResult) []turnRecord {
 	turns := make([]turnRecord, 0, len(results))
 	for _, result := range results {
 		typed, ok := result.Metadata["type"].(string)
-		if ok && typed == "summary" {
+		if ok && (typed == "summary" || typed == guidanceShardType) {
 			continue
 		}
 
@@ -414,6 +448,178 @@ func eligibleTurns(results []store.SearchResult) []turnRecord {
 		return turns[i].ts < turns[j].ts
 	})
 	return turns
+}
+
+func partitionProtectedTurns(ctx context.Context, turns []turnRecord, frame *astv2.DeonticFrame, guidanceEmbedder embed.Embedder) ([]turnRecord, []turnRecord) {
+	protected := make([]turnRecord, 0, len(turns))
+	compressible := make([]turnRecord, 0, len(turns))
+	for _, turn := range turns {
+		if isProtectedGuidanceTurn(ctx, turn, frame, guidanceEmbedder) {
+			protected = append(protected, turn)
+			continue
+		}
+		compressible = append(compressible, turn)
+	}
+	return protected, compressible
+}
+
+func isProtectedGuidanceTurn(ctx context.Context, turn turnRecord, frame *astv2.DeonticFrame, guidanceEmbedder embed.Embedder) bool {
+	if frame == nil {
+		return false
+	}
+	text := strings.TrimSpace(turn.text)
+	if text == "" {
+		return false
+	}
+	if stabilityWeight(turn.metadata) < ElevatedGuidanceMinStability {
+		return false
+	}
+	if frame.EvaluateText([]byte(text)).Promoted {
+		return true
+	}
+	if !hasGuidanceSurfaceHint(text) {
+		return false
+	}
+	return semanticGuidanceBooster(ctx, guidanceEmbedder, text) >= ElevatedGuidanceBoosterFloor
+}
+
+func persistProtectedGuidanceShards(
+	ctx context.Context,
+	st Store,
+	_ string,
+	sessionID string,
+	turns []turnRecord,
+	compactedAt int64,
+) ([]string, error) {
+	if len(turns) == 0 {
+		return nil, nil
+	}
+
+	targetCollection := elevatedGuidanceCollection(sessionID, turns)
+	inserted := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		id := guidanceShardRecordID(sessionID, turn.id)
+		text := strings.TrimSpace(turn.text)
+		meta := guidanceShardMetadata(sessionID, compactedAt, turn, text)
+		if err := st.InsertText(ctx, targetCollection, id, text, meta); err != nil {
+			rollbackShardInserts(ctx, st, targetCollection, inserted)
+			return nil, err
+		}
+		inserted = append(inserted, id)
+	}
+	return inserted, nil
+}
+
+func rollbackShardInserts(ctx context.Context, st Store, collection string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	if err := st.DeleteBatch(ctx, collection, ids); err != nil {
+		log.Printf("compaction: protected shard rollback failed: %v", err)
+	}
+}
+
+func turnIDs(turns []turnRecord) []string {
+	ids := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		ids = append(ids, turn.id)
+	}
+	return ids
+}
+
+func guidanceShardRecordID(sessionID, sourceTurnID string) string {
+	return fmt.Sprintf("guidance:%s:%s", sessionID, sourceTurnID)
+}
+
+func guidanceShardMetadata(sessionID string, compactedAt int64, turn turnRecord, text string) map[string]any {
+	stability := stabilityWeight(turn.metadata)
+	meta := map[string]any{
+		"type":                guidanceShardType,
+		"ts":                  compactedAt,
+		"sessionId":           sessionID,
+		"source_turn_id":      turn.id,
+		"source_turn_ts":      turn.ts,
+		"token_count":         EstimateTokens(text),
+		"token_estimate":      EstimateTokens(text),
+		"elevated_guidance":   true,
+		"protection_reason":   "deontic_surface",
+		"guidance_confidence": 1.0,
+		"authority":           stability,
+		"stability_weight":    stability,
+		"provenance_class":    turnMetaString(turn.metadata, "provenance_class"),
+	}
+	for key, value := range turn.metadata {
+		switch key {
+		case "sessionId", "ts", "type", "token_count", "token_estimate":
+			continue
+		case "userId", "role":
+			meta[key] = value
+		}
+	}
+	return meta
+}
+
+func elevatedGuidanceCollection(sessionID string, turns []turnRecord) string {
+	for _, turn := range turns {
+		userID := turnMetaString(turn.metadata, "userId")
+		if userID != "" {
+			return "elevated:user:" + userID
+		}
+	}
+	return "elevated:session:" + sessionID
+}
+
+func stabilityWeight(meta map[string]any) float64 {
+	if meta == nil {
+		return 0
+	}
+	if raw, ok := meta["stability_weight"]; ok {
+		return clamp01(metaFloat(map[string]any{"value": raw}, "value"))
+	}
+	return 0
+}
+
+func hasGuidanceSurfaceHint(text string) bool {
+	return guidanceSurfaceHintPattern.MatchString(text)
+}
+
+func semanticGuidanceBooster(ctx context.Context, e embed.Embedder, text string) float64 {
+	if e == nil || strings.TrimSpace(text) == "" {
+		return 0
+	}
+	docVec, err := e.EmbedDocument(ctx, text)
+	if err != nil {
+		return 0
+	}
+	best := 0.0
+	for _, prototype := range guidancePrototypeTexts {
+		protoVec, err := e.EmbedDocument(ctx, prototype)
+		if err != nil {
+			continue
+		}
+		if score := clamp01(cosine(docVec, protoVec)); score > best {
+			best = score
+		}
+	}
+	return best
+}
+
+func cosine(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		av := float64(a[i])
+		bv := float64(b[i])
+		dot += av * bv
+		normA += av * av
+		normB += bv * bv
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
 func eligiblePriorSummaries(results []store.SearchResult) []priorSummaryRecord {

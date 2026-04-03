@@ -348,6 +348,9 @@ Plain lore here.
 	if got := metaFloat(hard[0].Metadata, "authority"); got != 1.0 {
 		t.Fatalf("hard authority = %v, want 1.0", got)
 	}
+	if got := metaInt(soft[0].Metadata, "position"); got <= 0 {
+		t.Fatalf("soft position = %d, want > 0", got)
+	}
 	if got := metaFloat(variant[0].Metadata, "access_count"); got != 0 {
 		t.Fatalf("variant access_count = %v, want 0", got)
 	}

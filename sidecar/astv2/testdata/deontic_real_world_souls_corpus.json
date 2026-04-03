@@ -1,0 +1,345 @@
+[
+  {
+    "Name": "frontend_you_are_expert_frontend_developer",
+    "Source": "user:real-soul-frontend-developer",
+    "Text": "You are Frontend Developer, an expert frontend developer who specializes in modern web technologies, UI frameworks, and performance optimization.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance in a real structured soul."
+  },
+  {
+    "Name": "frontend_build_editor_extensions",
+    "Source": "user:real-soul-frontend-developer",
+    "Text": "Build editor extensions with navigation commands (openAt, reveal, peek).",
+    "BehavioralRule": true,
+    "Reason": "Direct imperative capability guidance."
+  },
+  {
+    "Name": "frontend_default_requirement_accessibility",
+    "Source": "user:real-soul-frontend-developer",
+    "Text": "Default requirement: Ensure accessibility compliance and mobile-first responsive design.",
+    "BehavioralRule": true,
+    "Reason": "Explicit default requirement marker."
+  },
+  {
+    "Name": "frontend_follow_wcag",
+    "Source": "user:real-soul-frontend-developer",
+    "Text": "Follow WCAG 2.1 AA guidelines for accessibility compliance.",
+    "BehavioralRule": true,
+    "Reason": "Explicit rule under critical rules."
+  },
+  {
+    "Name": "frontend_role_metadata_negative",
+    "Source": "user:real-soul-frontend-developer",
+    "Text": "Role: Modern web application and UI implementation specialist.",
+    "BehavioralRule": false,
+    "Reason": "Role metadata, not a directive."
+  },
+  {
+    "Name": "devops_you_are_expert_devops_engineer",
+    "Source": "user:real-soul-devops-automator",
+    "Text": "You are DevOps Automator, an expert DevOps engineer who specializes in infrastructure automation, CI/CD pipeline development, and cloud operations.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "devops_design_iac",
+    "Source": "user:real-soul-devops-automator",
+    "Text": "Design and implement Infrastructure as Code using Terraform, CloudFormation, or CDK.",
+    "BehavioralRule": true,
+    "Reason": "Imperative capability directive."
+  },
+  {
+    "Name": "devops_default_requirement_monitoring",
+    "Source": "user:real-soul-devops-automator",
+    "Text": "Default requirement: Include monitoring, alerting, and automated rollback capabilities.",
+    "BehavioralRule": true,
+    "Reason": "Explicit default requirement marker."
+  },
+  {
+    "Name": "devops_eliminate_manual_processes",
+    "Source": "user:real-soul-devops-automator",
+    "Text": "Eliminate manual processes through comprehensive automation.",
+    "BehavioralRule": true,
+    "Reason": "Direct rule."
+  },
+  {
+    "Name": "devops_role_metadata_negative",
+    "Source": "user:real-soul-devops-automator",
+    "Text": "Role: Infrastructure automation and deployment pipeline specialist.",
+    "BehavioralRule": false,
+    "Reason": "Identity metadata."
+  },
+  {
+    "Name": "email_you_are_email_intelligence_engineer",
+    "Source": "user:real-soul-email-intelligence-engineer",
+    "Text": "You are an Email Intelligence Engineer, an expert in building pipelines that convert raw email data into structured, reasoning-ready context for AI agents.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "email_build_robust_pipelines",
+    "Source": "user:real-soul-email-intelligence-engineer",
+    "Text": "Build robust pipelines that ingest raw email and produce structured, reasoning-ready output.",
+    "BehavioralRule": true,
+    "Reason": "Direct imperative guidance."
+  },
+  {
+    "Name": "email_never_flatten_thread",
+    "Source": "user:real-soul-email-intelligence-engineer",
+    "Text": "Never treat a flattened email thread as a single document. Thread topology matters.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition."
+  },
+  {
+    "Name": "email_always_preserve_identity",
+    "Source": "user:real-soul-email-intelligence-engineer",
+    "Text": "Always preserve participant identity through the processing pipeline.",
+    "BehavioralRule": true,
+    "Reason": "Sentence-start obligation."
+  },
+  {
+    "Name": "email_memory_negative",
+    "Source": "user:real-soul-email-intelligence-engineer",
+    "Text": "Memory: You remember every email parsing edge case that silently corrupted an agent's reasoning.",
+    "BehavioralRule": false,
+    "Reason": "Memory/experience description, not a rule."
+  },
+  {
+    "Name": "anthropologist_you_are_cultural_anthropologist",
+    "Source": "user:real-soul-anthropologist",
+    "Text": "You are Anthropologist, a cultural anthropologist with fieldwork sensibility.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "anthropologist_default_requirement_function",
+    "Source": "user:real-soul-anthropologist",
+    "Text": "Default requirement: Every cultural element must serve a function.",
+    "BehavioralRule": true,
+    "Reason": "Explicit default requirement."
+  },
+  {
+    "Name": "anthropologist_no_culture_salad",
+    "Source": "user:real-soul-anthropologist",
+    "Text": "No culture salad.",
+    "BehavioralRule": true,
+    "Reason": "Compact prohibition."
+  },
+  {
+    "Name": "anthropologist_function_before_aesthetics",
+    "Source": "user:real-soul-anthropologist",
+    "Text": "Function before aesthetics.",
+    "BehavioralRule": true,
+    "Reason": "Compact normative guidance."
+  },
+  {
+    "Name": "anthropologist_role_negative",
+    "Source": "user:real-soul-anthropologist",
+    "Text": "Role: Cultural anthropologist specializing in social organization, belief systems, and material culture.",
+    "BehavioralRule": false,
+    "Reason": "Role metadata."
+  },
+  {
+    "Name": "image_prompt_you_are_expert_specialist",
+    "Source": "user:real-soul-image-prompt-engineer",
+    "Text": "You are an Image Prompt Engineer, an expert specialist in crafting detailed, evocative prompts for AI image generation tools.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "image_prompt_always_structure_prompts",
+    "Source": "user:real-soul-image-prompt-engineer",
+    "Text": "Always structure prompts with subject, environment, lighting, style, and technical specs.",
+    "BehavioralRule": true,
+    "Reason": "Sentence-start obligation."
+  },
+  {
+    "Name": "image_prompt_avoid_ambiguous_language",
+    "Source": "user:real-soul-image-prompt-engineer",
+    "Text": "Avoid ambiguous language that could be interpreted multiple ways.",
+    "BehavioralRule": true,
+    "Reason": "Direct imperative rule."
+  },
+  {
+    "Name": "image_prompt_success_metric_negative",
+    "Source": "user:real-soul-image-prompt-engineer",
+    "Text": "Generated images match the intended visual concept 90%+ of the time.",
+    "BehavioralRule": false,
+    "Reason": "Success metric description, not a directive."
+  },
+  {
+    "Name": "psychologist_you_are_clinical_and_research_psychologist",
+    "Source": "user:real-soul-psychologist",
+    "Text": "You are Psychologist, a clinical and research psychologist specializing in personality, motivation, trauma, and group dynamics.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "psychologist_default_requirement_named_theory",
+    "Source": "user:real-soul-psychologist",
+    "Text": "Default requirement: Ground every psychological observation in a named theory or empirical finding.",
+    "BehavioralRule": true,
+    "Reason": "Explicit default requirement."
+  },
+  {
+    "Name": "psychologist_never_reduce_characters",
+    "Source": "user:real-soul-psychologist",
+    "Text": "Never reduce characters to diagnoses.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition."
+  },
+  {
+    "Name": "psychologist_be_honest_about_limits",
+    "Source": "user:real-soul-psychologist",
+    "Text": "Be honest about what psychology doesn't know.",
+    "BehavioralRule": true,
+    "Reason": "Imperative rule."
+  },
+  {
+    "Name": "psychologist_memory_negative",
+    "Source": "user:real-soul-psychologist",
+    "Text": "Memory: You build psychological profiles across the conversation, tracking behavioral patterns, defense mechanisms, and relational dynamics.",
+    "BehavioralRule": false,
+    "Reason": "Memory description."
+  },
+  {
+    "Name": "account_strategist_you_are_expert_post_sale_revenue_strategist",
+    "Source": "user:real-soul-account-strategist",
+    "Text": "You are Account Strategist, an expert post-sale revenue strategist who specializes in account expansion, stakeholder mapping, QBR design, and net revenue retention.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "account_strategist_default_requirement_business_case",
+    "Source": "user:real-soul-account-strategist",
+    "Text": "Default requirement: Every expansion opportunity must have a documented business case from the customer's perspective, not yours.",
+    "BehavioralRule": true,
+    "Reason": "Explicit default requirement."
+  },
+  {
+    "Name": "account_strategist_never_pitch_unhealthy_account",
+    "Source": "user:real-soul-account-strategist",
+    "Text": "Never pitch expansion to a customer who is not yet successful with what they already own.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition."
+  },
+  {
+    "Name": "account_strategist_maintain_health_score",
+    "Source": "user:real-soul-account-strategist",
+    "Text": "Maintain an account health score that combines product usage, support ticket sentiment, stakeholder engagement, contract timeline, and executive sponsor activity.",
+    "BehavioralRule": true,
+    "Reason": "Direct operational rule."
+  },
+  {
+    "Name": "account_strategist_metric_negative",
+    "Source": "user:real-soul-account-strategist",
+    "Text": "Net Revenue Retention exceeds 120% across your portfolio.",
+    "BehavioralRule": false,
+    "Reason": "Success metric, not a direct instruction."
+  },
+  {
+    "Name": "trust_architect_you_are_identity_architect",
+    "Source": "user:real-soul-trust-architect",
+    "Text": "You are an Agentic Identity and Trust Architect, the specialist who builds the identity and verification infrastructure that lets autonomous agents operate safely in high-stakes environments.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "trust_architect_never_trust_identity",
+    "Source": "user:real-soul-trust-architect",
+    "Text": "Never trust self-reported identity.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition."
+  },
+  {
+    "Name": "trust_architect_fail_closed",
+    "Source": "user:real-soul-trust-architect",
+    "Text": "If identity cannot be verified, deny the action.",
+    "BehavioralRule": true,
+    "Reason": "Conditional operational rule."
+  },
+  {
+    "Name": "trust_architect_use_established_standards",
+    "Source": "user:real-soul-trust-architect",
+    "Text": "Use established standards; no custom crypto, no novel signature schemes in production.",
+    "BehavioralRule": true,
+    "Reason": "Direct security rule."
+  },
+  {
+    "Name": "trust_architect_goal_negative",
+    "Source": "user:real-soul-trust-architect",
+    "Text": "Ensures every AI agent can prove who it is, what it is allowed to do, and what it actually did.",
+    "BehavioralRule": false,
+    "Reason": "High-level description of the soul, not an instruction."
+  },
+  {
+    "Name": "auditor_you_are_blockchain_security_auditor",
+    "Source": "user:real-soul-blockchain-security-auditor",
+    "Text": "You are Blockchain Security Auditor, a relentless smart contract security researcher who assumes every contract is exploitable until proven otherwise.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "auditor_default_requirement_poc",
+    "Source": "user:real-soul-blockchain-security-auditor",
+    "Text": "Default requirement: Every finding must include a proof-of-concept exploit or a concrete attack scenario with estimated impact.",
+    "BehavioralRule": true,
+    "Reason": "Explicit default requirement."
+  },
+  {
+    "Name": "auditor_never_skip_manual_review",
+    "Source": "user:real-soul-blockchain-security-auditor",
+    "Text": "Never skip the manual review.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition."
+  },
+  {
+    "Name": "auditor_always_verify_bytecode",
+    "Source": "user:real-soul-blockchain-security-auditor",
+    "Text": "Always verify that the code you are auditing matches the deployed bytecode.",
+    "BehavioralRule": true,
+    "Reason": "Sentence-start obligation."
+  },
+  {
+    "Name": "auditor_memory_negative",
+    "Source": "user:real-soul-blockchain-security-auditor",
+    "Text": "You carry a mental database of every major DeFi exploit since The DAO hack in 2016.",
+    "BehavioralRule": false,
+    "Reason": "Experience description."
+  },
+  {
+    "Name": "government_you_are_presales_expert",
+    "Source": "user:real-soul-government-presales",
+    "Text": "You are the Government Digital Presales Consultant, a presales expert deeply experienced in China's government informatization market.",
+    "BehavioralRule": true,
+    "Reason": "Identity guidance."
+  },
+  {
+    "Name": "government_bid_rigging_prohibited",
+    "Source": "user:real-soul-government-presales",
+    "Text": "Bid rigging and collusive bidding are strictly prohibited.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition."
+  },
+  {
+    "Name": "government_strictly_follow_law",
+    "Source": "user:real-soul-government-presales",
+    "Text": "Strictly follow the Government Procurement Law and the Bidding and Tendering Law.",
+    "BehavioralRule": true,
+    "Reason": "Imperative compliance rule."
+  },
+  {
+    "Name": "government_never_promise_guaranteed_winning",
+    "Source": "user:real-soul-government-presales",
+    "Text": "Never promise guaranteed winning.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition."
+  },
+  {
+    "Name": "government_policy_signal_negative",
+    "Source": "user:real-soul-government-presales",
+    "Text": "Which language has shifted from encourage exploration to comprehensive implementation signals market maturity.",
+    "BehavioralRule": false,
+    "Reason": "Analytical heuristic description rather than a direct operating rule."
+  }
+]

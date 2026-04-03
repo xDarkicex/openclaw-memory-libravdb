@@ -2,6 +2,7 @@ package astv2
 
 import (
 	"bytes"
+	"math"
 	"strings"
 
 	"github.com/yuin/goldmark"
@@ -14,15 +15,16 @@ func ExtractDocument(sourceDoc string, raw []byte, tokenizerID string) (Document
 	frame := NewDeonticFrame()
 	nodes := make([]Node, 0, 16)
 	hopTargets := parseFrontmatterHopTargets(frontmatter)
+	bodyOffset := len(raw) - len(body)
 
 	if len(frontmatter) > 0 {
-		nodes = append(nodes, newNode(len(nodes), NodeYAMLFrontmatter, string(bytes.TrimSpace(frontmatter)), false, ModalityNone, nil))
+		nodes = append(nodes, newNode(len(nodes), 0, NodeYAMLFrontmatter, string(bytes.TrimSpace(frontmatter)), false, ModalityNone, nil))
 	}
 
 	md := goldmark.New()
 	doc := md.Parser().Parse(text.NewReader(body))
 	for child := doc.FirstChild(); child != nil; child = child.NextSibling() {
-		collectNodes(body, child, frame, &nodes)
+		collectNodes(body, bodyOffset, child, frame, &nodes)
 	}
 	for i := range nodes {
 		if nodes[i].Tier == TierVariant && len(hopTargets) > 0 {
@@ -53,56 +55,57 @@ func ExtractDocument(sourceDoc string, raw []byte, tokenizerID string) (Document
 	return out, nil
 }
 
-func collectNodes(source []byte, node ast.Node, frame *DeonticFrame, out *[]Node) {
+func collectNodes(source []byte, baseOffset int, node ast.Node, frame *DeonticFrame, out *[]Node) {
 	switch n := node.(type) {
 	case *ast.List:
 		for item := n.FirstChild(); item != nil; item = item.NextSibling() {
 			textValue := normalizeInlineText(collectText(source, item))
 			if textValue != "" {
-				*out = append(*out, newNode(len(*out), NodeList, textValue, false, ModalityNone, nil))
+				*out = append(*out, newNode(len(*out), baseOffset+nodeStartOffset(item), NodeList, textValue, false, ModalityNone, nil))
 			}
 		}
 	case *ast.Blockquote:
 		textValue := normalizeInlineText(collectText(source, n))
 		if textValue != "" {
-			*out = append(*out, newNode(len(*out), NodeBlockquote, textValue, false, ModalityNone, nil))
+			*out = append(*out, newNode(len(*out), baseOffset+nodeStartOffset(n), NodeBlockquote, textValue, false, ModalityNone, nil))
 		}
 	case *ast.Paragraph:
 		textValue := normalizeInlineText(collectText(source, n))
 		if textValue != "" {
 			eval := frame.EvaluateText([]byte(textValue))
-			*out = append(*out, newNode(len(*out), NodeParagraph, textValue, eval.Promoted, eval.Mask, nil))
+			*out = append(*out, newNode(len(*out), baseOffset+nodeStartOffset(n), NodeParagraph, textValue, eval.Promoted, eval.Mask, nil))
 		}
 	case *ast.Heading:
 		textValue := normalizeInlineText(collectText(source, n))
 		if textValue != "" {
-			*out = append(*out, newNode(len(*out), NodeHeading, textValue, false, ModalityNone, nil))
+			*out = append(*out, newNode(len(*out), baseOffset+nodeStartOffset(n), NodeHeading, textValue, false, ModalityNone, nil))
 		}
 	case *ast.FencedCodeBlock:
 		textValue := normalizeBlockText(collectLines(source, n.Lines()))
 		if textValue != "" {
-			*out = append(*out, newNode(len(*out), NodeCodeBlock, textValue, false, ModalityNone, nil))
+			*out = append(*out, newNode(len(*out), baseOffset+nodeStartOffset(n), NodeCodeBlock, textValue, false, ModalityNone, nil))
 		}
 	case *ast.CodeBlock:
 		textValue := normalizeBlockText(collectLines(source, n.Lines()))
 		if textValue != "" {
-			*out = append(*out, newNode(len(*out), NodeCodeBlock, textValue, false, ModalityNone, nil))
+			*out = append(*out, newNode(len(*out), baseOffset+nodeStartOffset(n), NodeCodeBlock, textValue, false, ModalityNone, nil))
 		}
 	case *ast.HTMLBlock:
 		textValue := normalizeBlockText(collectLines(source, n.Lines()))
 		if textValue != "" {
-			*out = append(*out, newNode(len(*out), NodeHTMLBlock, textValue, false, ModalityNone, nil))
+			*out = append(*out, newNode(len(*out), baseOffset+nodeStartOffset(n), NodeHTMLBlock, textValue, false, ModalityNone, nil))
 		}
 	default:
 		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
-			collectNodes(source, child, frame, out)
+			collectNodes(source, baseOffset, child, frame, out)
 		}
 	}
 }
 
-func newNode(ordinal int, kind NodeKind, textValue string, promoted bool, mask ModalityMask, hopTargets []string) Node {
+func newNode(ordinal int, position int, kind NodeKind, textValue string, promoted bool, mask ModalityMask, hopTargets []string) Node {
 	return Node{
 		Ordinal:       ordinal,
+		Position:      position,
 		Kind:          kind,
 		Tier:          tierFor(kind, promoted),
 		Text:          textValue,
@@ -155,6 +158,38 @@ func collectLines(source []byte, lines *text.Segments) string {
 		b.Write(segment.Value(source))
 	}
 	return b.String()
+}
+
+type lineContainer interface {
+	Lines() *text.Segments
+}
+
+func nodeStartOffset(node ast.Node) int {
+	start := minNodeStartOffset(node)
+	if start == math.MaxInt {
+		return 0
+	}
+	return start
+}
+
+func minNodeStartOffset(node ast.Node) int {
+	start := math.MaxInt
+
+	if textNode, ok := node.(*ast.Text); ok {
+		start = min(start, textNode.Segment.Start)
+	}
+	if node.Type() != ast.TypeInline {
+		if linesNode, ok := node.(lineContainer); ok {
+			lines := linesNode.Lines()
+			if lines != nil && lines.Len() > 0 {
+				start = min(start, lines.At(0).Start)
+			}
+		}
+	}
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		start = min(start, minNodeStartOffset(child))
+	}
+	return start
 }
 
 func normalizeInlineText(raw string) string {

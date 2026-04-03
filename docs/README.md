@@ -13,6 +13,7 @@ to preserve project history and design evolution.
 - [compaction-evaluation.md](./compaction-evaluation.md) - Real-model benchmark notes for T5 summary confidence, Nomic-space preservation, and the hard preservation gate.
 - [continuity.md](./continuity.md) - Continuity model for invariant context, preserved recent raw session tail, and retrieved older memory.
 - [ast-v2.md](./ast-v2.md) - Reviewed authoritative AST partitioning reference for authored Markdown hard invariants, soft invariants, and variant lore.
+- [elevated-guidance.md](./elevated-guidance.md) - Tier 1.5 protected-shard and elevated-guidance model for preserving shadow rules through compaction.
 - [ast.md](./ast.md) - Historical predecessor to `ast-v2.md`, kept to show design evolution and earlier bugs.
 - [gating.md](./gating.md) - Full derivation and calibration guide for the domain-adaptive gating scalar.
 - [implementation.md](./implementation.md) - Non-obvious implementation decisions and their rationale.

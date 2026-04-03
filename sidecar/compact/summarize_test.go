@@ -209,6 +209,159 @@ func TestCompactSessionPartitionsDeterministicallyByTimestamp(t *testing.T) {
 	assertTurnIDs(t, sum.calls[1], []string{"c", "d"})
 }
 
+func TestCompactSessionPreservesProtectedGuidanceAsVerbatimShards(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "Never use mutexes in the hot path.", Metadata: map[string]any{"sessionId": "s1", "userId": "u1", "ts": int64(10), "stability_weight": 0.8, "provenance_class": "session_turn"}},
+			{ID: "b", Text: "background implementation detail", Metadata: map[string]any{"sessionId": "s1", "userId": "u1", "ts": int64(20), "stability_weight": 0.2, "provenance_class": "session_turn"}},
+		},
+	}
+	sum := &fakeSummarizer{
+		summaries: []summarize.Summary{
+			{Text: "background detail", SourceIDs: []string{"b"}, Method: "extractive", TokenCount: 2, Confidence: 0.8},
+		},
+	}
+
+	got, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 2, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !got.DidCompact {
+		t.Fatalf("expected compaction to proceed, got %+v", got)
+	}
+	if len(st.insertCalls) != 2 {
+		t.Fatalf("expected guidance shard plus summary insert, got %d inserts", len(st.insertCalls))
+	}
+	if st.insertCalls[0].collection != "elevated:user:u1" {
+		t.Fatalf("expected durable elevated collection, got %q", st.insertCalls[0].collection)
+	}
+	if st.insertCalls[0].meta["type"] != guidanceShardType {
+		t.Fatalf("expected first insert to be guidance shard, got %+v", st.insertCalls[0].meta)
+	}
+	if st.insertCalls[0].text != "Never use mutexes in the hot path." {
+		t.Fatalf("expected verbatim shard text, got %q", st.insertCalls[0].text)
+	}
+	if elevated, ok := st.insertCalls[0].meta["elevated_guidance"].(bool); !ok || !elevated {
+		t.Fatalf("expected elevated guidance metadata, got %+v", st.insertCalls[0].meta)
+	}
+	if len(st.deleteCalls) == 0 || len(st.deleteCalls[0].ids) != 2 {
+		t.Fatalf("expected both original turns deleted after replacement, got %+v", st.deleteCalls)
+	}
+}
+
+func TestCompactSessionDoesNotProtectLowStabilityDeonticTurns(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "Never use mutexes in the hot path.", Metadata: map[string]any{"sessionId": "s1", "userId": "u1", "ts": int64(10), "stability_weight": 0.1, "provenance_class": "session_turn"}},
+			{ID: "b", Text: "background implementation detail", Metadata: map[string]any{"sessionId": "s1", "userId": "u1", "ts": int64(20), "stability_weight": 0.1, "provenance_class": "session_turn"}},
+		},
+	}
+	sum := &fakeSummarizer{
+		summaries: []summarize.Summary{
+			{Text: "condensed summary", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 2, Confidence: 0.8},
+		},
+	}
+
+	got, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 2, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !got.DidCompact {
+		t.Fatalf("expected summary compaction, got %+v", got)
+	}
+	if len(st.insertCalls) != 1 {
+		t.Fatalf("expected summary only with no protected shard, got %+v", st.insertCalls)
+	}
+	if st.insertCalls[0].collection != "session:s1" {
+		t.Fatalf("expected only session summary insert, got %+v", st.insertCalls[0])
+	}
+}
+
+func TestCompactSessionSemanticBoosterProtectsBorderlineGuidance(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "We should probably keep the router focused on stealth.", Metadata: map[string]any{"sessionId": "s1", "userId": "u1", "ts": int64(10), "stability_weight": 0.8, "provenance_class": "session_turn"}},
+			{ID: "b", Text: "background implementation detail", Metadata: map[string]any{"sessionId": "s1", "userId": "u1", "ts": int64(20), "stability_weight": 0.2, "provenance_class": "session_turn"}},
+		},
+	}
+	sum := &fakeSummarizer{
+		summaries: []summarize.Summary{
+			{Text: "background detail", SourceIDs: []string{"b"}, Method: "extractive", TokenCount: 2, Confidence: 0.8},
+		},
+		embedder: fakeEmbedder{
+			vectors: map[string][]float32{
+				"We should probably keep the router focused on stealth.":                   {1, 0},
+				"Prefer deterministic operational guidance over generic defaults.":         {1, 0},
+				"Avoid unsafe or undesired implementation choices in hot paths.":           {0, 1},
+				"Use the specified approach when implementing core project logic.":         {1, 0},
+				"Keep the implementation aligned with project-specific engineering rules.": {1, 0},
+			},
+		},
+	}
+
+	got, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 2, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !got.DidCompact {
+		t.Fatalf("expected compaction to proceed, got %+v", got)
+	}
+	if len(st.insertCalls) != 2 {
+		t.Fatalf("expected guidance shard plus summary insert, got %+v", st.insertCalls)
+	}
+	if st.insertCalls[0].collection != "elevated:user:u1" {
+		t.Fatalf("expected semantic booster shard in durable elevated collection, got %+v", st.insertCalls[0])
+	}
+}
+
+func TestCompactSessionSemanticBoosterRequiresGuidanceSurfaceHint(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "Stealth router architecture background note.", Metadata: map[string]any{"sessionId": "s1", "userId": "u1", "ts": int64(10), "stability_weight": 0.8, "provenance_class": "session_turn"}},
+			{ID: "b", Text: "background implementation detail", Metadata: map[string]any{"sessionId": "s1", "userId": "u1", "ts": int64(20), "stability_weight": 0.2, "provenance_class": "session_turn"}},
+		},
+	}
+	sum := &fakeSummarizer{
+		summaries: []summarize.Summary{
+			{Text: "condensed summary", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 2, Confidence: 0.8},
+		},
+		embedder: fakeEmbedder{
+			vectors: map[string][]float32{
+				"Stealth router architecture background note.":                             {1, 0},
+				"Prefer deterministic operational guidance over generic defaults.":         {1, 0},
+				"Avoid unsafe or undesired implementation choices in hot paths.":           {0, 1},
+				"Use the specified approach when implementing core project logic.":         {1, 0},
+				"Keep the implementation aligned with project-specific engineering rules.": {1, 0},
+			},
+		},
+	}
+
+	got, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 2, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !got.DidCompact {
+		t.Fatalf("expected summary compaction, got %+v", got)
+	}
+	if len(st.insertCalls) != 1 || st.insertCalls[0].collection != "session:s1" {
+		t.Fatalf("expected no semantic booster protection without surface hint, got %+v", st.insertCalls)
+	}
+}
+
+func TestCompactSessionSkipsGuidanceShardsWhenSelectingEligibleTurns(t *testing.T) {
+	results := []store.SearchResult{
+		{ID: "guidance:s1:a", Text: "Never use mutexes in the hot path.", Metadata: map[string]any{"sessionId": "s1", "ts": int64(15), "type": guidanceShardType}},
+		{ID: "a", Text: "alpha", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10), "type": "turn"}},
+		{ID: "b", Text: "beta", Metadata: map[string]any{"sessionId": "s1", "ts": int64(20), "type": "turn"}},
+	}
+
+	turns := eligibleTurns(results)
+	assertTurnIDs(t, []summarize.Turn{
+		{ID: turns[0].id},
+		{ID: turns[1].id},
+	}, []string{"a", "b"})
+}
+
 func TestPartitionChronologicalProducesContiguousCompleteBuckets(t *testing.T) {
 	turns := []turnRecord{
 		{id: "a", ts: 10},
@@ -455,11 +608,11 @@ func TestCompactSessionAddsBoundedPriorCompactedContextForAbstractiveSummaries(t
 		},
 	}
 	extractive := &fakeSummarizer{
-		mode: "extractive",
+		mode:      "extractive",
 		summaries: []summarize.Summary{{Text: "extractive", Method: "extractive", TokenCount: 1, Confidence: 0.6}},
 	}
 	abstractive := &fakeSummarizer{
-		mode: "onnx-local",
+		mode:      "onnx-local",
 		summaries: []summarize.Summary{{Text: "abstractive", Method: "onnx-t5", TokenCount: 1, Confidence: 0.8}},
 	}
 
@@ -490,7 +643,7 @@ func TestCompactSessionDoesNotConditionExtractiveSummariesOnPriorContext(t *test
 		},
 	}
 	sum := &fakeSummarizer{
-		mode: "extractive",
+		mode:      "extractive",
 		summaries: []summarize.Summary{{Text: "summary", Method: "extractive", TokenCount: 1, Confidence: 0.8}},
 	}
 
@@ -790,10 +943,10 @@ func TestCompactSessionAcceptsAbstractiveSummaryAtPreservationBoundary(t *testin
 	const align = PreservationThreshold + 1e-4
 	embedder := fakeEmbedder{
 		vectors: map[string][]float32{
-			"alpha":                 {1, 0},
-			"beta":                  {1, 0},
-			"threshold-summary":     {align, float32(math.Sqrt(1.0 - align*align))},
-			"extractive-summary":    {1, 0},
+			"alpha":              {1, 0},
+			"beta":               {1, 0},
+			"threshold-summary":  {align, float32(math.Sqrt(1.0 - align*align))},
+			"extractive-summary": {1, 0},
 		},
 	}
 	st := &fakeStore{
@@ -876,9 +1029,9 @@ func TestCompactSessionStoresExactHybridConfidenceForAcceptedAbstractiveSummary(
 	const align = 0.8
 	embedder := fakeEmbedder{
 		vectors: map[string][]float32{
-			"alpha":             {1, 0},
-			"beta":              {1, 0},
-			"hybrid-summary":    {align, 0.6},
+			"alpha":              {1, 0},
+			"beta":               {1, 0},
+			"hybrid-summary":     {align, 0.6},
 			"extractive-summary": {1, 0},
 		},
 	}
@@ -923,8 +1076,8 @@ func TestCompactSessionStoresExactHybridConfidenceForAcceptedAbstractiveSummary(
 func TestCompactSessionStoresExactNomicConfidenceForExtractiveSummary(t *testing.T) {
 	embedder := fakeEmbedder{
 		vectors: map[string][]float32{
-			"alpha":             {1, 0},
-			"beta":              {1, 0},
+			"alpha":              {1, 0},
+			"beta":               {1, 0},
 			"extractive-summary": {0.8, 0.6},
 		},
 	}

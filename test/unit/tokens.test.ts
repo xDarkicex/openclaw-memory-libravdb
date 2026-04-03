@@ -48,6 +48,7 @@ test("buildMemoryHeader separates authored directives from recalled memories", (
   const header = buildMemoryHeader([
     { id: "a", score: 1, text: "Always cite the math.", metadata: { authored: true, tier: 1 } },
     { id: "t", score: 0, text: "recent raw tail", metadata: { continuity_tail: true, role: "assistant" } },
+    { id: "e", score: 0.9, text: "Prefer arena allocators for the radix tree.", metadata: { elevated_guidance: true } },
     { id: "b", score: 0.8, text: "historical recall", metadata: { role: "user", collection: "user:u1" } },
   ]);
 
@@ -55,6 +56,8 @@ test("buildMemoryHeader separates authored directives from recalled memories", (
   assert.match(header, /\[A1\] Always cite the math\./);
   assert.match(header, /<recent_session_tail>/);
   assert.match(header, /\[T1\] <entry role="assistant" source="session">recent raw tail<\/entry>/);
+  assert.match(header, /<elevated_guidance>/);
+  assert.match(header, /\[E1\] Prefer arena allocators for the radix tree\./);
   assert.match(header, /<recalled_memories>/);
   assert.match(header, /\[M1\] <entry role="user" source="recalled">historical recall<\/entry>/);
 });

@@ -33,6 +33,27 @@ We formalize this as a binary promotion scalar \(\sigma: N_d \to \{0,1\}\). This
 \end{cases}
 \]
 
+To reason about tuning noise in the bigram set \(W_{\mathrm{deontic}}\), we
+also define the paragraph classifier error rates:
+\[
+P_{\mathrm{fp}} = P(\sigma(n) = 1 \mid n \text{ is narrative lore})
+\]
+\[
+P_{\mathrm{fn}} = P(\sigma(n) = 0 \mid n \text{ is behavioral rule})
+\]
+
+For authored documents whose lore paragraphs would otherwise remain in
+\(\mathcal{V}_d\), the expected Tier-2 waste introduced by false positives is:
+\[
+\mathbb{E}[\mathrm{wasted\ toks\ in\ }\mathcal{I}_2]
+=
+P_{\mathrm{fp}} \cdot |\mathcal{V}_{d,\mathrm{paragraphs}}| \cdot \mathbb{E}[\mathrm{toks}(n)]
+\]
+
+This gives the parser a concrete quantity to minimize when adjusting
+\(W_{\mathrm{deontic}}\), while \(P_{\mathrm{fn}}\) measures the risk of leaving
+true behavioral rules behind in \(\mathcal{V}_d\).
+
 *Implemented via `NewDeonticFrame` and `EvaluateText` in the zero-allocation byte lexer.*
 
 ## 3. The Three-Tier Structural Indicator Function \(\iota\)
@@ -59,12 +80,27 @@ We define the structural indicator function \(\iota: N_d \to \{0,1,2\}\) mapping
 ## 4. Corpus Decomposition and Set Integration
 
 For any document \(d \in \mathbf{D}_{\text{agents}} \cup \mathbf{D}_{\text{souls}}\), the node set \(N_d\) is partitioned cleanly into three sets:
-- **Hard Directives:** \(\mathcal{I}_{1d} = \{ n \in N_d \mid \iota(n) = 1 \}\)
+- **Hard Directives:** \(\mathcal{I}_{1d} = \langle n \in N_d \mid \iota(n) = 1 \rangle\), ordered by \(\mathrm{position}(n)\) ascending, where \(\mathrm{position}(n)\) is the byte offset of node \(n\) in \(d_{\mathrm{raw}}\)
 - **Soft Directives:** \(\mathcal{I}_{2d} = \{ n \in N_d \mid \iota(n) = 2 \}\)
 - **Contextual Lore:** \(\mathcal{V}_d = \{ n \in N_d \mid \iota(n) = 0 \}\)
 
 *Partition Completeness:* Because \(\iota(n)\) maps every node to exactly one integer in \(\{0, 1, 2\}\), the resulting sets are mutually exclusive and collectively exhaustive:
-\[ \mathcal{I}_{1d} \cup \mathcal{I}_{2d} \cup \mathcal{V}_d = N_d \quad \text{and} \quad \mathcal{I}_{1d} \cap \mathcal{I}_{2d} \cap \mathcal{V}_d = \emptyset \]
+\[
+\mathcal{I}_{1d} \cup \mathcal{I}_{2d} \cup \mathcal{V}_d = N_d
+\]
+\[
+\mathcal{I}_{1d} \cap \mathcal{I}_{2d} = \emptyset
+\]
+\[
+\mathcal{I}_{1d} \cap \mathcal{V}_d = \emptyset
+\]
+\[
+\mathcal{I}_{2d} \cap \mathcal{V}_d = \emptyset
+\]
+
+These pairwise disjointness statements follow directly from \(\iota\) being a
+single-valued total function into \(\{0,1,2\}\): no node can be assigned to
+more than one tier simultaneously.
 
 These sets integrate into the global corpus. Let \(\mathbf{D}_{\text{standard}}\) be the set of standard memory documents (non-core files). We formally define the standard variant node set as \(\mathcal{V}_{\text{standard}} = \bigcup_{d \in \mathbf{D}_{\text{standard}}} E(d)\). The global corpus is then:
 \[ \mathcal{I}_1 = \bigcup_{d} \mathcal{I}_{1d} \qquad \mathcal{I}_2 = \bigcup_{d} \mathcal{I}_{2d} \qquad \mathcal{V} = \mathcal{V}_{\text{standard}} \cup \left( \bigcup_{d} \mathcal{V}_d \right) \]
@@ -86,7 +122,7 @@ For Hard Invariants (\(\alpha_1\)):
 \[ \sum_{n \in \mathcal{I}_{1d}} \mathrm{toks}(n) \le \alpha_1 \tau \implies \text{fast-fail and reject agent load if exceeded} \]
 
 For Soft Invariants (\(\alpha_2\)):
-\[ \sum_{n \in \mathcal{I}_{2d}} \mathrm{toks}(n) \le \alpha_2 \tau \implies \text{truncate by position if exceeded} \]
+\[ \sum_{n \in \mathcal{I}_{2d}} \mathrm{toks}(n) \le \alpha_2 \tau \implies \text{truncate by source position if exceeded} \]
 
 *Cumulative Verification Proof:* Let the total reserved invariant budget fraction be \(\alpha\), where \(\alpha_1 + \alpha_2 \le \alpha\). If both independent enforcement bounds are satisfied, then:
 \[ \sum_{n \in \mathcal{I}_{1d}} \mathrm{toks}(n) + \sum_{n \in \mathcal{I}_{2d}} \mathrm{toks}(n) \le \alpha_1 \tau + \alpha_2 \tau = (\alpha_1 + \alpha_2)\tau \le \alpha \tau \]
@@ -102,14 +138,20 @@ therefore treats the tiers with the following precedence:
 3. **Tier 2 / Soft invariants** are injected by longest-prefix truncation under the effective budget
    \[
    \tau_{\mathcal{I}_2}^{\mathrm{eff}}=
+   \max\!\left(0,\,
    \min\!\left(\alpha_2\tau,\,
-   \tau-\tau_{\mathcal{I}_1}-\mathrm{toks}(T_{\mathrm{base}})\right)
+   \tau-\tau_{\mathcal{I}_1}-\mathrm{toks}(T_{\mathrm{base}})\right)\right)
    \]
 4. **Variant lore** competes only for the final residual budget after Tier 1,
    the admitted Tier 2 prefix, and the exact recent tail are accounted for.
 
 This makes \(\mathcal{I}_1\) and the minimum continuity suffix hard
 constraints, while keeping \(\mathcal{I}_2\) order-preserving but elastic.
+Equivalently, the runtime safety invariant is:
+\[
+\tau_{\mathcal{I}_1} + \mathrm{toks}(T_{\mathrm{base}}) \le \tau
+\quad \text{must hold at runtime or Tier 2 is fully evicted}
+\]
 
 ## 7. The Document-Addressed Cache (\(\Psi\)) and Runtime Implications
 
@@ -121,5 +163,5 @@ Because the token estimator function \(\lceil \frac{|t|}{\chi(t)} \rceil\) depen
 
 At runtime:
 1. **Tier 1 (\(\mathcal{I}_{1d}\))** is injected via an \(O(1)\) memory copy.
-2. **Tier 2 (\(\mathcal{I}_{2d}\))** is evaluated via an \(O(|\mathcal{I}_{2d}|)\) prefix sum to enforce position truncation under \(\tau_{\mathcal{I}_2}^{\mathrm{eff}}\).
+2. **Tier 2 (\(\mathcal{I}_{2d}\))** is evaluated via an \(O(|\mathcal{I}_{2d}|)\) prefix sum to enforce source-order truncation under \(\tau_{\mathcal{I}_2}^{\mathrm{eff}}\).
 3. **Tier 0 (\(\mathcal{V}_d\))** bypasses re-parsing and feeds into the semantic Pass 1 vector retrieval only after the continuity layer removes the exact recent tail into \(T_{\mathrm{recent}}\), leaving \(\mathcal{V}_{\mathrm{rest}}\).

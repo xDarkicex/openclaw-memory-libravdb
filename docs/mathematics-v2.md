@@ -5,7 +5,9 @@ by the plugin. The gating scalar is documented separately in
 [gating.md](./gating.md). The continuity model and recent-tail preservation
 layer are documented in [continuity.md](./continuity.md). The authored
 invariant/variant partitioning rules are documented in
-[ast-v2.md](./ast-v2.md). Earlier non-versioned math docs are preserved for
+[ast-v2.md](./ast-v2.md). The protected-shadow-rule Tier 1.5 model is
+documented in [elevated-guidance.md](./elevated-guidance.md). Earlier
+non-versioned math docs are preserved for
 historical context, but the reviewed `*-v*` documents are authoritative when
 both forms exist.
 

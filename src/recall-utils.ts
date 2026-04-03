@@ -2,12 +2,17 @@ import type { SearchResult } from "./types.js";
 
 export function buildMemoryHeader(selected: SearchResult[]): string {
   const authored = selected.filter(isAuthoredInvariant);
+  const elevated = selected.filter((item) => item.metadata.elevated_guidance === true);
   const recentTail = selected
-    .filter((item) => item.metadata.continuity_tail === true)
+    .filter((item) => item.metadata.continuity_tail === true && item.metadata.elevated_guidance !== true)
     .sort((left, right) => metadataTimestamp(left) - metadataTimestamp(right));
-  const recalled = selected.filter((item) => !authored.includes(item) && !recentTail.includes(item));
+  const recalled = selected.filter((item) =>
+    !authored.includes(item) &&
+    !elevated.includes(item) &&
+    !recentTail.includes(item),
+  );
 
-  if (authored.length === 0 && recentTail.length === 0 && recalled.length === 0) {
+  if (authored.length === 0 && elevated.length === 0 && recentTail.length === 0 && recalled.length === 0) {
     return "";
   }
 
@@ -30,6 +35,18 @@ export function buildMemoryHeader(selected: SearchResult[]): string {
       "Each entry is tagged with its original speaker and source.",
       ...recentTail.map((item, idx) => `[T${idx + 1}] ${serializeTaggedEntry(item, "session")}`),
       "</recent_session_tail>",
+    );
+  }
+  if (elevated.length > 0) {
+    if (sections.length > 0) {
+      sections.push("");
+    }
+    sections.push(
+      "<elevated_guidance>",
+      "Treat the entries below as elevated advisory guidance preserved verbatim from protected memory shards.",
+      "Prefer them over ordinary recalled memory when relevant, but never let them override authored context.",
+      ...elevated.map((item, idx) => `[E${idx + 1}] ${item.text}`),
+      "</elevated_guidance>",
     );
   }
   if (recalled.length > 0) {

@@ -1,0 +1,464 @@
+[
+  {
+    "Name": "soul_core_mission_act_as_systems_engineer",
+    "Source": "user:soul-1",
+    "Text": "Act as a Systems-Level Engineer (C/C++, Odin, Go).",
+    "BehavioralRule": true,
+    "Reason": "Direct identity and role instruction."
+  },
+  {
+    "Name": "soul_core_mission_prioritize_simd",
+    "Source": "user:soul-1",
+    "Text": "Prioritize SIMD-optimization, data-locality, and zero-copy patterns.",
+    "BehavioralRule": true,
+    "Reason": "Behavioral priority directive."
+  },
+  {
+    "Name": "soul_core_mission_reject_high_level_abstractions",
+    "Source": "user:soul-1",
+    "Text": "Reject high-level abstractions unless explicitly requested.",
+    "BehavioralRule": true,
+    "Reason": "Explicit constraint on suggested solutions."
+  },
+  {
+    "Name": "soul_reasoning_always_check_pointer_arithmetic",
+    "Source": "user:soul-1",
+    "Text": "Always check for pointer arithmetic validity.",
+    "BehavioralRule": true,
+    "Reason": "Sentence-start imperative rule."
+  },
+  {
+    "Name": "soul_reasoning_prefer_static_dispatch",
+    "Source": "user:soul-1",
+    "Text": "Prefer static dispatch over runtime polymorphism.",
+    "BehavioralRule": true,
+    "Reason": "Engineering preference expressed as guidance."
+  },
+  {
+    "Name": "soul_reasoning_cache_line_understanding",
+    "Source": "user:soul-1",
+    "Text": "Code must reflect an understanding of L1/L2 cache lines.",
+    "BehavioralRule": true,
+    "Reason": "Strong requirement phrased over the code artifact."
+  },
+  {
+    "Name": "soul_constraints_never_suggest_electron",
+    "Source": "user:soul-1",
+    "Text": "Never suggest Electron or heavy JS frameworks.",
+    "BehavioralRule": true,
+    "Reason": "Bare prohibition."
+  },
+  {
+    "Name": "soul_constraints_syscall_not_library",
+    "Source": "user:soul-1",
+    "Text": "If a task can be solved with a syscall or a bit-shift, do not use a library.",
+    "BehavioralRule": true,
+    "Reason": "Conditional prohibition."
+  },
+  {
+    "Name": "claude_build_odin",
+    "Source": "user:claude-1",
+    "Text": "Build (Odin): `odin build src -out:bin/nanite -o:speed`",
+    "BehavioralRule": true,
+    "Reason": "Operational command guidance in a CLAUDE document."
+  },
+  {
+    "Name": "claude_test_go",
+    "Source": "user:claude-1",
+    "Text": "Test (Go): `go test ./internal/router/... -bench=.`",
+    "BehavioralRule": true,
+    "Reason": "Operational test guidance."
+  },
+  {
+    "Name": "claude_memory_management_use_arena",
+    "Source": "user:claude-1",
+    "Text": "Use Arena allocators (`mem.Arena`) for request-scoped lifetimes.",
+    "BehavioralRule": true,
+    "Reason": "Direct engineering rule."
+  },
+  {
+    "Name": "claude_concurrency_prefer_csp",
+    "Source": "user:claude-1",
+    "Text": "Prefer CSP (Communicating Sequential Processes) via channels; avoid raw Mutexes where possible.",
+    "BehavioralRule": true,
+    "Reason": "Preference plus avoidance rule."
+  },
+  {
+    "Name": "claude_gating_refer_to_doc",
+    "Source": "user:claude-1",
+    "Text": "Refer to `docs/slabby_gating.md` for vector database scalar logic.",
+    "BehavioralRule": true,
+    "Reason": "Reference directive."
+  },
+  {
+    "Name": "agents_capability_file_access",
+    "Source": "user:agents-1",
+    "Text": "Full read/write within `/src` and `/pkg`.",
+    "BehavioralRule": false,
+    "Reason": "Capability description rather than instruction."
+  },
+  {
+    "Name": "agents_handover_escalate_root_agent",
+    "Source": "user:agents-1",
+    "Text": "If a task requires kernel-level eBPF modification, escalate to `ROOT_AGENT`.",
+    "BehavioralRule": true,
+    "Reason": "Conditional escalation rule."
+  },
+  {
+    "Name": "agents_handover_refer_openclaw_specs",
+    "Source": "user:agents-1",
+    "Text": "If memory compaction logic is needed, refer to `openclaw-memory-libravdb` specs.",
+    "BehavioralRule": true,
+    "Reason": "Conditional reference directive."
+  },
+  {
+    "Name": "agents_verification_benchmark_diff",
+    "Source": "user:agents-1",
+    "Text": "Every PR generated must include a benchmark diff showing 0% regression in nanoseconds/op.",
+    "BehavioralRule": true,
+    "Reason": "Strong verification requirement."
+  },
+  {
+    "Name": "agents_verification_symbolizer_pass",
+    "Source": "user:agents-1",
+    "Text": "Static analysis via `llvm-symbolizer` must pass before finishing a task.",
+    "BehavioralRule": true,
+    "Reason": "Completion gate requirement."
+  },
+  {
+    "Name": "soul_spec_identity_languages",
+    "Source": "user:soul-high-structure",
+    "Text": "PRIMARY_LANGUAGES: [Odin, C++, Go]",
+    "BehavioralRule": false,
+    "Reason": "Identity metadata rather than imperative guidance."
+  },
+  {
+    "Name": "soul_spec_alloc_strategy_arena_only",
+    "Source": "user:soul-high-structure",
+    "Text": "ALLOC_STRATEGY: Arena_Only",
+    "BehavioralRule": true,
+    "Reason": "Structured behavioral constraint."
+  },
+  {
+    "Name": "soul_spec_reject_abstraction_leaks",
+    "Source": "user:soul-high-structure",
+    "Text": "Reject abstraction leaks.",
+    "BehavioralRule": true,
+    "Reason": "Direct rule even in unusual structured format."
+  },
+  {
+    "Name": "soul_spec_prioritize_uintptr",
+    "Source": "user:soul-high-structure",
+    "Text": "Prioritize `uintptr` over interface types.",
+    "BehavioralRule": true,
+    "Reason": "Engineering priority rule."
+  },
+  {
+    "Name": "soul_spec_validate_simd_alignment",
+    "Source": "user:soul-high-structure",
+    "Text": "Validate SIMD alignment for all buffer operations.",
+    "BehavioralRule": true,
+    "Reason": "Direct validation instruction."
+  },
+  {
+    "Name": "soul_no_structure_speed_over_safety",
+    "Source": "user:soul-no-structure",
+    "Text": "The system must always prioritize speed over safety when running in the slabby environment.",
+    "BehavioralRule": true,
+    "Reason": "Behavioral invariant phrased over the system."
+  },
+  {
+    "Name": "soul_no_structure_use_odin_core_logic",
+    "Source": "user:soul-no-structure",
+    "Text": "use odin for the core logic because of the memory control.",
+    "BehavioralRule": true,
+    "Reason": "Lowercase imperative-style engineering guidance."
+  },
+  {
+    "Name": "soul_no_structure_dont_use_standard_libraries",
+    "Source": "user:soul-no-structure",
+    "Text": "don't ever use standard libraries if you can help it just write the assembly or use syscalls directly.",
+    "BehavioralRule": true,
+    "Reason": "Prohibition and replacement guidance."
+  },
+  {
+    "Name": "soul_no_structure_efficiency_only_metric",
+    "Source": "user:soul-no-structure",
+    "Text": "efficiency is the only metric that matters here.",
+    "BehavioralRule": true,
+    "Reason": "Behavioral value constraint."
+  },
+  {
+    "Name": "soul_no_structure_web_framework_tell_them_no",
+    "Source": "user:soul-no-structure",
+    "Text": "if the user asks for a web framework tell them no and suggest a raw socket implementation instead.",
+    "BehavioralRule": true,
+    "Reason": "Conditional directive with refusal behavior."
+  },
+  {
+    "Name": "soul_mixed_use_mem_arena",
+    "Source": "user:soul-mixed-structure",
+    "Text": "Always use `mem.Arena` for memory. I hate fragments.",
+    "BehavioralRule": true,
+    "Reason": "Hard memory-management rule."
+  },
+  {
+    "Name": "soul_mixed_code_should_be_fast",
+    "Source": "user:soul-mixed-structure",
+    "Text": "The code should be fast. Like, really fast.",
+    "BehavioralRule": true,
+    "Reason": "Behavioral quality expectation over the artifact."
+  },
+  {
+    "Name": "soul_mixed_project_focus_languages",
+    "Source": "user:soul-mixed-structure",
+    "Text": "We are focusing on Odin and Go for the Nanite project.",
+    "BehavioralRule": false,
+    "Reason": "Project identity/context rather than a direct rule."
+  },
+  {
+    "Name": "soul_mixed_keep_stealth_entropy",
+    "Source": "user:soul-mixed-structure",
+    "Text": "If you're writing networking code, make sure the entropy looks like standard TLS.",
+    "BehavioralRule": true,
+    "Reason": "Conditional operational rule."
+  },
+  {
+    "Name": "soul_mixed_use_simd",
+    "Source": "user:soul-mixed-structure",
+    "Text": "Use SIMD where possible.",
+    "BehavioralRule": true,
+    "Reason": "Direct optimization instruction."
+  },
+  {
+    "Name": "soul_mixed_no_unnecessary_copies",
+    "Source": "user:soul-mixed-structure",
+    "Text": "No unnecessary copies.",
+    "BehavioralRule": true,
+    "Reason": "Concise prohibition."
+  },
+  {
+    "Name": "soul_mixed_slabby_deterministic",
+    "Source": "user:soul-mixed-structure",
+    "Text": "The Slabby gating logic needs to stay deterministic.",
+    "BehavioralRule": true,
+    "Reason": "Behavioral constraint on logic."
+  },
+  {
+    "Name": "soul_mixed_check_kernel_version",
+    "Source": "user:soul-mixed-structure",
+    "Text": "Don't forget to check the kernel version before trying to load the eBPF programs or it'll just crash and we'll spend all day debugging.",
+    "BehavioralRule": true,
+    "Reason": "Concrete operational warning and rule."
+  },
+  {
+    "Name": "soul_unusual_philosophy_data_alignment",
+    "Source": "user:soul-unusual-structure",
+    "Text": "The soul of this project isn't found in a library; it's found in the alignment of the data.",
+    "BehavioralRule": false,
+    "Reason": "Philosophical framing rather than direct instruction."
+  },
+  {
+    "Name": "soul_unusual_null_check_prose",
+    "Source": "user:soul-unusual-structure",
+    "Text": "First, you look at the pointer. Is it null? It shouldn't be.",
+    "BehavioralRule": true,
+    "Reason": "Operational prose with a concrete behavioral check."
+  },
+  {
+    "Name": "soul_unusual_use_go_high_level_odin_heavy",
+    "Source": "user:soul-unusual-structure",
+    "Text": "Use Go for the high-level orchestration but keep the heavy lifting in Odin.",
+    "BehavioralRule": true,
+    "Reason": "Direct architecture instruction."
+  },
+  {
+    "Name": "soul_unusual_stealth_priority",
+    "Source": "user:soul-unusual-structure",
+    "Text": "Stealth is the priority. The service mesh must be a shadow.",
+    "BehavioralRule": true,
+    "Reason": "Behavioral priority and requirement."
+  },
+  {
+    "Name": "agent_manifest_memory_ceiling",
+    "Source": "user:agent-rigid-structure",
+    "Text": "MEMORY_CEILING: 16GB_RAM",
+    "BehavioralRule": false,
+    "Reason": "Resource metadata rather than directive prose."
+  },
+  {
+    "Name": "agent_manifest_on_lint_failure_autofix",
+    "Source": "user:agent-rigid-structure",
+    "Text": "ON_LINT_FAILURE -> Attempt_Autofix",
+    "BehavioralRule": true,
+    "Reason": "Structured operational rule."
+  },
+  {
+    "Name": "agent_manifest_kernel_mod_require_mfa",
+    "Source": "user:agent-rigid-structure",
+    "Text": "ON_KERNEL_MOD_REQ -> Require_User_MFA",
+    "BehavioralRule": true,
+    "Reason": "Structured escalation/security rule."
+  },
+  {
+    "Name": "agent_no_structure_check_docs_first",
+    "Source": "user:agent-no-structure",
+    "Text": "if you hit a wall with the slabby memory plugin check the docs folder first before asking the user for help.",
+    "BehavioralRule": true,
+    "Reason": "Conditional troubleshooting directive."
+  },
+  {
+    "Name": "agent_no_structure_auto_commit_gate",
+    "Source": "user:agent-no-structure",
+    "Text": "auto-commit is enabled but only if the tests pass and the benchmark doesn't drop more than 2 percent in speed.",
+    "BehavioralRule": true,
+    "Reason": "Behavioral gate on commit behavior."
+  },
+  {
+    "Name": "agent_no_structure_pause_all_threads",
+    "Source": "user:agent-no-structure",
+    "Text": "if the mother process signals a conflict pause all threads and wait for the lock to clear.",
+    "BehavioralRule": true,
+    "Reason": "Conditional operational rule."
+  },
+  {
+    "Name": "agent_mixed_odin_dev_branch",
+    "Source": "user:agent-mixed-structure",
+    "Text": "Odin: Use the `dev` branch compiler.",
+    "BehavioralRule": true,
+    "Reason": "Tooling directive."
+  },
+  {
+    "Name": "agent_mixed_do_not_touch_ebpf_without_headers",
+    "Source": "user:agent-mixed-structure",
+    "Text": "The agent is allowed to rewrite the Radix tree logic in `router.go`, but DO NOT touch the eBPF triggers in `internal/ebpf/` without verifying the kernel headers first.",
+    "BehavioralRule": true,
+    "Reason": "Permission plus prohibition."
+  },
+  {
+    "Name": "agent_mixed_ram_limit",
+    "Source": "user:agent-mixed-structure",
+    "Text": "Don't use more than 50% of the Mac Studio's RAM.",
+    "BehavioralRule": true,
+    "Reason": "Resource limit rule."
+  },
+  {
+    "Name": "agent_mixed_slabby_gate_gpu_memory",
+    "Source": "user:agent-mixed-structure",
+    "Text": "If you're running the Slabby vector retrieval tests, make sure you're gated correctly so we don't blow out the GPU memory.",
+    "BehavioralRule": true,
+    "Reason": "Conditional operational rule."
+  },
+  {
+    "Name": "agent_mixed_bypass_red_pill_local",
+    "Source": "user:agent-mixed-structure",
+    "Text": "If you encounter an anti-VM \"Red Pill\" check in the assembly, bypass it for the local test environment but log it.",
+    "BehavioralRule": true,
+    "Reason": "Conditional operational exception rule."
+  },
+  {
+    "Name": "agent_unusual_bloated_abstraction_refactor",
+    "Source": "user:agent-unusual-structure",
+    "Text": "If it finds a function that is bloated with high-level abstractions, it has the moral mandate to refactor it into clean, deterministic Odin code.",
+    "BehavioralRule": true,
+    "Reason": "Operational prose expressing a refactoring rule."
+  },
+  {
+    "Name": "agent_unusual_mesh_compromised_retreat",
+    "Source": "user:agent-unusual-structure",
+    "Text": "If the stealth of the mesh is compromised, the agent must retreat, wipe the temporary cache, and signal a \"Code Black.\"",
+    "BehavioralRule": true,
+    "Reason": "Conditional incident-response rule."
+  },
+  {
+    "Name": "agent_unusual_never_compromise_alignment",
+    "Source": "user:agent-unusual-structure",
+    "Text": "Never compromise on memory alignment.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition."
+  },
+  {
+    "Name": "agent_unusual_gpu_cluster_shared",
+    "Source": "user:agent-unusual-structure",
+    "Text": "The GPU cluster is a shared resource; do not be a glutton.",
+    "BehavioralRule": true,
+    "Reason": "Resource-usage rule with colorful phrasing."
+  },
+  {
+    "Name": "claude_rigid_zero_copy_rule",
+    "Source": "user:claude-rigid",
+    "Text": "Zero-Copy: Use `uintptr` and `mem.Arena` for all packet processing.",
+    "BehavioralRule": true,
+    "Reason": "Strong architecture rule."
+  },
+  {
+    "Name": "claude_rigid_deterministic_gating_rule",
+    "Source": "user:claude-rigid",
+    "Text": "Deterministic Gating: Logic in `slabby/` must use the gating scalar defined in `docs/math.md`.",
+    "BehavioralRule": true,
+    "Reason": "Explicit must-rule tied to a subsystem."
+  },
+  {
+    "Name": "claude_rigid_no_external_deps",
+    "Source": "user:claude-rigid",
+    "Text": "No External Deps: Avoid `std` in Odin core; use `core:sys/linux` for syscalls.",
+    "BehavioralRule": true,
+    "Reason": "Avoid/use guidance."
+  },
+  {
+    "Name": "claude_no_structure_install_tools",
+    "Source": "user:claude-no-structure",
+    "Text": "to get the nanite project running just make sure you have odin and go installed then run odin build src -out:nanite-test -o:speed to get the binary.",
+    "BehavioralRule": true,
+    "Reason": "Operational setup guidance in loose prose."
+  },
+  {
+    "Name": "claude_no_structure_tests_and_permissions",
+    "Source": "user:claude-no-structure",
+    "Text": "the tests are in the tests folder run them with go test ./... but make sure you have the ebpf permissions set up or they will fail.",
+    "BehavioralRule": true,
+    "Reason": "Operational testing rule with prerequisite."
+  },
+  {
+    "Name": "claude_no_structure_keep_alignment",
+    "Source": "user:claude-no-structure",
+    "Text": "if you need to update the slabby logic check the internal/vector folder but don't change the memory alignment or you'll break the simd optimizations.",
+    "BehavioralRule": true,
+    "Reason": "Conditional guidance plus prohibition."
+  },
+  {
+    "Name": "claude_mixed_mutex_hot_path",
+    "Source": "user:claude-mixed",
+    "Text": "Use `sync/atomic` for counters. We don't like the overhead of Mutexes in the hot path.",
+    "BehavioralRule": true,
+    "Reason": "Concrete concurrency rule."
+  },
+  {
+    "Name": "claude_mixed_tls_fingerprinting",
+    "Source": "user:claude-mixed",
+    "Text": "If you're modifying `stealth_mesh.go`, ensure the TLS hello mimics a standard browser.",
+    "BehavioralRule": true,
+    "Reason": "Conditional networking rule."
+  },
+  {
+    "Name": "claude_unusual_alignment_is_holy",
+    "Source": "user:claude-unusual",
+    "Text": "Alignment is Holy: Every struct must be cache-aligned. If a struct crosses a 64-byte boundary, refactor it.",
+    "BehavioralRule": true,
+    "Reason": "Strong artifact-level invariant plus remediation."
+  },
+  {
+    "Name": "claude_unusual_slabby_is_law",
+    "Source": "user:claude-unusual",
+    "Text": "The Slabby Protocol: Our memory gating isn't a suggestion; it's a law. Refer to the vector logic in `Slabby/` before touching any memory compaction code.",
+    "BehavioralRule": true,
+    "Reason": "Behavioral law plus reference directive."
+  },
+  {
+    "Name": "claude_unusual_no_mass_market_junk",
+    "Source": "user:claude-unusual",
+    "Text": "No Mass-Market Junk: We do not use third-party HTTP routers. We use the Nanite Radix tree. It is lean, it is fast, and it is ours.",
+    "BehavioralRule": true,
+    "Reason": "Strong prohibition and prescribed replacement."
+  }
+]

@@ -1,0 +1,225 @@
+[
+  {
+    "Name": "strict_deontic_hot_path_mutex",
+    "Source": "seeded",
+    "Text": "Never use mutexes in the hot path.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.8,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "high",
+    "QueryPrompts": [
+      "What synchronization should I use for the hot path?",
+      "How do I handle concurrency in the router?",
+      "What allocator should the radix tree use?"
+    ],
+    "Reason": "High-stability deontic imperative about hot-path behavior; too operational to be Tier 0 but too valuable to compress into a lossy summary."
+  },
+  {
+    "Name": "strict_deontic_stealth_router",
+    "Source": "seeded",
+    "Text": "We should probably keep the router focused on stealth.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.8,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "high",
+    "QueryPrompts": [
+      "What is the priority for the router?",
+      "Should I use TLS for the mesh?",
+      "How stealthy should the service be?"
+    ],
+    "Reason": "High-stability project priority guidance expressed as 'should probably' soft obligation; survives compaction and is retrievable by stealth/priority queries."
+  },
+  {
+    "Name": "strict_deontic_arena_allocator",
+    "Source": "seeded",
+    "Text": "Prefer arena allocators for the radix tree.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.8,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "high",
+    "QueryPrompts": [
+      "What allocator should the radix tree use?",
+      "How should memory be managed for the router?",
+      "Which allocator is preferred for data structures?"
+    ],
+    "Reason": "High-stability operational preference with explicit project-specific rationale; must survive compaction to preserve memory management discipline."
+  },
+  {
+    "Name": "borderline_semantic_rescue_arena_allocator_query",
+    "Source": "seeded",
+    "Text": "Prefer arena allocators for the radix tree.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.6,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "medium",
+    "QueryPrompts": [
+      "What allocator should the radix tree use?",
+      "Which allocator is best for performance-critical code?"
+    ],
+    "Reason": "Same text as strict case but medium stability weight; passes the rescue gate via semantic similarity to guidance prototypes even if deontic signal is borderline."
+  },
+  {
+    "Name": "borderline_semantic_rescue_stealth_priority",
+    "Source": "seeded",
+    "Text": "Stealth is the priority. The service mesh must be a shadow.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.6,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "medium",
+    "QueryPrompts": [
+      "What is the priority for the mesh?",
+      "How should the service behave on the network?"
+    ],
+    "Reason": "High-intensity priority guidance phrased as identity statement; borderline deontic but strong semantic resonance with guidance prototypes."
+  },
+  {
+    "Name": "low_stability_false_positive_guard_background_detail",
+    "Source": "seeded",
+    "Text": "background implementation detail",
+    "ExpectedTier": "tier2_only",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.2,
+    "ShouldSurviveCompaction": false,
+    "VerbatimPreservationSensitivity": "none",
+    "QueryPrompts": [
+      "Tell me about the implementation details",
+      "What happened in the session?"
+    ],
+    "Reason": "Low-stability background noise; should NOT be elevated to Tier 1.5 regardless of deontic surface because it has no guidance value and would inflate the elevated enclave with lore."
+  },
+  {
+    "Name": "low_stability_false_positive_guard_condensed_summary",
+    "Source": "seeded",
+    "Text": "condensed summary",
+    "ExpectedTier": "drop",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.1,
+    "ShouldSurviveCompaction": false,
+    "VerbatimPreservationSensitivity": "none",
+    "QueryPrompts": [
+      "What was the summary?"
+    ],
+    "Reason": "Generated summary text; not source guidance, should be dropped or merged into cluster summary rather than preserved as a standalone shard."
+  },
+  {
+    "Name": "low_stability_false_positive_guard_generic_imperative",
+    "Source": "seeded",
+    "Text": "Make it faster.",
+    "ExpectedTier": "tier2_only",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.2,
+    "ShouldSurviveCompaction": false,
+    "VerbatimPreservationSensitivity": "none",
+    "QueryPrompts": [
+      "How should I optimize this?"
+    ],
+    "Reason": "Low-stability generic imperative with no project-specific substance; would be a false positive if elevated to Tier 1.5."
+  },
+  {
+    "Name": "post_compaction_survival_arena_allocator",
+    "Source": "seeded",
+    "Text": "Prefer arena allocators for the radix tree.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.8,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "high",
+    "QueryPrompts": [
+      "What allocator should the radix tree use?"
+    ],
+    "Reason": "High-stability guidance that MUST be retrievable after compaction via the elevated namespace query path; the verbatim text must survive the abstractive summarization gate."
+  },
+  {
+    "Name": "post_compaction_survival_deterministic_guidance",
+    "Source": "seeded",
+    "Text": "Prefer deterministic operational guidance over generic defaults.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.9,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "high",
+    "QueryPrompts": [
+      "What approach should I take for the implementation?",
+      "Should I use deterministic or generic guidance?"
+    ],
+    "Reason": "Metaguidance about how to choose guidance; high stability and project-specific enough to survive compaction and be retrievable when future decisions are made."
+  },
+  {
+    "Name": "tier0_downgrade_session_turn_to_tier15",
+    "Source": "seeded",
+    "Text": "Use the specified approach when implementing core project logic.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.7,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "high",
+    "QueryPrompts": [
+      "How should I implement the core logic?",
+      "What approach is specified for the project?"
+    ],
+    "Reason": "Session-derived guidance that mirrors a rule but lacks the authored authority to be Tier 0; survives compaction as Tier 1.5 and is retrieved when implementation questions arise."
+  },
+  {
+    "Name": "tier0_downgrade_keep_aligned",
+    "Source": "seeded",
+    "Text": "Keep the implementation aligned with project-specific engineering rules.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.7,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "medium",
+    "QueryPrompts": [
+      "What are the engineering rules for this project?",
+      "How should I keep things aligned?"
+    ],
+    "Reason": "Second-person guidance about alignment but expressed as soft imperative rather than explicit rule; survives compaction and is retrieved by alignment queries."
+  },
+  {
+    "Name": "verbatim_preservation_high_sensitivity",
+    "Source": "seeded",
+    "Text": "Never use mutexes in the hot path.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.9,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "high",
+    "QueryPrompts": [
+      "What about mutexes in the hot path?",
+      "How should I handle synchronization?"
+    ],
+    "Reason": "High verbatim sensitivity: the exact phrase matters (mutexes vs other primitives), so abstractive summarization must not be allowed to blur it into generic 'use atomics' guidance."
+  },
+  {
+    "Name": "verbatim_preservation_medium_sensitivity",
+    "Source": "seeded",
+    "Text": "Prefer arena allocators for the radix tree.",
+    "ExpectedTier": "tier1_5",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.7,
+    "ShouldSurviveCompaction": true,
+    "VerbatimPreservationSensitivity": "medium",
+    "QueryPrompts": [
+      "What memory approach for the radix tree?"
+    ],
+    "Reason": "Medium verbatim sensitivity: the word 'arena' is important but extractive fallback could preserve the key signal even if phrasing shifts slightly."
+  },
+  {
+    "Name": "guidance_like_but_too_vague",
+    "Source": "seeded",
+    "Text": "It would be good to think about performance here.",
+    "ExpectedTier": "drop",
+    "ProvenanceClass": "session_turn",
+    "StabilityWeight": 0.3,
+    "ShouldSurviveCompaction": false,
+    "VerbatimPreservationSensitivity": "none",
+    "QueryPrompts": [
+      "What about performance?"
+    ],
+    "Reason": "Guidance-like vague suggestion with low stability and no specific directive; should not survive compaction because it adds noise to the elevated enclave without actionable content."
+  }
+]

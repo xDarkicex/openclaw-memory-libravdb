@@ -294,7 +294,7 @@ func (s *Store) ListByMeta(ctx context.Context, collection, key, value string) (
 		return nil, err
 	}
 	results := recordsToResults(records, 0)
-	sortByID(results)
+	sortCollectionResults(collection, results)
 	return results, nil
 }
 
@@ -315,7 +315,7 @@ func (s *Store) ListCollection(ctx context.Context, collection string) ([]Search
 		return nil, err
 	}
 	results := recordsToResults(records, 0)
-	sortByID(results)
+	sortCollectionResults(collection, results)
 	return results, nil
 }
 
@@ -749,6 +749,7 @@ func authoredMetadata(doc astv2.Document, node astv2.Node, coreDoc bool) map[str
 		"cache_key":      doc.CacheKey,
 		"node_kind":      string(node.Kind),
 		"ordinal":        node.Ordinal,
+		"position":       node.Position,
 		"tier":           int(node.Tier),
 		"authority":      authority,
 		"token_estimate": node.TokenEstimate,
@@ -899,6 +900,46 @@ func recordsToResults(records []libravdb.Record, score float64) []SearchResult {
 
 func sortByID(results []SearchResult) {
 	sort.Slice(results, func(i, j int) bool { return results[i].ID < results[j].ID })
+}
+
+func sortCollectionResults(collection string, results []SearchResult) {
+	if isAuthoredCollection(collection) {
+		sortAuthoredResults(results)
+		return
+	}
+	sortByID(results)
+}
+
+func sortAuthoredResults(results []SearchResult) {
+	sort.Slice(results, func(i, j int) bool {
+		left := results[i]
+		right := results[j]
+		leftDoc := metaString(left.Metadata, "source_doc")
+		rightDoc := metaString(right.Metadata, "source_doc")
+		if leftDoc != rightDoc {
+			return leftDoc < rightDoc
+		}
+		leftPos := metaInt(left.Metadata, "position")
+		rightPos := metaInt(right.Metadata, "position")
+		if leftPos != rightPos {
+			return leftPos < rightPos
+		}
+		leftOrdinal := metaInt(left.Metadata, "ordinal")
+		rightOrdinal := metaInt(right.Metadata, "ordinal")
+		if leftOrdinal != rightOrdinal {
+			return leftOrdinal < rightOrdinal
+		}
+		return left.ID < right.ID
+	})
+}
+
+func isAuthoredCollection(collection string) bool {
+	switch collection {
+	case AuthoredHardCollection, AuthoredSoftCollection, AuthoredVariantCollection:
+		return true
+	default:
+		return false
+	}
 }
 
 func annotateCollectionResults(results []SearchResult, collection string) []SearchResult {

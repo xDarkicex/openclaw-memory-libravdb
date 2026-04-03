@@ -26,6 +26,8 @@ import type {
 const AUTHORED_HARD_COLLECTION = "authored:hard";
 const AUTHORED_SOFT_COLLECTION = "authored:soft";
 const AUTHORED_VARIANT_COLLECTION = "authored:variant";
+const ELEVATED_USER_COLLECTION_PREFIX = "elevated:user:";
+const ELEVATED_SESSION_COLLECTION_PREFIX = "elevated:session:";
 
 export function buildContextEngineFactory(
   getRpc: RpcGetter,
@@ -69,11 +71,20 @@ export function buildContextEngineFactory(
 
       const rpc = await getRpc();
       const ts = Date.now();
+      const sessionMeta = {
+        role: message.role,
+        ts,
+        userId,
+        sessionId,
+        type: "turn",
+        provenance_class: "session_turn",
+        stability_weight: stabilityWeightForMessage(message.role),
+      };
       void rpc.call("insert_text", {
         collection: `session:${sessionId}`,
         id: `${sessionId}:${ts}`,
         text: message.content,
-        metadata: { role: message.role, ts, userId, sessionId, type: "turn" },
+        metadata: sessionMeta,
       }).catch(console.error);
 
       if (message.role === "user") {
@@ -83,7 +94,10 @@ export function buildContextEngineFactory(
             collection: `turns:${userId}`,
             id: `${userId}:${ts}`,
             text: message.content,
-            metadata: { role: message.role, ts, userId, sessionId, type: "turn" },
+            metadata: {
+              ...sessionMeta,
+              provenance_class: "turn_index",
+            },
           });
 
           const gating = await rpc.call<GatingResult>("gating_scalar", {
@@ -102,6 +116,8 @@ export function buildContextEngineFactory(
                 sessionId,
                 type: "turn",
                 userId,
+                provenance_class: "durable_user_memory",
+                stability_weight: Math.max(stabilityWeightForMessage(message.role), gating.g),
                 gating_score: gating.g,
                 gating_t: gating.t,
                 gating_h: gating.h,
@@ -155,7 +171,9 @@ export function buildContextEngineFactory(
           value: sessionId,
         });
         const rawSessionTurns = sortChronological(
-          sessionRecords.results.filter((item) => item.metadata.type !== "summary"),
+          sessionRecords.results.filter((item) =>
+            item.metadata.type !== "summary" && item.metadata.type !== "guidance_shard"
+          ),
         );
         const minTurns = cfg.continuityMinTurns ?? DEFAULT_CONTINUITY_MIN_TURNS;
         const tailTarget = cfg.continuityTailBudgetTokens ?? DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS;
@@ -213,7 +231,7 @@ export function buildContextEngineFactory(
 
         const coarseTopK = Math.max(cfg.section7CoarseTopK ?? Math.max((cfg.topK ?? 8) * 2, 8), 1);
         const secondPassTopK = Math.max(cfg.section7SecondPassTopK ?? (cfg.topK ?? 8), 1);
-        const [sessionHits, durableHits] = await Promise.all([
+        const [sessionHits, durableHits, elevatedHits] = await Promise.all([
           rpc.call<{ results: SearchResult[] }>("search_text", {
             collection: `session:${sessionId}`,
             text: queryText,
@@ -228,6 +246,15 @@ export function buildContextEngineFactory(
                 k: coarseTopK,
                 excludeByCollection: {},
               }),
+          rpc.call<{ results: SearchResult[] }>("search_text_collections", {
+            collections: [
+              `${ELEVATED_USER_COLLECTION_PREFIX}${userId}`,
+              `${ELEVATED_SESSION_COLLECTION_PREFIX}${sessionId}`,
+            ],
+            text: queryText,
+            k: coarseTopK,
+            excludeByCollection: {},
+          }),
         ]);
 
         if (!cached) {
@@ -241,6 +268,7 @@ export function buildContextEngineFactory(
         const ranked = rankSection7VariantCandidates(
           [
             ...annotateCollection(sessionHits.results, `session:${sessionId}`),
+            ...elevatedHits.results,
             ...durableHits.results,
           ],
           {
@@ -266,19 +294,33 @@ export function buildContextEngineFactory(
           },
         );
 
+        const mergedCandidates = mergeSection7VariantCandidates(ranked, hopExpanded);
+        const elevatedGuidanceBudget = Math.max(
+          0,
+          Math.min(
+            memoryBudget * (cfg.elevatedGuidanceBudgetFraction ?? 0.15),
+            retrievalBudget,
+          ),
+        );
+        const elevatedItems = fitPromptBudget(
+          mergedCandidates.filter((item) => item.metadata.elevated_guidance === true),
+          elevatedGuidanceBudget,
+        );
+        const remainingAfterElevated = Math.max(0, retrievalBudget - tokenCostSum(elevatedItems));
         const variantItems = fitPromptBudget(
-          mergeSection7VariantCandidates(ranked, hopExpanded),
-          retrievalBudget,
+          mergedCandidates.filter((item) => item.metadata.elevated_guidance !== true),
+          remainingAfterElevated,
         );
         const selected = [
           ...hardItems,
           ...tailBaseItems,
           ...softItems,
           ...tailExtensionItems,
+          ...elevatedItems,
           ...variantItems,
         ];
         void rpc.call("bump_access_counts", {
-          updates: groupAccessCountUpdates(variantItems),
+          updates: groupAccessCountUpdates([...elevatedItems, ...variantItems]),
         }).catch(() => {});
 
         const selectedMessages = selected.map((item) => ({
@@ -326,7 +368,11 @@ async function loadAuthoredCollections(
   cached: { hard: SearchResult[] | null; soft: SearchResult[] | null; variant: SearchResult[] | null },
 ): Promise<[SearchResult[], SearchResult[], SearchResult[]]> {
   if (cached.hard && cached.soft && cached.variant) {
-    return [cached.hard, cached.soft, cached.variant];
+    return [
+      sortAuthoredItems(cached.hard),
+      sortAuthoredItems(cached.soft),
+      sortAuthoredItems(cached.variant),
+    ];
   }
 
   const [hard, soft, variant] = await Promise.all([
@@ -341,7 +387,11 @@ async function loadAuthoredCollections(
       : rpc.call<{ results: SearchResult[] }>("list_collection", { collection: AUTHORED_VARIANT_COLLECTION }),
   ]);
 
-  return [hard.results, soft.results, variant.results];
+  return [
+    sortAuthoredItems(hard.results),
+    sortAuthoredItems(soft.results),
+    sortAuthoredItems(variant.results),
+  ];
 }
 
 function tokenCostSum(items: SearchResult[]): number {
@@ -372,6 +422,11 @@ function metadataTimestamp(item: SearchResult): number {
   return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
 }
 
+function metadataNumber(item: SearchResult, key: string): number {
+  const raw = item.metadata[key];
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
+}
+
 function markRecentTail(items: SearchResult[], baseCount: number): SearchResult[] {
   const baseStart = Math.max(0, items.length - baseCount);
   return items.map((item, idx) => ({
@@ -392,6 +447,30 @@ function annotateCollection(items: SearchResult[], collection: string): SearchRe
       collection,
     },
   }));
+}
+
+function sortAuthoredItems(items: SearchResult[]): SearchResult[] {
+  return [...items].sort((left, right) => {
+    const leftDoc = typeof left.metadata.source_doc === "string" ? left.metadata.source_doc : "";
+    const rightDoc = typeof right.metadata.source_doc === "string" ? right.metadata.source_doc : "";
+    if (leftDoc !== rightDoc) {
+      return leftDoc.localeCompare(rightDoc);
+    }
+
+    const leftPosition = metadataNumber(left, "position");
+    const rightPosition = metadataNumber(right, "position");
+    if (leftPosition !== rightPosition) {
+      return leftPosition - rightPosition;
+    }
+
+    const leftOrdinal = metadataNumber(left, "ordinal");
+    const rightOrdinal = metadataNumber(right, "ordinal");
+    if (leftOrdinal !== rightOrdinal) {
+      return leftOrdinal - rightOrdinal;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
 }
 
 function groupAccessCountUpdates(items: SearchResult[]): Array<{ collection: string; ids: string[] }> {
@@ -463,4 +542,15 @@ function isContinuityBundleCoupled(left: SearchResult, right: SearchResult): boo
     (leftRole === "user" && rightRole === "assistant") ||
     (leftRole === "assistant" && rightRole === "user")
   );
+}
+
+function stabilityWeightForMessage(role: string): number {
+  switch (role) {
+    case "user":
+      return 0.5;
+    case "assistant":
+      return 0.25;
+    default:
+      return 0.2;
+  }
 }

@@ -5,7 +5,7 @@ import "testing"
 func TestExtractDocumentPartitionsMarkdownIntoOrderedTiers(t *testing.T) {
 	t.Parallel()
 
-raw := []byte(`---
+	raw := []byte(`---
 name: Codex
 style: rigorous
 hop_targets: [souls.md#000007, souls.md#000008]
@@ -59,6 +59,9 @@ Regular narrative lore goes here.
 		if doc.Nodes[i].Ordinal != i {
 			t.Fatalf("node[%d].Ordinal = %d, want %d", i, doc.Nodes[i].Ordinal, i)
 		}
+		if i > 0 && doc.Nodes[i].Position < doc.Nodes[i-1].Position {
+			t.Fatalf("node[%d].Position = %d, previous = %d; want nondecreasing source order", i, doc.Nodes[i].Position, doc.Nodes[i-1].Position)
+		}
 		if doc.Nodes[i].TokenEstimate < 1 {
 			t.Fatalf("node[%d].TokenEstimate = %d, want >= 1", i, doc.Nodes[i].TokenEstimate)
 		}
@@ -89,6 +92,8 @@ Regular narrative lore goes here.
 	if len(doc.Variant) != 3 {
 		t.Fatalf("len(Variant) = %d, want 3", len(doc.Variant))
 	}
+
+	assertPairwiseDisjoint(t, doc)
 }
 
 func TestExtractDocumentTreatsPureCodeAsVariant(t *testing.T) {
@@ -107,5 +112,29 @@ func TestExtractDocumentTreatsPureCodeAsVariant(t *testing.T) {
 	}
 	if doc.Nodes[0].Tier != TierVariant {
 		t.Fatalf("pure code should remain variant: %+v", doc.Nodes[0])
+	}
+}
+
+func assertPairwiseDisjoint(t *testing.T, doc Document) {
+	t.Helper()
+
+	seen := make(map[int]Tier, len(doc.Nodes))
+	for _, node := range doc.Hard {
+		seen[node.Ordinal] = TierHard
+	}
+	for _, node := range doc.Soft {
+		if prior, ok := seen[node.Ordinal]; ok {
+			t.Fatalf("node ordinal %d appears in both %v and %v", node.Ordinal, prior, TierSoft)
+		}
+		seen[node.Ordinal] = TierSoft
+	}
+	for _, node := range doc.Variant {
+		if prior, ok := seen[node.Ordinal]; ok {
+			t.Fatalf("node ordinal %d appears in both %v and %v", node.Ordinal, prior, TierVariant)
+		}
+		seen[node.Ordinal] = TierVariant
+	}
+	if len(seen) != len(doc.Nodes) {
+		t.Fatalf("pairwise partition coverage = %d, want %d", len(seen), len(doc.Nodes))
 	}
 }
