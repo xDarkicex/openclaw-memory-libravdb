@@ -1,6 +1,8 @@
 export interface PluginConfig {
   dbPath?: string;
   sidecarPath?: string;
+  useSessionRecallProjection?: boolean;
+  useSessionSummarySearchExperiment?: boolean;
   embeddingRuntimePath?: string;
   embeddingBackend?: "bundled" | "onnx-local" | "custom-local";
   embeddingProfile?: string;
@@ -176,6 +178,13 @@ export interface ContextAssembleArgs {
   userId: string;
   messages: MemoryMessage[];
   tokenBudget: number;
+}
+
+export interface ContextAssembleResult {
+  messages: MemoryMessage[];
+  estimatedTokens: number;
+  systemPromptAddition: string;
+  _profile?: string[];
 }
 
 export interface ContextCompactArgs {

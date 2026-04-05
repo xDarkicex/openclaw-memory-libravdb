@@ -10,6 +10,7 @@
     "properties": {
       "dbPath": { "type": "string" },
       "sidecarPath": { "type": "string" },
+      "useSessionSummarySearchExperiment": { "type": "boolean" },
       "embeddingRuntimePath": { "type": "string" },
       "embeddingBackend": { "type": "string", "enum": ["bundled", "onnx-local", "custom-local"] },
       "embeddingProfile": {

@@ -10,6 +10,14 @@ $$
 \text{continuity} \neq \text{semantic summary alone}
 $$
 
+This document also defines a proposed lossless extension to the current model.
+That extension is inspired by the immutable-store and expandable-summary
+architecture in the LCM paper, "Lossless Context Management"
+([Ehrlich and Blackman, 2026](https://papers.voltropy.com/LCM)). Where this
+document adopts that idea directly, it cites the paper explicitly. The
+mathematical notation below is adapted to this repository's existing
+invariant/tail/retrieval decomposition rather than copied from the paper.
+
 Instead, continuity is modeled as the composition of:
 
 $$
@@ -347,6 +355,96 @@ $$
 This does not replace retrieval scoring. It guarantees that compressed history
 remains inspectable and attributable.
 
+## 7.5 Lossless Recoverability Extension
+
+The current implementation stores lineage metadata for summaries, but it does
+not yet preserve a fully immutable raw session store after compaction. A
+stronger continuity contract is to treat compaction summaries as derived views
+over immutable raw history rather than destructive replacements. This is the
+main architectural idea adopted from the LCM paper's immutable store, summary
+DAG, and bounded expansion model
+([Ehrlich and Blackman, 2026](https://papers.voltropy.com/LCM)).
+
+Let the raw session history be:
+
+$$
+\mathcal{R}_{\mathrm{session}}=\langle r_1,r_2,\dots,r_n\rangle
+$$
+
+where each $r_i$ is a raw persisted turn and raw-history persistence is
+append-only:
+
+$$
+\mathrm{Compact}(\mathcal{R}_{\mathrm{session}})=\mathcal{R}_{\mathrm{session}}
+$$
+
+Compaction instead constructs a summary-node set:
+
+$$
+\mathbf{S}=\{s_1,s_2,\dots\}
+$$
+
+and a parent relation:
+
+$$
+E_{\triangleleft}\subseteq (\mathbf{S}\times\mathbf{S})\cup(\mathbf{S}\times\mathcal{R}_{\mathrm{session}})
+$$
+
+where an edge $(s,x)\in E_{\triangleleft}$ means summary node $s$ directly
+covers child node $x$, with $x$ either a raw turn or a lower-order summary.
+
+The resulting continuity graph is:
+
+$$
+\mathcal{G}_{\mathrm{cont}}=(\mathbf{S}\cup\mathcal{R}_{\mathrm{session}}, E_{\triangleleft})
+$$
+
+with the intended acyclicity invariant:
+
+$$
+\mathcal{G}_{\mathrm{cont}} \text{ is a DAG}
+$$
+
+Define recursive expansion to leaf raw turns:
+
+$$
+\mathrm{Expand}^{*}(x)=
+\begin{cases}
+\{x\} & \text{if } x\in\mathcal{R}_{\mathrm{session}} \\
+\bigcup_{y:(x,y)\in E_{\triangleleft}} \mathrm{Expand}^{*}(y) & \text{if } x\in\mathbf{S}
+\end{cases}
+$$
+
+Then lossless recoverability means:
+
+$$
+\forall s\in\mathbf{S},\ \mathrm{Expand}^{*}(s)\neq\emptyset
+$$
+
+and:
+
+$$
+\forall r\in\mathcal{R}_{\mathrm{session}},\ \exists x\in \mathbf{S}\cup T_{\mathrm{recent}} \text{ such that } r\in \mathrm{Expand}^{*}(x)
+$$
+
+Operationally, this means compaction may change which nodes are injected or
+searched first, but it must not erase the ability to navigate back to the raw
+turns covered by a summary.
+
+The current repository should treat this as a proposed extension, not as a
+claim about present behavior. Today the compactor inserts summaries with
+structured lineage metadata, then deletes the covered source turns from the
+session collection after successful replacement. A future lossless
+implementation should separate:
+
+- immutable raw turn storage
+- active/searchable summary views
+- bounded expansion and search over compacted history
+
+The corresponding data-model change is to add a raw immutable session layer and
+store summary coverage edges explicitly instead of using lineage metadata alone
+as the recoverability surface.
+
 ## 8. Continuity-Aware Summarization Input
 
 Compaction input should be continuity-safe before it reaches the summarizer.
@@ -468,6 +566,19 @@ $$
 
 No continuity-critical local bundle may be split across the recent-tail and
 compaction boundary.
+
+9. Lossless recoverability when the extension is enabled:
+
+$$
+\forall s\in\mathbf{S},\ \mathrm{Expand}^{*}(s)\subseteq\mathcal{R}_{\mathrm{session}}
+\qquad\text{and}\qquad
+\mathrm{Expand}^{*}(s)\neq\emptyset
+$$
+
+10. Raw-history immutability when the extension is enabled:
+
+Compaction may add summary nodes and coverage edges, but it must not delete
+raw turns from $\mathcal{R}_{\mathrm{session}}$.
 
 ## 12. Practical Interpretation
 

@@ -14,6 +14,7 @@ import { countTokens, estimateTokens, fitPromptBudget } from "./tokens.js";
 import type { RpcGetter } from "./plugin-runtime.js";
 import type {
   ContextAssembleArgs,
+  ContextAssembleResult,
   ContextBootstrapArgs,
   ContextCompactArgs,
   ContextIngestArgs,
@@ -28,6 +29,8 @@ const AUTHORED_SOFT_COLLECTION = "authored:soft";
 const AUTHORED_VARIANT_COLLECTION = "authored:variant";
 const ELEVATED_USER_COLLECTION_PREFIX = "elevated:user:";
 const ELEVATED_SESSION_COLLECTION_PREFIX = "elevated:session:";
+const SESSION_RECALL_COLLECTION_PREFIX = "session_recall:";
+const SESSION_SUMMARY_COLLECTION_PREFIX = "session_summary:";
 
 export function buildContextEngineFactory(
   getRpc: RpcGetter,
@@ -37,6 +40,7 @@ export function buildContextEngineFactory(
   let authoredHardCache: SearchResult[] | null = null;
   let authoredSoftCache: SearchResult[] | null = null;
   let authoredVariantCache: SearchResult[] | null = null;
+  const authoredVariantRecallCache = new Map<string, SearchResult[]>();
 
   // Session-scoped elevated-guidance cache keyed by sessionId + generation + userId + queryText
   const elevatedRecallCache = new Map<string, SearchResult[]>();
@@ -54,6 +58,8 @@ export function buildContextEngineFactory(
       await rpc.call("ensure_collections", {
         collections: [
           `session:${sessionId}`,
+          ...(useSessionRecallProjection(cfg) ? [sessionRecallCollection(sessionId)] : []),
+          ...(useSessionSummarySearchExperiment(cfg) ? [sessionSummaryCollection(sessionId)] : []),
           `turns:${userId}`,
           `user:${userId}`,
           "global",
@@ -70,6 +76,13 @@ export function buildContextEngineFactory(
       authoredHardCache = authoredHard;
       authoredSoftCache = authoredSoft;
       authoredVariantCache = authoredVariantRecords;
+      authoredVariantRecallCache.clear();
+      if (useSessionRecallProjection(cfg)) {
+        await rebuildSessionRecallProjection(rpc, cfg, sessionId);
+      }
+      if (useSessionSummarySearchExperiment(cfg)) {
+        await rebuildSessionSummaryProjection(rpc, sessionId);
+      }
       validateSection7StartupHardReserve(cfg, authoredHard);
       return { ok: true };
     },
@@ -91,12 +104,23 @@ export function buildContextEngineFactory(
       };
       // Elevated cache is session-scoped, so invalidate immediately on every ingest
       clearElevatedCacheForSession(sessionId);
-      void rpc.call("insert_text", {
+      const rawSessionId = `${sessionId}:${ts}`;
+      const rawSessionInsert = rpc.call("insert_text", {
         collection: `session:${sessionId}`,
-        id: `${sessionId}:${ts}`,
+        id: rawSessionId,
         text: message.content,
         metadata: sessionMeta,
-      }).catch(console.error);
+      });
+      if (useSessionRecallProjection(cfg)) {
+        try {
+          await rawSessionInsert;
+          await rebuildSessionRecallProjection(rpc, cfg, sessionId);
+        } catch (error) {
+          console.error(error);
+        }
+      } else {
+        void rawSessionInsert.catch(console.error);
+      }
 
       if (message.role === "user") {
         try {
@@ -158,7 +182,7 @@ export function buildContextEngineFactory(
           messages,
           estimatedTokens: countTokens(messages),
           systemPromptAddition: "",
-        };
+        } satisfies ContextAssembleResult;
       }
 
       const excluded = recentIds(messages, 4);
@@ -193,12 +217,19 @@ export function buildContextEngineFactory(
               mark(label: string) {
                 marks.push([label, process.hrtime.bigint()]);
               },
-              emit() {
+              lines() {
+                const lines: string[] = [];
                 for (let i = 0; i < marks.length - 1; i++) {
                   const [name, start] = marks[i];
                   const [, end] = marks[i + 1];
                   const ms = Number(end - start) / 1_000_000;
-                  console.log(`assemble profile: ${name}=${ms.toFixed(2)}ms`);
+                  lines.push(`assemble profile: ${name}=${ms.toFixed(2)}ms`);
+                }
+                return lines;
+              },
+              emit() {
+                for (const line of this.lines()) {
+                  console.log(line);
                 }
               },
             };
@@ -223,17 +254,20 @@ export function buildContextEngineFactory(
           profiler,
         });
 
+        const profileLines = profiler?.lines() ?? [];
         if (profiler) {
           profiler.emit();
         }
 
-        return result;
+        return profileLines.length > 0
+          ? { ...result, _profile: profileLines }
+          : result;
       } catch {
         return {
           messages,
           estimatedTokens: countTokens(messages),
           systemPromptAddition: "",
-        };
+        } satisfies ContextAssembleResult;
       }
     },
     async assembleCore({
@@ -266,11 +300,7 @@ export function buildContextEngineFactory(
       messages: Array<{ role: string; content: string }>;
       tokenBudget: number;
       profiler: { mark(label: string): void; emit(): void } | null;
-    }): Promise<{
-      messages: Array<{ role: string; content: string }>;
-      estimatedTokens: number;
-      systemPromptAddition: string;
-    }> {
+    }): Promise<ContextAssembleResult> {
       const memoryBudget = tokenBudget * (cfg.tokenBudgetFraction ?? 0.25);
       const hardItems = authoredHard;
       const hardUsed = tokenCostSum(hardItems);
@@ -341,15 +371,33 @@ export function buildContextEngineFactory(
       const recentTailIDs = recentTail.map((item) => item.id);
 
       const coarseTopK = Math.max(cfg.section7CoarseTopK ?? Math.max((cfg.topK ?? 8) * 2, 8), 1);
+      const sessionSearchTopK = Math.max(cfg.topK ?? 8, 1);
       const secondPassTopK = Math.max(cfg.section7SecondPassTopK ?? (cfg.topK ?? 8), 1);
+      const searchSessionRecall = useSessionRecallProjection(cfg);
+      const searchSessionSummary = useSessionSummarySearchExperiment(cfg);
+      let sessionSearchCollection = `session:${sessionId}`;
+      let sessionExcludeIds = [...excluded, ...recentTailIDs];
+      if (searchSessionSummary) {
+        const summaryCollection = sessionSummaryCollection(sessionId);
+        const summaryRecords = await rpc.call<{ results: SearchResult[] }>("list_collection", {
+          collection: summaryCollection,
+        });
+        if (summaryRecords.results.length > 0) {
+          sessionSearchCollection = summaryCollection;
+          sessionExcludeIds = [...excluded];
+        }
+      } else if (searchSessionRecall) {
+        sessionSearchCollection = sessionRecallCollection(sessionId);
+        sessionExcludeIds = [...excluded, ...recentTailIDs.map(sessionRecallId)];
+      }
 
       profiler?.mark("session_search");
       const [sessionHits] = await Promise.all([
         rpc.call<{ results: SearchResult[] }>("search_text", {
-          collection: `session:${sessionId}`,
+          collection: sessionSearchCollection,
           text: queryText,
-          k: coarseTopK,
-          excludeIds: [...excluded, ...recentTailIDs],
+          k: sessionSearchTopK,
+          excludeIds: sessionExcludeIds,
         }),
       ]);
 
@@ -382,13 +430,20 @@ export function buildContextEngineFactory(
       }
 
       profiler?.mark("recall_authored_variant");
+      const authoredVariantKey = `${queryText}\n${coarseTopK}`;
+      const cachedAuthoredVariantHits = authoredVariantRecallCache.get(authoredVariantKey);
       const [authoredVariantHits] = await Promise.all([
-        rpc.call<{ results: SearchResult[] }>("search_text", {
-          collection: AUTHORED_VARIANT_COLLECTION,
-          text: queryText,
-          k: coarseTopK,
-        }),
+        cachedAuthoredVariantHits
+          ? Promise.resolve({ results: cachedAuthoredVariantHits })
+          : rpc.call<{ results: SearchResult[] }>("search_text", {
+              collection: AUTHORED_VARIANT_COLLECTION,
+              text: queryText,
+              k: coarseTopK,
+            }),
       ]);
+      if (!cachedAuthoredVariantHits) {
+        authoredVariantRecallCache.set(authoredVariantKey, authoredVariantHits.results);
+      }
 
       profiler?.mark("recall_elevated");
       const elevatedGeneration = elevatedRecallGeneration.get(sessionId) ?? 0;
@@ -500,6 +555,12 @@ export function buildContextEngineFactory(
       const compacted = "didCompact" in result
         ? (result.didCompact ?? result.compacted ?? false)
         : (result.compacted ?? false);
+      if (compacted && useSessionRecallProjection(cfg)) {
+        await rebuildSessionRecallProjection(rpc, cfg, sessionId);
+      }
+      if (compacted && useSessionSummarySearchExperiment(cfg)) {
+        await rebuildSessionSummaryProjection(rpc, sessionId);
+      }
 
       return {
         ok: true,
@@ -507,6 +568,124 @@ export function buildContextEngineFactory(
       };
     },
   };
+}
+
+function useSessionRecallProjection(cfg: PluginConfig): boolean {
+  return cfg.useSessionRecallProjection === true;
+}
+
+function useSessionSummarySearchExperiment(cfg: PluginConfig): boolean {
+  return cfg.useSessionSummarySearchExperiment === true;
+}
+
+function sessionRecallCollection(sessionId: string): string {
+  return `${SESSION_RECALL_COLLECTION_PREFIX}${sessionId}`;
+}
+
+function sessionSummaryCollection(sessionId: string): string {
+  return `${SESSION_SUMMARY_COLLECTION_PREFIX}${sessionId}`;
+}
+
+function sessionRecallId(sourceId: string): string {
+  return `recall:${sourceId}`;
+}
+
+function sessionSummaryId(sourceId: string): string {
+  return `summary:${sourceId}`;
+}
+
+async function rebuildSessionRecallProjection(
+  rpc: Awaited<ReturnType<RpcGetter>>,
+  cfg: PluginConfig,
+  sessionId: string,
+): Promise<void> {
+  const rawCollection = `session:${sessionId}`;
+  const projectionCollection = sessionRecallCollection(sessionId);
+  const sessionRecords = await rpc.call<{ results: SearchResult[] }>("list_by_meta", {
+    collection: rawCollection,
+    key: "sessionId",
+    value: sessionId,
+  });
+  const rawSessionTurns = sortChronological(
+    sessionRecords.results.filter((item) =>
+      item.metadata.type !== "summary" && item.metadata.type !== "guidance_shard"
+    ),
+  );
+  const recentTail = selectRecentTail(rawSessionTurns, {
+    minTurns: cfg.continuityMinTurns ?? DEFAULT_CONTINUITY_MIN_TURNS,
+    tailBudgetTokens: cfg.continuityTailBudgetTokens ?? DEFAULT_CONTINUITY_TAIL_BUDGET_TOKENS,
+    tokenCost,
+    sameBundle: isContinuityBundleCoupled,
+  });
+  const projectionItems = recentTail.older;
+  const existingProjection = await rpc.call<{ results: SearchResult[] }>("list_collection", {
+    collection: projectionCollection,
+  });
+  const existingIds = existingProjection.results
+    .map((item) => item.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (existingIds.length > 0) {
+    await rpc.call("delete_batch", {
+      collection: projectionCollection,
+      ids: existingIds,
+    });
+  }
+  await Promise.all(projectionItems.map((item) =>
+    rpc.call("insert_text", {
+      collection: projectionCollection,
+      id: sessionRecallId(item.id),
+      score: item.score,
+      text: item.text,
+      metadata: {
+        ...item.metadata,
+        projection_class: "session_recall",
+        source_turn_id: item.id,
+        source_turn_ts: metadataTimestamp(item),
+      },
+    })
+  ));
+}
+
+async function rebuildSessionSummaryProjection(
+  rpc: Awaited<ReturnType<RpcGetter>>,
+  sessionId: string,
+): Promise<void> {
+  const rawCollection = `session:${sessionId}`;
+  const summaryCollectionName = sessionSummaryCollection(sessionId);
+  const sessionRecords = await rpc.call<{ results: SearchResult[] }>("list_by_meta", {
+    collection: rawCollection,
+    key: "sessionId",
+    value: sessionId,
+  });
+  const summaryItems = sortChronological(
+    sessionRecords.results.filter((item) => item.metadata.type === "summary"),
+  );
+  const existingSummaryProjection = await rpc.call<{ results: SearchResult[] }>("list_collection", {
+    collection: summaryCollectionName,
+  });
+  const existingIds = existingSummaryProjection.results
+    .map((item) => item.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (existingIds.length > 0) {
+    await rpc.call("delete_batch", {
+      collection: summaryCollectionName,
+      ids: existingIds,
+    });
+  }
+  await Promise.all(summaryItems.map((item) =>
+    rpc.call("insert_text", {
+      collection: summaryCollectionName,
+      id: sessionSummaryId(item.id),
+      score: item.score,
+      text: item.text,
+      metadata: {
+        ...item.metadata,
+        projection_class: "session_summary",
+        source_turn_id: item.id,
+        source_turn_ts: metadataTimestamp(item),
+      },
+    })
+  ));
 }
 
 async function loadAuthoredCollections(

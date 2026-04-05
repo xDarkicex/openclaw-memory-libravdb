@@ -605,6 +605,69 @@ $$
 
 This makes compaction load-bearing in retrieval rather than archival only.
 
+### 5.6 Optional Lossless Compaction Extension
+
+The current implementation replaces compacted session turns in the searchable
+session collection after summary insertion succeeds. A stronger future variant
+is to preserve compacted raw turns in an immutable session-history layer and
+treat summary records as derived view nodes over that history. This extension is
+inspired by the immutable-store and expandable-summary architecture in the LCM
+paper ([Ehrlich and Blackman, 2026](https://papers.voltropy.com/LCM)), but the
+formalization here is adapted to this repository's existing compaction and
+continuity math.
+
+Let:
+
+$$
+\mathcal{R}_{\mathrm{session}}=\langle r_1,\dots,r_n\rangle
+$$
+
+be the immutable raw session history, and let:
+
+$$
+\mathbf{S}=\{s_1,s_2,\dots\}
+$$
+
+be the set of compacted summary nodes. Define the summary-coverage DAG:
+
+$$
+\mathcal{G}_{\mathrm{cont}}=(\mathbf{S}\cup\mathcal{R}_{\mathrm{session}}, E_{\triangleleft})
+$$
+
+with:
+
+$$
+E_{\triangleleft}\subseteq (\mathbf{S}\times\mathbf{S})\cup(\mathbf{S}\times\mathcal{R}_{\mathrm{session}})
+$$
+
+Recursive raw expansion is:
+
+$$
+\mathrm{Expand}^{*}(x)=
+\begin{cases}
+\{x\} & \text{if } x\in\mathcal{R}_{\mathrm{session}} \\
+\bigcup_{y:(x,y)\in E_{\triangleleft}} \mathrm{Expand}^{*}(y) & \text{if } x\in\mathbf{S}
+\end{cases}
+$$
+
+The continuity contract for this extension is:
+
+$$
+\forall s\in\mathbf{S},\ \mathrm{Expand}^{*}(s)\neq\emptyset
+$$
+
+and:
+
+$$
+\forall r\in\mathcal{R}_{\mathrm{session}},\ \exists x\in \mathbf{S}\cup T_{\mathrm{recent}} \text{ such that } r\in\mathrm{Expand}^{*}(x)
+$$
+
+Under this extension, compaction changes the active retrievable view and the
+assembly surface, but not the existence of raw historical evidence. This is
+compatible with the section-1 through section-5 retrieval math because the
+hybrid score still applies to the injected/searchable nodes; the extension only
+strengthens the recoverability contract beneath those nodes.
+
 ## 6. Why These Pieces Compose
 
 The full quality loop is:
