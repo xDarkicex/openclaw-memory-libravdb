@@ -19,22 +19,35 @@ import (
 )
 
 const (
-	dirtyTierCollection        = "_tier_dirty"
-	AuthoredHardCollection     = "authored:hard"
-	AuthoredSoftCollection     = "authored:soft"
-	AuthoredVariantCollection  = "authored:variant"
-	LifecycleJournalCollection = "_internal:lifecycle_journal"
-	dirtyTierDims              = 1
-	authoredTierDims           = 1
-	maxCollections             = 10000
-	rawStoreCap                = 4096
+	dirtyTierCollection            = "_tier_dirty"
+	AuthoredHardCollection         = "authored:hard"
+	AuthoredSoftCollection         = "authored:soft"
+	AuthoredVariantCollection      = "authored:variant"
+	LifecycleJournalCollection     = "_internal:lifecycle_journal"
+	SessionRawCollectionPrefix     = "session_raw:"
+	SessionSummaryCollectionPrefix = "session_summary:"
+	SessionEdgeCollectionPrefix    = "session_edge:"
+	SessionStateCollectionPrefix   = "session_state:"
+	sessionStateRecordID           = "__session_state__"
+	dirtyTierDims                  = 1
+	authoredTierDims               = 1
+	maxCollections                 = 10000
+	rawStoreCap                    = 4096
 )
+
+type Record struct {
+	ID       string         `json:"id"`
+	Text     string         `json:"text"`
+	Metadata map[string]any `json:"metadata"`
+	Version  uint64         `json:"version"`
+}
 
 type SearchResult struct {
 	ID       string         `json:"id"`
 	Score    float64        `json:"score"`
 	Text     string         `json:"text"`
 	Metadata map[string]any `json:"metadata"`
+	Version  uint64         `json:"version"`
 }
 
 type TierExit struct {
@@ -71,6 +84,18 @@ type Store struct {
 	embedder           embed.Embedder
 	profile            embed.Profile
 	beforeInsertRecord func(collection, id string, vec []float32, meta map[string]any) error
+}
+
+type TxWriter interface {
+	InsertText(ctx context.Context, collection, id, text string, meta map[string]any) error
+	InsertRecord(ctx context.Context, collection, id string, vec []float32, meta map[string]any) error
+	UpdateRecordIfVersion(ctx context.Context, collection, id string, vec []float32, meta map[string]any, expectedVersion uint64) error
+	DeleteBatch(ctx context.Context, collection string, ids []string) error
+}
+
+type WriteTx struct {
+	store *Store
+	tx    libravdb.Tx
 }
 
 type persistedProfile struct {
@@ -110,9 +135,60 @@ func (s *Store) Path() string {
 	return s.path
 }
 
+func SessionRawCollection(sessionID string) string {
+	return SessionRawCollectionPrefix + sessionID
+}
+
+func SessionSummaryCollection(sessionID string) string {
+	return SessionSummaryCollectionPrefix + sessionID
+}
+
+func SessionEdgeCollection(sessionID string) string {
+	return SessionEdgeCollectionPrefix + sessionID
+}
+
+func SessionStateCollection(sessionID string) string {
+	return SessionStateCollectionPrefix + sessionID
+}
+
 func (s *Store) EnsureCollection(ctx context.Context, collection string) error {
 	_, err := s.ensureCollection(ctx, collection, s.collectionDimensions(collection, nil, nil))
 	return err
+}
+
+func (s *Store) EnsureLosslessSessionCollections(ctx context.Context, sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return errors.New("session ID is required")
+	}
+	for _, collection := range []string{
+		SessionRawCollection(sessionID),
+		SessionSummaryCollection(sessionID),
+		SessionEdgeCollection(sessionID),
+		SessionStateCollection(sessionID),
+	} {
+		if err := s.EnsureCollection(ctx, collection); err != nil {
+			return err
+		}
+	}
+	return s.ensureSessionStateRecord(ctx, sessionID)
+}
+
+func (s *Store) ensureSessionStateRecord(ctx context.Context, sessionID string) error {
+	_, err := s.Get(ctx, SessionStateCollection(sessionID), sessionStateRecordID)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, libravdb.ErrRecordNotFound) {
+		return err
+	}
+	return s.InsertRecord(ctx, SessionStateCollection(sessionID), sessionStateRecordID, []float32{0}, map[string]any{
+		"type":                  "session_state",
+		"sessionId":             sessionID,
+		"compaction_generation": 0,
+		"last_compacted_at":     int64(0),
+		"last_summary_id":       "",
+		"updated_at":            int64(0),
+	})
 }
 
 func (s *Store) InsertText(ctx context.Context, collection, id, text string, meta map[string]any) error {
@@ -123,8 +199,83 @@ func (s *Store) InsertText(ctx context.Context, collection, id, text string, met
 	return s.insertRecord(ctx, collection, id, text, vec, meta)
 }
 
+func (s *Store) InsertSessionTurn(ctx context.Context, sessionID, id, text string, meta map[string]any) error {
+	if err := s.EnsureCollection(ctx, "session:"+sessionID); err != nil {
+		return err
+	}
+	if err := s.EnsureLosslessSessionCollections(ctx, sessionID); err != nil {
+		return err
+	}
+	return s.WithTx(ctx, func(tx TxWriter) error {
+		if err := tx.InsertText(ctx, "session:"+sessionID, id, text, meta); err != nil {
+			return err
+		}
+		rawMeta := cloneMeta(meta)
+		rawMeta["raw_history"] = true
+		rawMeta["active_view"] = false
+		return tx.InsertText(ctx, SessionRawCollection(sessionID), id, text, rawMeta)
+	})
+}
+
 func (s *Store) InsertRecord(ctx context.Context, collection, id string, vec []float32, meta map[string]any) error {
 	return s.insertRecord(ctx, collection, id, "", vec, meta)
+}
+
+func (s *Store) Get(ctx context.Context, collection, id string) (Record, error) {
+	record, err := s.getRecord(ctx, collection, id)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return Record{}, fmt.Errorf("%w: %s", libravdb.ErrRecordNotFound, id)
+		}
+		return Record{}, err
+	}
+	return Record{
+		ID:       record.ID,
+		Text:     textFromMetadata(record.Metadata),
+		Metadata: fromStringMap(record.Metadata),
+		Version:  record.Version,
+	}, nil
+}
+
+func (s *Store) WithTx(ctx context.Context, fn func(tx TxWriter) error) error {
+	return s.db.WithTx(ctx, func(base libravdb.Tx) error {
+		return fn(&WriteTx{store: s, tx: base})
+	})
+}
+
+func (tx *WriteTx) InsertText(ctx context.Context, collection, id, text string, meta map[string]any) error {
+	vec, err := tx.store.embedder.EmbedDocument(ctx, text)
+	if err != nil {
+		return fmt.Errorf("embed document: %w", err)
+	}
+	if _, err := tx.store.ensureCollection(ctx, collection, tx.store.collectionDimensions(collection, vec, meta)); err != nil {
+		return err
+	}
+	entryMeta := toStringMap(meta)
+	entryMeta["text"] = text
+	if _, ok := entryMeta["access_count"]; !ok {
+		entryMeta["access_count"] = 0
+	}
+	return tx.tx.Insert(ctx, collection, id, cloneVector(vec), entryMeta)
+}
+
+func (tx *WriteTx) InsertRecord(ctx context.Context, collection, id string, vec []float32, meta map[string]any) error {
+	if _, err := tx.store.ensureCollection(ctx, collection, tx.store.collectionDimensions(collection, vec, meta)); err != nil {
+		return err
+	}
+	entryMeta := toStringMap(meta)
+	if _, ok := entryMeta["access_count"]; !ok {
+		entryMeta["access_count"] = 0
+	}
+	return tx.tx.Insert(ctx, collection, id, cloneVector(vec), entryMeta)
+}
+
+func (tx *WriteTx) UpdateRecordIfVersion(ctx context.Context, collection, id string, vec []float32, meta map[string]any, expectedVersion uint64) error {
+	return tx.tx.UpdateIfVersion(ctx, collection, id, cloneVector(vec), toStringMap(meta), expectedVersion)
+}
+
+func (tx *WriteTx) DeleteBatch(ctx context.Context, collection string, ids []string) error {
+	return tx.tx.DeleteBatch(ctx, collection, ids)
 }
 
 func (s *Store) PersistAuthoredDocument(ctx context.Context, doc astv2.Document, coreDoc bool) error {
@@ -619,6 +770,50 @@ func (s *Store) Flush(_ context.Context) error {
 	return nil
 }
 
+// ExpandSummary performs bounded traversal from a summary node to its raw source turns
+// via coverage edges. It returns the raw turns covered by the summary, up to maxDepth hops.
+// If maxDepth <= 0, a default limit of 3 is applied. Returns empty slice if the summary
+// has no children or depth limit is exceeded.
+func (s *Store) ExpandSummary(ctx context.Context, sessionID, summaryID string, maxDepth int) ([]SearchResult, error) {
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+	edgeCollection := SessionEdgeCollection(sessionID)
+
+	edges, err := s.ListByMeta(ctx, edgeCollection, "parent_summary_id", summaryID)
+	if err != nil || len(edges) == 0 {
+		return []SearchResult{}, nil
+	}
+
+	var results []SearchResult
+	for _, edge := range edges {
+		childID := metaString(edge.Metadata, "child_id")
+		childCollection := metaString(edge.Metadata, "child_collection")
+		childType := metaString(edge.Metadata, "child_type")
+
+		if childType == "summary" && len(results) < maxDepth {
+			nested, err := s.ExpandSummary(ctx, sessionID, childID, maxDepth-1)
+			if err == nil {
+				results = append(results, nested...)
+			}
+			continue
+		}
+
+		record, err := s.getRecord(ctx, childCollection, childID)
+		if err != nil {
+			continue
+		}
+		results = append(results, SearchResult{
+			ID:       record.ID,
+			Text:     textFromMetadata(record.Metadata),
+			Metadata: fromStringMap(record.Metadata),
+			Version:  record.Version,
+		})
+	}
+
+	return results, nil
+}
+
 func (s *Store) getRecord(ctx context.Context, collection, id string) (libravdb.Record, error) {
 	col, err := s.getCollection(collection)
 	if err != nil {
@@ -660,7 +855,7 @@ func (s *Store) ensureCollection(ctx context.Context, collection string, dims in
 		libravdb.WithDimension(dims),
 		libravdb.WithMetric(libravdb.CosineDistance),
 	}
-	if collection == dirtyTierCollection || collection == AuthoredHardCollection || collection == AuthoredSoftCollection {
+	if collection == dirtyTierCollection || collection == AuthoredHardCollection || collection == AuthoredSoftCollection || collection == LifecycleJournalCollection || strings.HasPrefix(collection, SessionEdgeCollectionPrefix) || strings.HasPrefix(collection, SessionStateCollectionPrefix) {
 		opts = append(opts, libravdb.WithFlat())
 	} else {
 		opts = append(opts, libravdb.WithAutoIndexSelection(true), libravdb.WithRawVectorStoreSlabby(rawStoreCap))
@@ -692,6 +887,10 @@ func (s *Store) collectionDimensions(collection string, vec []float32, meta map[
 	case collection == AuthoredHardCollection, collection == AuthoredSoftCollection:
 		return authoredTierDims
 	case collection == LifecycleJournalCollection:
+		return authoredTierDims
+	case strings.HasPrefix(collection, SessionEdgeCollectionPrefix):
+		return authoredTierDims
+	case strings.HasPrefix(collection, SessionStateCollectionPrefix):
 		return authoredTierDims
 	case collection == dirtyTierCollection:
 		return dirtyTierDims
@@ -744,6 +943,7 @@ func (s *Store) searchVec(ctx context.Context, collection string, vec []float32,
 			Score:    float64(result.Score),
 			Text:     textFromMetadata(result.Metadata),
 			Metadata: fromStringMap(result.Metadata),
+			Version:  result.Version,
 		})
 	}
 	if k > 0 && len(out) > k {
@@ -887,6 +1087,17 @@ func cloneVector(src []float32) []float32 {
 	return out
 }
 
+func cloneMeta(src map[string]any) map[string]any {
+	if src == nil {
+		return map[string]any{}
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 func toStringMap(src map[string]any) map[string]interface{} {
 	if src == nil {
 		return map[string]interface{}{}
@@ -931,6 +1142,7 @@ func recordsToResults(records []libravdb.Record, score float64) []SearchResult {
 			Score:    score,
 			Text:     textFromMetadata(record.Metadata),
 			Metadata: fromStringMap(record.Metadata),
+			Version:  record.Version,
 		})
 	}
 	return out

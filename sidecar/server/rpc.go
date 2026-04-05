@@ -42,6 +42,7 @@ func New(embedder embed.Embedder, extractive summarize.Summarizer, abstractive s
 		"list_lifecycle_journal":  s.handleListLifecycleJournal,
 		"ensure_collections":      s.handleEnsureCollections,
 		"insert_text":             s.handleInsertText,
+		"insert_session_turn":     s.handleInsertSessionTurn,
 		"gating_scalar":           s.handleGatingScalar,
 		"search_text":             s.handleSearchText,
 		"search_text_collections": s.handleSearchTextCollections,
@@ -53,6 +54,7 @@ func New(embedder embed.Embedder, extractive summarize.Summarizer, abstractive s
 		"delete":                  s.handleDelete,
 		"delete_batch":            s.handleDeleteBatch,
 		"compact_session":         s.handleCompact,
+		"expand_summary":          s.handleExpandSummary,
 		"flush":                   s.handleFlush,
 	}
 	return s
@@ -77,6 +79,13 @@ type insertTextParams struct {
 	Metadata   map[string]any `json:"metadata"`
 }
 
+type insertSessionTurnParams struct {
+	SessionID string         `json:"sessionId"`
+	ID        string         `json:"id"`
+	Text      string         `json:"text"`
+	Metadata  map[string]any `json:"metadata"`
+}
+
 type searchTextParams struct {
 	Collection string   `json:"collection"`
 	Text       string   `json:"text"`
@@ -99,6 +108,12 @@ type listByMetaParams struct {
 
 type listCollectionParams struct {
 	Collection string `json:"collection"`
+}
+
+type expandSummaryParams struct {
+	SessionID string `json:"sessionId"`
+	SummaryID string `json:"summaryId"`
+	MaxDepth  int    `json:"maxDepth,omitempty"`
 }
 
 type listLifecycleJournalParams struct {
@@ -292,6 +307,17 @@ func (s *Server) handleInsertText(ctx context.Context, raw any) (any, error) {
 	return map[string]any{"ok": true}, nil
 }
 
+func (s *Server) handleInsertSessionTurn(ctx context.Context, raw any) (any, error) {
+	var params insertSessionTurnParams
+	if err := decode(raw, &params); err != nil {
+		return nil, err
+	}
+	if err := s.Store.InsertSessionTurn(ctx, params.SessionID, params.ID, params.Text, params.Metadata); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true}, nil
+}
+
 func (s *Server) handleSearchText(ctx context.Context, raw any) (any, error) {
 	var params searchTextParams
 	if err := decode(raw, &params); err != nil {
@@ -465,6 +491,28 @@ func (s *Server) handleCompact(ctx context.Context, raw any) (any, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *Server) handleExpandSummary(ctx context.Context, raw any) (any, error) {
+	var params expandSummaryParams
+	if err := decode(raw, &params); err != nil {
+		return nil, err
+	}
+	if params.SessionID == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+	if params.SummaryID == "" {
+		return nil, fmt.Errorf("summaryId is required")
+	}
+	maxDepth := params.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+	results, err := s.Store.ExpandSummary(ctx, params.SessionID, params.SummaryID, maxDepth)
+	if err != nil {
+		return nil, err
+	}
+	return searchTextResult{Results: results}, nil
 }
 
 func (s *Server) handleFlush(ctx context.Context, _ any) (any, error) {

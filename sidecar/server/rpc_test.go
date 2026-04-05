@@ -93,6 +93,43 @@ func TestRPCInsertSearchAndDelete(t *testing.T) {
 	}
 }
 
+func TestRPCInsertSessionTurnWritesRawHistory(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+
+	srv := New(fakeEmbedder{}, nil, nil, st, compact.DefaultGatingConfig(), 500)
+
+	if _, err := srv.Call(ctx, "insert_session_turn", map[string]any{
+		"sessionId": "test",
+		"id":        "a",
+		"text":      "alpha",
+		"metadata":  map[string]any{"type": "turn", "sessionId": "test", "ts": int64(10)},
+	}); err != nil {
+		t.Fatalf("insert_session_turn error = %v", err)
+	}
+
+	active, err := st.ListCollection(ctx, "session:test")
+	if err != nil {
+		t.Fatalf("ListCollection(session:test) error = %v", err)
+	}
+	raw, err := st.ListCollection(ctx, store.SessionRawCollection("test"))
+	if err != nil {
+		t.Fatalf("ListCollection(session_raw:test) error = %v", err)
+	}
+	if len(active) != 1 || active[0].ID != "a" {
+		t.Fatalf("unexpected active session rows: %+v", active)
+	}
+	if len(raw) != 1 || raw[0].ID != "a" {
+		t.Fatalf("unexpected raw session rows: %+v", raw)
+	}
+	if got := raw[0].Metadata["raw_history"]; got != true {
+		t.Fatalf("raw_history metadata = %+v, want true", got)
+	}
+}
+
 func TestRPCSearchTextCollectionsMergesExactTopKAcrossCollections(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
@@ -333,6 +370,13 @@ func TestRPCCompactReturnsStructuredResult(t *testing.T) {
 	}
 	if result.SummaryMethod == "" {
 		t.Fatalf("expected summary method in compact result: %+v", result)
+	}
+	summaries, err := st.ListCollection(ctx, store.SessionSummaryCollection("test"))
+	if err != nil {
+		t.Fatalf("ListCollection(session_summary:test) error = %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected one stored summary, got %+v", summaries)
 	}
 }
 

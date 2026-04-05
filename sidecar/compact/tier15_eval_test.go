@@ -70,14 +70,14 @@ func (tier15EvalEmbedder) Mode() string   { return "primary" }
 // tier15CorpusCase mirrors the JSON corpus schema.
 // Fields correspond to the labeled corpus files in sidecar/astv2/testdata/.
 type tier15CorpusCase struct {
-	Name                     string   `json:"Name"`
-	Source                   string   `json:"Source"`
-	Text                     string   `json:"Text"`
-	StabilityWeight          float64  `json:"StabilityWeight"`
-	ShouldSurviveCompaction  bool     `json:"ShouldSurviveCompaction"`
-	VerbatimSensitivity      string   `json:"VerbatimPreservationSensitivity"`
-	QueryPrompts             []string `json:"QueryPrompts"`
-	Reason                   string   `json:"Reason"`
+	Name                    string   `json:"Name"`
+	Source                  string   `json:"Source"`
+	Text                    string   `json:"Text"`
+	StabilityWeight         float64  `json:"StabilityWeight"`
+	ShouldSurviveCompaction bool     `json:"ShouldSurviveCompaction"`
+	VerbatimSensitivity     string   `json:"VerbatimPreservationSensitivity"`
+	QueryPrompts            []string `json:"QueryPrompts"`
+	Reason                  string   `json:"Reason"`
 }
 
 // tier15CorpusMetrics tracks protection outcomes and admission-source breakdown
@@ -90,7 +90,7 @@ type tier15CorpusMetrics struct {
 	FalseNegatives    int // NOT elevated but SHOULD have been
 	SigmaAdmissions   int // elevated via sigma/deontic path
 	BoosterAdmissions int // elevated via booster path
-	NoneAdmissions   int // not elevated (admission_path == "none")
+	NoneAdmissions    int // not elevated (admission_path == "none")
 	BySource          map[string]subgroupMetrics
 	ByVerbatim        map[string]subgroupMetrics
 	ByOutcome         map[string]subgroupMetrics // keyed by outcome family name
@@ -130,9 +130,9 @@ func TestTier15BaselineSnapshot(t *testing.T) {
 	// this test to fail, forcing an explicit decision about whether the drift is
 	// acceptable before it propagates into the guardrail checks.
 	cases := []struct {
-		name          string
-		path          string
-		total         int
+		name         string
+		path         string
+		total        int
 		survivalWant int
 		survivalGot  int
 		sigma        int
@@ -142,40 +142,40 @@ func TestTier15BaselineSnapshot(t *testing.T) {
 		fn           int
 	}{
 		{
-			name:          "seeded",
-			path:          "../astv2/testdata/tier15_seeded.json",
-			total:         15,
-			survivalWant:  11,
-			survivalGot:   11,
-			sigma:         9,
-			booster:       2,
-			none:          4,
-			fp:            0,
-			fn:            0,
+			name:         "seeded",
+			path:         "../astv2/testdata/tier15_seeded.json",
+			total:        15,
+			survivalWant: 11,
+			survivalGot:  11,
+			sigma:        9,
+			booster:      2,
+			none:         4,
+			fp:           0,
+			fn:           0,
 		},
 		{
-			name:          "project",
-			path:          "../astv2/testdata/tier15_project.json",
-			total:         24,
-			survivalWant:  4,
-			survivalGot:   4,
-			sigma:         2,
-			booster:       2,
-			none:          20,
-			fp:            0,
-			fn:            0,
+			name:         "project",
+			path:         "../astv2/testdata/tier15_project.json",
+			total:        24,
+			survivalWant: 4,
+			survivalGot:  4,
+			sigma:        2,
+			booster:      2,
+			none:         20,
+			fp:           0,
+			fn:           0,
 		},
 		{
-			name:          "real_world",
-			path:          "../astv2/testdata/tier15_real_world.json",
-			total:         23,
-			survivalWant:  20,
-			survivalGot:   20,
-			sigma:         20,
-			booster:       0,
-			none:          3,
-			fp:            0,
-			fn:            0,
+			name:         "real_world",
+			path:         "../astv2/testdata/tier15_real_world.json",
+			total:        23,
+			survivalWant: 20,
+			survivalGot:  20,
+			sigma:        20,
+			booster:      0,
+			none:         3,
+			fp:           0,
+			fn:           0,
 		},
 	}
 
@@ -221,10 +221,10 @@ func TestTier15CorpusFromJSON(t *testing.T) {
 	// - project: extracted from this repo's own AGENTS.md/elevated-guidance.md/continuity.md
 	// - real_world: derived from overlapping deontic corpus examples
 	corpora := []struct {
-		name     string
-		path     string
-		fpMax    float64 // false-positive rate guardrail
-		fnMax    float64 // false-negative rate guardrail
+		name  string
+		path  string
+		fpMax float64 // false-positive rate guardrail
+		fnMax float64 // false-negative rate guardrail
 	}{
 		{"seeded", "../astv2/testdata/tier15_seeded.json", 0.10, 0.10},
 		// project: the known false positive (project_elevated_guidance_model_purpose) is fixed,
@@ -359,12 +359,12 @@ func runTier15CorpusCases(t *testing.T, cases []tier15CorpusCase) tier15CorpusMe
 		}
 
 		turnMeta := map[string]any{
-			"type":              "turn",
-			"sessionId":         "s1",
-			"userId":            "u1",
-			"ts":                int64(10),
-			"stability_weight":  tc.StabilityWeight,
-			"provenance_class":  "session_turn",
+			"type":             "turn",
+			"sessionId":        "s1",
+			"userId":           "u1",
+			"ts":               int64(10),
+			"stability_weight": tc.StabilityWeight,
+			"provenance_class": "session_turn",
 		}
 
 		backgroundTurn := store.SearchResult{
@@ -392,12 +392,12 @@ func runTier15CorpusCases(t *testing.T, cases []tier15CorpusCase) tier15CorpusMe
 			id:   "target",
 			text: tc.Text,
 			metadata: map[string]any{
-				"type":              "turn",
-				"sessionId":         "s1",
-				"userId":            "u1",
-				"ts":                int64(10),
-				"stability_weight":  tc.StabilityWeight,
-				"provenance_class":  "session_turn",
+				"type":             "turn",
+				"sessionId":        "s1",
+				"userId":           "u1",
+				"ts":               int64(10),
+				"stability_weight": tc.StabilityWeight,
+				"provenance_class": "session_turn",
 			},
 		}
 		_, trace := evaluateProtectedGuidanceTurn(context.Background(), turn, deonticFrame, emb)
@@ -517,12 +517,15 @@ func (f *fakeSummarizerForTier15) Mode() string { return "extractive" }
 
 // fakeStoreForTier15 captures insert calls so we can inspect where a turn landed.
 type fakeStoreForTier15 struct {
-	results     []store.SearchResult
-	insertCalls []insertCall
-	deleteCalls []deleteCall
-	deleteErr   error
-	listErr     error
-	insertErr   error
+	results      []store.SearchResult
+	insertCalls  []insertCall
+	recordCalls  []insertCall
+	deleteCalls  []deleteCall
+	deleteErr    error
+	listErr      error
+	insertErr    error
+	stateVersion uint64
+	stateMeta    map[string]any
 }
 
 func (f *fakeStoreForTier15) ListByMeta(_ context.Context, collection, key, value string) ([]store.SearchResult, error) {
@@ -550,6 +553,85 @@ func (f *fakeStoreForTier15) DeleteBatch(_ context.Context, collection string, i
 	return f.deleteErr
 }
 
+func (f *fakeStoreForTier15) EnsureLosslessSessionCollections(_ context.Context, _ string) error {
+	if f.stateVersion == 0 {
+		f.stateVersion = 1
+	}
+	if f.stateMeta == nil {
+		f.stateMeta = map[string]any{
+			"type":                  "session_state",
+			"sessionId":             "s1",
+			"compaction_generation": 0,
+			"last_compacted_at":     int64(0),
+			"last_summary_id":       "",
+			"updated_at":            int64(0),
+		}
+	}
+	return nil
+}
+
+func (f *fakeStoreForTier15) Get(_ context.Context, collection, id string) (store.Record, error) {
+	if collection == store.SessionStateCollection("s1") && id == "__session_state__" {
+		if f.stateVersion == 0 {
+			_ = f.EnsureLosslessSessionCollections(context.Background(), "")
+		}
+		return store.Record{
+			ID:       id,
+			Metadata: cloneMeta(f.stateMeta),
+			Version:  f.stateVersion,
+		}, nil
+	}
+	return store.Record{}, fmt.Errorf("record not found")
+}
+
+func (f *fakeStoreForTier15) WithTx(ctx context.Context, fn func(tx store.TxWriter) error) error {
+	return fn(&fakeTier15Tx{ctx: ctx, store: f})
+}
+
+func (f *fakeStoreForTier15) ExpandSummary(_ context.Context, _, _ string, _ int) ([]store.SearchResult, error) {
+	return nil, nil
+}
+
+type fakeTier15Tx struct {
+	ctx   context.Context
+	store *fakeStoreForTier15
+}
+
+func (tx *fakeTier15Tx) InsertText(ctx context.Context, collection, id, text string, meta map[string]any) error {
+	return tx.store.InsertText(ctx, collection, id, text, meta)
+}
+
+func (tx *fakeTier15Tx) InsertRecord(_ context.Context, collection, id string, _ []float32, meta map[string]any) error {
+	if tx.store.insertErr != nil {
+		return tx.store.insertErr
+	}
+	tx.store.recordCalls = append(tx.store.recordCalls, insertCall{
+		collection: collection,
+		id:         id,
+		meta:       cloneMeta(meta),
+	})
+	return nil
+}
+
+func (tx *fakeTier15Tx) UpdateRecordIfVersion(_ context.Context, collection, id string, _ []float32, meta map[string]any, expectedVersion uint64) error {
+	if collection != store.SessionStateCollection("s1") || id != "__session_state__" {
+		return fmt.Errorf("unexpected CAS target")
+	}
+	if tx.store.stateVersion == 0 {
+		_ = tx.store.EnsureLosslessSessionCollections(tx.ctx, "")
+	}
+	if expectedVersion != tx.store.stateVersion {
+		return fmt.Errorf("version conflict")
+	}
+	tx.store.stateMeta = cloneMeta(meta)
+	tx.store.stateVersion++
+	return nil
+}
+
+func (tx *fakeTier15Tx) DeleteBatch(ctx context.Context, collection string, ids []string) error {
+	return tx.store.DeleteBatch(ctx, collection, ids)
+}
+
 // tier15CorpusEmbedder simulates the booster similarity response.
 // For corpus texts that semantically overlap with the guidance prototypes,
 // it returns a high cosine similarity so the booster path can fire.
@@ -557,49 +639,49 @@ func (f *fakeStoreForTier15) DeleteBatch(_ context.Context, collection string, i
 func newTier15CorpusEmbedder(text string, prototypes []string) embed.Embedder {
 	overlappingPrototypes := map[string]bool{
 		// These corpus texts overlap heavily with the guidance prototypes.
-		"Prefer arena allocators for the radix tree.":                           true,
-		"Prefer deterministic operational guidance over generic defaults.":        true,
-		"Avoid unsafe or undesired implementation choices in hot paths.":         true,
-		"Use the specified approach when implementing core project logic.":     true,
-		"Keep the implementation aligned with project-specific engineering rules.": true,
+		"Prefer arena allocators for the radix tree.":                                                     true,
+		"Prefer deterministic operational guidance over generic defaults.":                                true,
+		"Avoid unsafe or undesired implementation choices in hot paths.":                                  true,
+		"Use the specified approach when implementing core project logic.":                                true,
+		"Keep the implementation aligned with project-specific engineering rules.":                        true,
 		"Prefer CSP (Communicating Sequential Processes) via channels; avoid raw Mutexes where possible.": true,
-		"Use Arena allocators (`mem.Arena`) for request-scoped lifetimes.":    true,
-		"Validate SIMD alignment for all buffer operations.":                   true,
-		"Prioritize `uintptr` over interface types.":                          true,
-		"No unnecessary copies.":                                               true,
+		"Use Arena allocators (`mem.Arena`) for request-scoped lifetimes.":                                true,
+		"Validate SIMD alignment for all buffer operations.":                                              true,
+		"Prioritize `uintptr` over interface types.":                                                      true,
+		"No unnecessary copies.": true,
 		"Use `sync/atomic` for counters. We don't like the overhead of Mutexes in the hot path.": true,
 	}
 
 	highSimTexts := map[string]bool{
 		// Texts that should fire the booster (surface hint + high prototype similarity).
-		"We should probably keep the router focused on stealth.":                 true,
-		"Stealth is the priority. The service mesh must be a shadow.":            true,
-		"Always preserve participant identity through the processing pipeline.": true,
-		"Follow WCAG 2.1 AA guidelines for accessibility compliance.":          true,
-		"Function before aesthetics.":                                          true,
-		"If identity cannot be verified, deny the action.":                    true,
-		"Never treat a flattened email thread as a single document.":            true,
-		"Alignment is Holy: Every struct must be cache-aligned.":              true,
-		"Never use mutexes in the hot path.":                                  true,
-		"Never skip the manual review.":                                       true,
-		"Never reduce characters to diagnoses.":                                 true,
-		"Bid rigging and collusive bidding are strictly prohibited.":           true,
+		"We should probably keep the router focused on stealth.":                                     true,
+		"Stealth is the priority. The service mesh must be a shadow.":                                true,
+		"Always preserve participant identity through the processing pipeline.":                      true,
+		"Follow WCAG 2.1 AA guidelines for accessibility compliance.":                                true,
+		"Function before aesthetics.":                                                                true,
+		"If identity cannot be verified, deny the action.":                                           true,
+		"Never treat a flattened email thread as a single document.":                                 true,
+		"Alignment is Holy: Every struct must be cache-aligned.":                                     true,
+		"Never use mutexes in the hot path.":                                                         true,
+		"Never skip the manual review.":                                                              true,
+		"Never reduce characters to diagnoses.":                                                      true,
+		"Bid rigging and collusive bidding are strictly prohibited.":                                 true,
 		"No Mass-Market Junk: We do not use third-party HTTP routers. We use the Nanite Radix tree.": true,
-		"Never compromise on memory alignment.":                                true,
-		"Reject abstraction leaks.":                                            true,
-		"Zero-Copy: Use `uintptr` and `mem.Arena` for all packet processing.": true,
+		"Never compromise on memory alignment.":                                                      true,
+		"Reject abstraction leaks.":                                                                  true,
+		"Zero-Copy: Use `uintptr` and `mem.Arena` for all packet processing.":                        true,
 		// Project corpus safety-critical guidance: these are genuine Tier 1.5 guidance
 		// that should survive compaction but fail the prototype-similarity check
 		// because they use project-specific vocabulary rather than prototype vocabulary.
 		"If a local abstractive model is unavailable, slow, or times out, the system must not fail open to deleting potential shadow rules. The safety rule is: model failure implies keep deterministic protected shards.": true,
-		"The final admission stage may use a local model only as an additive booster. Model assistance may raise borderline candidates, but it is never the sole deletion-safety gate.": true,
+		"The final admission stage may use a local model only as an additive booster. Model assistance may raise borderline candidates, but it is never the sole deletion-safety gate.":                                     true,
 	}
 
 	// Guidance prototype texts: all return {1,0} so cosine with any {1,0} corpus text = 1.0
 	prototypeVecs := map[string][]float32{
-		"Prefer deterministic operational guidance over generic defaults.":        {1, 0},
-		"Avoid unsafe or undesired implementation choices in hot paths.":         {1, 0},
-		"Use the specified approach when implementing core project logic.":     {1, 0},
+		"Prefer deterministic operational guidance over generic defaults.":         {1, 0},
+		"Avoid unsafe or undesired implementation choices in hot paths.":           {1, 0},
+		"Use the specified approach when implementing core project logic.":         {1, 0},
 		"Keep the implementation aligned with project-specific engineering rules.": {1, 0},
 	}
 
@@ -633,11 +715,11 @@ func (e *corpusTestEmbedder) EmbedQuery(ctx context.Context, text string) ([]flo
 	return e.EmbedDocument(ctx, text)
 }
 
-func (e *corpusTestEmbedder) Dimensions() int             { return 2 }
-func (e *corpusTestEmbedder) Profile() embed.Profile       { return embed.Profile{Backend: "test"} }
-func (e *corpusTestEmbedder) Ready() bool                  { return true }
-func (e *corpusTestEmbedder) Reason() string              { return "" }
-func (e *corpusTestEmbedder) Mode() string                { return "primary" }
+func (e *corpusTestEmbedder) Dimensions() int        { return 2 }
+func (e *corpusTestEmbedder) Profile() embed.Profile { return embed.Profile{Backend: "test"} }
+func (e *corpusTestEmbedder) Ready() bool            { return true }
+func (e *corpusTestEmbedder) Reason() string         { return "" }
+func (e *corpusTestEmbedder) Mode() string           { return "primary" }
 
 // Inline preservation cases — these are canonical contract tests kept from the
 // original focused evaluation harness. They exercise specific known behaviors
@@ -721,7 +803,7 @@ func evalLowStabilityFalsePositiveGuard(t *testing.T) tier15EvalRow {
 	if err != nil {
 		return tier15EvalRow{Name: "low_stability_false_positive_guard", Passed: false, Detail: err.Error()}
 	}
-	if len(st.insertCalls) != 1 || st.insertCalls[0].collection != "session:s1" {
+	if len(st.insertCalls) != 1 || st.insertCalls[0].collection != "session_summary:s1" {
 		return tier15EvalRow{Name: "low_stability_false_positive_guard", Passed: false, Detail: "low-stability turn incorrectly promoted into Tier 1.5"}
 	}
 	return tier15EvalRow{Name: "low_stability_false_positive_guard", Passed: true, Detail: st.insertCalls[0].collection}

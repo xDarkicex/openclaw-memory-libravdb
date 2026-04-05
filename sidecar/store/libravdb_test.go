@@ -174,6 +174,95 @@ func TestFlushPersistsAndReloadsRecords(t *testing.T) {
 	}
 }
 
+func TestEnsureLosslessSessionCollectionsInitializesState(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "store.libravdb"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	if err := s.EnsureLosslessSessionCollections(ctx, "s1"); err != nil {
+		t.Fatalf("EnsureLosslessSessionCollections() error = %v", err)
+	}
+
+	for _, collection := range []string{
+		SessionRawCollection("s1"),
+		SessionSummaryCollection("s1"),
+		SessionEdgeCollection("s1"),
+		SessionStateCollection("s1"),
+	} {
+		if err := s.EnsureCollection(ctx, collection); err != nil {
+			t.Fatalf("EnsureCollection(%s) error = %v", collection, err)
+		}
+	}
+
+	state, err := s.Get(ctx, SessionStateCollection("s1"), sessionStateRecordID)
+	if err != nil {
+		t.Fatalf("Get(session state) error = %v", err)
+	}
+	if state.Version != 1 {
+		t.Fatalf("state version = %d, want 1", state.Version)
+	}
+	if got := metaString(state.Metadata, "type"); got != "session_state" {
+		t.Fatalf("state type = %q, want session_state", got)
+	}
+	if got := metaInt(state.Metadata, "compaction_generation"); got != 0 {
+		t.Fatalf("compaction_generation = %d, want 0", got)
+	}
+}
+
+func TestInsertSessionTurnWritesActiveAndRawHistory(t *testing.T) {
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "store.libravdb")
+	s, err := Open(storePath, fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	meta := map[string]any{
+		"type":      "turn",
+		"sessionId": "s1",
+		"role":      "user",
+		"ts":        int64(10),
+	}
+	if err := s.InsertSessionTurn(ctx, "s1", "turn-1", "alpha", meta); err != nil {
+		t.Fatalf("InsertSessionTurn() error = %v", err)
+	}
+
+	active, err := s.ListCollection(ctx, "session:s1")
+	if err != nil {
+		t.Fatalf("ListCollection(session) error = %v", err)
+	}
+	raw, err := s.ListCollection(ctx, SessionRawCollection("s1"))
+	if err != nil {
+		t.Fatalf("ListCollection(session_raw) error = %v", err)
+	}
+	if len(active) != 1 || active[0].ID != "turn-1" {
+		t.Fatalf("unexpected active session results: %+v", active)
+	}
+	if len(raw) != 1 || raw[0].ID != "turn-1" {
+		t.Fatalf("unexpected raw session results: %+v", raw)
+	}
+	if got := raw[0].Metadata["raw_history"]; got != true {
+		t.Fatalf("raw_history metadata = %+v, want true", got)
+	}
+	if got := raw[0].Metadata["active_view"]; got != false {
+		t.Fatalf("active_view metadata = %+v, want false", got)
+	}
+
+	reopened, err := Open(storePath, fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+	rawAfterReopen, err := reopened.ListCollection(ctx, SessionRawCollection("s1"))
+	if err != nil {
+		t.Fatalf("ListCollection(session_raw) after reopen error = %v", err)
+	}
+	if len(rawAfterReopen) != 1 || rawAfterReopen[0].ID != "turn-1" {
+		t.Fatalf("unexpected raw results after reopen: %+v", rawAfterReopen)
+	}
+}
+
 func TestOpenRejectsEmbeddingFingerprintMismatch(t *testing.T) {
 	ctx := context.Background()
 	storePath := filepath.Join(t.TempDir(), "store.libravdb")
@@ -628,6 +717,75 @@ func recordExists(s *Store, collection, id string) bool {
 		}
 	}
 	return false
+}
+
+func BenchmarkInsertSessionTurnTransaction(b *testing.B) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(b.TempDir(), "store.libravdb"), fakeEmbedder{})
+	if err != nil {
+		b.Fatalf("Open() error = %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := s.InsertSessionTurn(ctx, "bench", dirtyID("bench", "turn", i), "alpha", map[string]any{
+			"type":      "turn",
+			"sessionId": "bench",
+			"ts":        int64(i + 1),
+		}); err != nil {
+			b.Fatalf("InsertSessionTurn() error = %v", err)
+		}
+	}
+}
+
+func BenchmarkLosslessSummaryExpansionHopLookup(b *testing.B) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(b.TempDir(), "store.libravdb"), fakeEmbedder{})
+	if err != nil {
+		b.Fatalf("Open() error = %v", err)
+	}
+	if err := s.EnsureLosslessSessionCollections(ctx, "bench"); err != nil {
+		b.Fatalf("EnsureLosslessSessionCollections() error = %v", err)
+	}
+	if err := s.InsertSessionTurn(ctx, "bench", "turn-1", "alpha", map[string]any{
+		"type":      "turn",
+		"sessionId": "bench",
+		"ts":        int64(1),
+	}); err != nil {
+		b.Fatalf("InsertSessionTurn() error = %v", err)
+	}
+	if err := s.InsertText(ctx, SessionSummaryCollection("bench"), "summary-1", "alpha", map[string]any{
+		"type":      "summary",
+		"sessionId": "bench",
+		"ts":        int64(2),
+	}); err != nil {
+		b.Fatalf("InsertText(summary) error = %v", err)
+	}
+	if err := s.InsertRecord(ctx, SessionEdgeCollection("bench"), "edge:summary-1:turn-1", []float32{0}, map[string]any{
+		"type":              "coverage_edge",
+		"sessionId":         "bench",
+		"parent_summary_id": "summary-1",
+		"child_id":          "turn-1",
+		"child_collection":  SessionRawCollection("bench"),
+		"edge_order":        0,
+		"ts":                int64(2),
+	}); err != nil {
+		b.Fatalf("InsertRecord(edge) error = %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		edges, err := s.ListByMeta(ctx, SessionEdgeCollection("bench"), "parent_summary_id", "summary-1")
+		if err != nil {
+			b.Fatalf("ListByMeta(edge) error = %v", err)
+		}
+		if len(edges) != 1 {
+			b.Fatalf("edge count = %d, want 1", len(edges))
+		}
+		if _, err := s.Get(ctx, SessionRawCollection("bench"), "turn-1"); err != nil {
+			b.Fatalf("Get(raw turn) error = %v", err)
+		}
+	}
 }
 
 func containsDirty(records []SearchResult, base, id string, dims int) bool {

@@ -30,7 +30,10 @@ const AUTHORED_VARIANT_COLLECTION = "authored:variant";
 const ELEVATED_USER_COLLECTION_PREFIX = "elevated:user:";
 const ELEVATED_SESSION_COLLECTION_PREFIX = "elevated:session:";
 const SESSION_RECALL_COLLECTION_PREFIX = "session_recall:";
+const SESSION_RAW_COLLECTION_PREFIX = "session_raw:";
 const SESSION_SUMMARY_COLLECTION_PREFIX = "session_summary:";
+const SESSION_EDGE_COLLECTION_PREFIX = "session_edge:";
+const SESSION_STATE_COLLECTION_PREFIX = "session_state:";
 
 export function buildContextEngineFactory(
   getRpc: RpcGetter,
@@ -58,8 +61,11 @@ export function buildContextEngineFactory(
       await rpc.call("ensure_collections", {
         collections: [
           `session:${sessionId}`,
+          sessionRawCollection(sessionId),
+          sessionSummaryCollection(sessionId),
+          sessionEdgeCollection(sessionId),
+          sessionStateCollection(sessionId),
           ...(useSessionRecallProjection(cfg) ? [sessionRecallCollection(sessionId)] : []),
-          ...(useSessionSummarySearchExperiment(cfg) ? [sessionSummaryCollection(sessionId)] : []),
           `turns:${userId}`,
           `user:${userId}`,
           "global",
@@ -79,9 +85,6 @@ export function buildContextEngineFactory(
       authoredVariantRecallCache.clear();
       if (useSessionRecallProjection(cfg)) {
         await rebuildSessionRecallProjection(rpc, cfg, sessionId);
-      }
-      if (useSessionSummarySearchExperiment(cfg)) {
-        await rebuildSessionSummaryProjection(rpc, sessionId);
       }
       validateSection7StartupHardReserve(cfg, authoredHard);
       return { ok: true };
@@ -105,8 +108,8 @@ export function buildContextEngineFactory(
       // Elevated cache is session-scoped, so invalidate immediately on every ingest
       clearElevatedCacheForSession(sessionId);
       const rawSessionId = `${sessionId}:${ts}`;
-      const rawSessionInsert = rpc.call("insert_text", {
-        collection: `session:${sessionId}`,
+      const rawSessionInsert = rpc.call("insert_session_turn", {
+        sessionId,
         id: rawSessionId,
         text: message.content,
         metadata: sessionMeta,
@@ -558,9 +561,6 @@ export function buildContextEngineFactory(
       if (compacted && useSessionRecallProjection(cfg)) {
         await rebuildSessionRecallProjection(rpc, cfg, sessionId);
       }
-      if (compacted && useSessionSummarySearchExperiment(cfg)) {
-        await rebuildSessionSummaryProjection(rpc, sessionId);
-      }
 
       return {
         ok: true,
@@ -582,16 +582,24 @@ function sessionRecallCollection(sessionId: string): string {
   return `${SESSION_RECALL_COLLECTION_PREFIX}${sessionId}`;
 }
 
+function sessionRawCollection(sessionId: string): string {
+  return `${SESSION_RAW_COLLECTION_PREFIX}${sessionId}`;
+}
+
 function sessionSummaryCollection(sessionId: string): string {
   return `${SESSION_SUMMARY_COLLECTION_PREFIX}${sessionId}`;
 }
 
-function sessionRecallId(sourceId: string): string {
-  return `recall:${sourceId}`;
+function sessionEdgeCollection(sessionId: string): string {
+  return `${SESSION_EDGE_COLLECTION_PREFIX}${sessionId}`;
 }
 
-function sessionSummaryId(sourceId: string): string {
-  return `summary:${sourceId}`;
+function sessionStateCollection(sessionId: string): string {
+  return `${SESSION_STATE_COLLECTION_PREFIX}${sessionId}`;
+}
+
+function sessionRecallId(sourceId: string): string {
+  return `recall:${sourceId}`;
 }
 
 async function rebuildSessionRecallProjection(
@@ -639,48 +647,6 @@ async function rebuildSessionRecallProjection(
       metadata: {
         ...item.metadata,
         projection_class: "session_recall",
-        source_turn_id: item.id,
-        source_turn_ts: metadataTimestamp(item),
-      },
-    })
-  ));
-}
-
-async function rebuildSessionSummaryProjection(
-  rpc: Awaited<ReturnType<RpcGetter>>,
-  sessionId: string,
-): Promise<void> {
-  const rawCollection = `session:${sessionId}`;
-  const summaryCollectionName = sessionSummaryCollection(sessionId);
-  const sessionRecords = await rpc.call<{ results: SearchResult[] }>("list_by_meta", {
-    collection: rawCollection,
-    key: "sessionId",
-    value: sessionId,
-  });
-  const summaryItems = sortChronological(
-    sessionRecords.results.filter((item) => item.metadata.type === "summary"),
-  );
-  const existingSummaryProjection = await rpc.call<{ results: SearchResult[] }>("list_collection", {
-    collection: summaryCollectionName,
-  });
-  const existingIds = existingSummaryProjection.results
-    .map((item) => item.id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-  if (existingIds.length > 0) {
-    await rpc.call("delete_batch", {
-      collection: summaryCollectionName,
-      ids: existingIds,
-    });
-  }
-  await Promise.all(summaryItems.map((item) =>
-    rpc.call("insert_text", {
-      collection: summaryCollectionName,
-      id: sessionSummaryId(item.id),
-      score: item.score,
-      text: item.text,
-      metadata: {
-        ...item.metadata,
-        projection_class: "session_summary",
         source_turn_id: item.id,
         source_turn_ts: metadataTimestamp(item),
       },

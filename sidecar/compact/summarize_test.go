@@ -16,12 +16,17 @@ import (
 )
 
 type fakeStore struct {
-	results     []store.SearchResult
-	insertCalls []insertCall
-	deleteCalls []deleteCall
-	deleteErr   error
-	listErr     error
-	insertErr   error
+	results      []store.SearchResult
+	collections  map[string][]store.SearchResult
+	insertCalls  []insertCall
+	recordCalls  []insertCall
+	deleteCalls  []deleteCall
+	deleteErr    error
+	listErr      error
+	insertErr    error
+	casErr       error
+	stateVersion uint64
+	stateMeta    map[string]any
 }
 
 type insertCall struct {
@@ -52,7 +57,14 @@ func (f *fakeStore) ListByMeta(_ context.Context, collection, key, value string)
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return append([]store.SearchResult(nil), f.results...), nil
+	items := f.collectionResults(collection)
+	filtered := make([]store.SearchResult, 0, len(items))
+	for _, item := range items {
+		if item.Metadata[key] == value {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
 }
 
 func (f *fakeStore) InsertText(_ context.Context, collection, id, text string, meta map[string]any) error {
@@ -68,12 +80,211 @@ func (f *fakeStore) InsertText(_ context.Context, collection, id, text string, m
 	return nil
 }
 
+func (f *fakeStore) EnsureLosslessSessionCollections(_ context.Context, _ string) error {
+	if f.stateVersion == 0 {
+		f.stateVersion = 1
+	}
+	if f.stateMeta == nil {
+		f.stateMeta = map[string]any{
+			"type":                  "session_state",
+			"sessionId":             "s1",
+			"compaction_generation": 0,
+			"last_compacted_at":     int64(0),
+			"last_summary_id":       "",
+			"updated_at":            int64(0),
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) Get(_ context.Context, collection, id string) (store.Record, error) {
+	if strings.HasPrefix(collection, store.SessionStateCollectionPrefix) && id == "__session_state__" {
+		if f.stateVersion == 0 {
+			_ = f.EnsureLosslessSessionCollections(context.Background(), "")
+		}
+		return store.Record{
+			ID:       id,
+			Metadata: cloneMeta(f.stateMeta),
+			Version:  f.stateVersion,
+		}, nil
+	}
+	return store.Record{}, errors.New("record not found")
+}
+
+func (f *fakeStore) WithTx(ctx context.Context, fn func(tx store.TxWriter) error) error {
+	tx := &fakeTx{
+		ctx:              ctx,
+		store:            f,
+		workingStateMeta: cloneMeta(f.stateMeta),
+		workingStateVer:  f.stateVersion,
+	}
+	if tx.workingStateVer == 0 {
+		_ = f.EnsureLosslessSessionCollections(ctx, "")
+		tx.workingStateMeta = cloneMeta(f.stateMeta)
+		tx.workingStateVer = f.stateVersion
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	f.insertCalls = append(f.insertCalls, tx.pendingInserts...)
+	f.recordCalls = append(f.recordCalls, tx.pendingRecords...)
+	f.deleteCalls = append(f.deleteCalls, tx.pendingDeletes...)
+	if tx.stateUpdated {
+		f.stateMeta = cloneMeta(tx.workingStateMeta)
+		f.stateVersion = tx.workingStateVer
+	}
+	return nil
+}
+
 func (f *fakeStore) DeleteBatch(_ context.Context, collection string, ids []string) error {
 	f.deleteCalls = append(f.deleteCalls, deleteCall{
 		collection: collection,
 		ids:        append([]string(nil), ids...),
 	})
 	return f.deleteErr
+}
+
+func metaStringValue(meta map[string]any, key string) string {
+	if meta == nil {
+		return ""
+	}
+	value, ok := meta[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func (f *fakeStore) ExpandSummary(_ context.Context, sessionID, summaryID string, maxDepth int) ([]store.SearchResult, error) {
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+	if f.collections == nil {
+		return nil, nil
+	}
+	edgeKey := store.SessionEdgeCollection(sessionID)
+	edges, ok := f.collections[edgeKey]
+	if !ok {
+		return nil, nil
+	}
+	var results []store.SearchResult
+	for _, edge := range edges {
+		if metaStringValue(edge.Metadata, "parent_summary_id") != summaryID {
+			continue
+		}
+		childID := metaStringValue(edge.Metadata, "child_id")
+		childCollection := metaStringValue(edge.Metadata, "child_collection")
+		childType := metaStringValue(edge.Metadata, "child_type")
+
+		if childType == "summary" {
+			nested, _ := f.ExpandSummary(context.Background(), sessionID, childID, maxDepth-1)
+			results = append(results, nested...)
+			continue
+		}
+		if raw, ok := f.collections[childCollection]; ok {
+			for _, r := range raw {
+				if r.ID == childID {
+					results = append(results, r)
+					break
+				}
+			}
+		}
+	}
+	return results, nil
+}
+
+func (f *fakeStore) collectionResults(collection string) []store.SearchResult {
+	if f.collections != nil {
+		if items, ok := f.collections[collection]; ok {
+			return append([]store.SearchResult(nil), items...)
+		}
+	}
+	switch {
+	case strings.HasPrefix(collection, store.SessionSummaryCollectionPrefix):
+		summaries := make([]store.SearchResult, 0, len(f.results))
+		for _, item := range f.results {
+			if item.Metadata["type"] == "summary" {
+				summaries = append(summaries, item)
+			}
+		}
+		return summaries
+	case strings.HasPrefix(collection, "session:"):
+		return append([]store.SearchResult(nil), f.results...)
+	default:
+		return nil
+	}
+}
+
+type fakeTx struct {
+	ctx              context.Context
+	store            *fakeStore
+	pendingInserts   []insertCall
+	pendingRecords   []insertCall
+	pendingDeletes   []deleteCall
+	workingStateMeta map[string]any
+	workingStateVer  uint64
+	stateUpdated     bool
+}
+
+func (tx *fakeTx) InsertText(ctx context.Context, collection, id, text string, meta map[string]any) error {
+	if tx.store.insertErr != nil {
+		return tx.store.insertErr
+	}
+	tx.pendingInserts = append(tx.pendingInserts, insertCall{
+		collection: collection,
+		id:         id,
+		text:       text,
+		meta:       cloneMeta(meta),
+	})
+	return nil
+}
+
+func (tx *fakeTx) InsertRecord(_ context.Context, collection, id string, _ []float32, meta map[string]any) error {
+	if tx.store.insertErr != nil {
+		return tx.store.insertErr
+	}
+	tx.pendingRecords = append(tx.pendingRecords, insertCall{
+		collection: collection,
+		id:         id,
+		meta:       cloneMeta(meta),
+	})
+	return nil
+}
+
+func (tx *fakeTx) UpdateRecordIfVersion(_ context.Context, collection, id string, _ []float32, meta map[string]any, expectedVersion uint64) error {
+	if !strings.HasPrefix(collection, store.SessionStateCollectionPrefix) || id != "__session_state__" {
+		return errors.New("unexpected CAS target")
+	}
+	if tx.store.casErr != nil {
+		return tx.store.casErr
+	}
+	if tx.workingStateVer == 0 {
+		_ = tx.store.EnsureLosslessSessionCollections(tx.ctx, "")
+		tx.workingStateMeta = cloneMeta(tx.store.stateMeta)
+		tx.workingStateVer = tx.store.stateVersion
+	}
+	if expectedVersion != tx.workingStateVer {
+		return errors.New("version conflict")
+	}
+	tx.workingStateMeta = cloneMeta(meta)
+	tx.workingStateVer++
+	tx.stateUpdated = true
+	return nil
+}
+
+func (tx *fakeTx) DeleteBatch(_ context.Context, collection string, ids []string) error {
+	if tx.store.deleteErr != nil {
+		return tx.store.deleteErr
+	}
+	tx.pendingDeletes = append(tx.pendingDeletes, deleteCall{
+		collection: collection,
+		ids:        append([]string(nil), ids...),
+	})
+	return nil
 }
 
 func (f *fakeSummarizer) Summarize(_ context.Context, turns []summarize.Turn, _ summarize.SummaryOpts) (summarize.Summary, error) {
@@ -210,6 +421,61 @@ func TestCompactSessionPartitionsDeterministicallyByTimestamp(t *testing.T) {
 	assertTurnIDs(t, sum.calls[1], []string{"c", "d"})
 }
 
+func TestCompactSessionWritesCoverageEdgesAndAdvancesState(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "first turn", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10), "type": "turn"}},
+			{ID: "b", Text: "second turn", Metadata: map[string]any{"sessionId": "s1", "ts": int64(20), "type": "turn"}},
+		},
+	}
+	sum := &fakeSummarizer{
+		summaries: []summarize.Summary{
+			{Text: "summary-1", SourceIDs: []string{"a", "b"}, Method: "extractive", TokenCount: 1, Confidence: 0.8},
+		},
+	}
+
+	got, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 2, ContinuityConfig{})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !got.DidCompact {
+		t.Fatalf("expected compaction to proceed, got %+v", got)
+	}
+	if len(st.recordCalls) != 2 {
+		t.Fatalf("expected two coverage edge inserts, got %+v", st.recordCalls)
+	}
+	if st.recordCalls[0].collection != "session_edge:s1" {
+		t.Fatalf("expected coverage edge collection, got %+v", st.recordCalls[0])
+	}
+	if got := st.recordCalls[0].meta["type"]; got != "coverage_edge" {
+		t.Fatalf("expected coverage edge metadata, got %+v", st.recordCalls[0].meta)
+	}
+	if got := st.recordCalls[0].meta["child_collection"]; got != "session_raw:s1" {
+		t.Fatalf("expected raw-history child collection, got %+v", got)
+	}
+	if st.stateVersion != 2 {
+		t.Fatalf("expected state version to advance to 2, got %d", st.stateVersion)
+	}
+	if got := st.stateMeta["last_summary_id"]; got == "" {
+		t.Fatalf("expected last_summary_id to be populated, got %+v", st.stateMeta)
+	}
+}
+
+func TestCompactSessionAbortsOnCASConflict(t *testing.T) {
+	st := &fakeStore{
+		results: []store.SearchResult{
+			{ID: "a", Text: "first turn", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10), "type": "turn"}},
+			{ID: "b", Text: "second turn", Metadata: map[string]any{"sessionId": "s1", "ts": int64(20), "type": "turn"}},
+		},
+		casErr: errors.New("version conflict"),
+	}
+	sum := &fakeSummarizer{}
+
+	if _, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 2, ContinuityConfig{}); err == nil || !strings.Contains(err.Error(), "version conflict") {
+		t.Fatalf("expected CAS conflict error, got %v", err)
+	}
+}
+
 func TestCompactSessionPreservesProtectedGuidanceAsVerbatimShards(t *testing.T) {
 	st := &fakeStore{
 		results: []store.SearchResult{
@@ -245,8 +511,8 @@ func TestCompactSessionPreservesProtectedGuidanceAsVerbatimShards(t *testing.T) 
 	if elevated, ok := st.insertCalls[0].meta["elevated_guidance"].(bool); !ok || !elevated {
 		t.Fatalf("expected elevated guidance metadata, got %+v", st.insertCalls[0].meta)
 	}
-	if len(st.deleteCalls) == 0 || len(st.deleteCalls[0].ids) != 2 {
-		t.Fatalf("expected both original turns deleted after replacement, got %+v", st.deleteCalls)
+	if len(st.deleteCalls) != 0 {
+		t.Fatalf("expected no delete calls (raw history is immutable), got %+v", st.deleteCalls)
 	}
 }
 
@@ -273,7 +539,7 @@ func TestCompactSessionDoesNotProtectLowStabilityDeonticTurns(t *testing.T) {
 	if len(st.insertCalls) != 1 {
 		t.Fatalf("expected summary only with no protected shard, got %+v", st.insertCalls)
 	}
-	if st.insertCalls[0].collection != "session:s1" {
+	if st.insertCalls[0].collection != "session_summary:s1" {
 		t.Fatalf("expected only session summary insert, got %+v", st.insertCalls[0])
 	}
 }
@@ -344,7 +610,7 @@ func TestCompactSessionSemanticBoosterRequiresGuidanceSurfaceHint(t *testing.T) 
 	if !got.DidCompact {
 		t.Fatalf("expected summary compaction, got %+v", got)
 	}
-	if len(st.insertCalls) != 1 || st.insertCalls[0].collection != "session:s1" {
+	if len(st.insertCalls) != 1 || st.insertCalls[0].collection != "session_summary:s1" {
 		t.Fatalf("expected no semantic booster protection without surface hint, got %+v", st.insertCalls)
 	}
 }
@@ -410,11 +676,8 @@ func TestCompactSessionProtectsRecentTailFromCompaction(t *testing.T) {
 		t.Fatalf("expected one summarize call, got %d", len(sum.calls))
 	}
 	assertTurnIDs(t, sum.calls[0], []string{"a", "b"})
-	if len(st.deleteCalls) != 1 {
-		t.Fatalf("expected one delete call, got %d", len(st.deleteCalls))
-	}
-	if ids := st.deleteCalls[0].ids; len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
-		t.Fatalf("unexpected delete ids: %+v", ids)
+	if len(st.deleteCalls) != 0 {
+		t.Fatalf("expected no delete calls (recent tail excluded from compaction), got %d", len(st.deleteCalls))
 	}
 }
 
@@ -461,21 +724,27 @@ func TestCompactSessionInsertsBeforeDeleteAndPreservesDataOnDeleteFailure(t *tes
 		},
 	}
 
+	// Under lossless continuity, raw turns are never deleted - deleteErr is never reached
+	// since the transaction no longer includes a delete phase.
 	got, err := CompactSession(context.Background(), st, sum, nil, "s1", true, 20, ContinuityConfig{})
 	if err != nil {
 		t.Fatalf("CompactSession() error = %v", err)
 	}
-	if len(st.insertCalls) != 1 {
-		t.Fatalf("expected summary insert before delete, got %d insert calls", len(st.insertCalls))
+	if !got.DidCompact {
+		t.Fatalf("expected compaction to proceed, got %+v", got)
 	}
-	if len(st.deleteCalls) != 1 {
-		t.Fatalf("expected delete attempt after insert, got %d delete calls", len(st.deleteCalls))
+	if len(st.insertCalls) < 1 {
+		t.Fatalf("expected at least summary insert, got %d", len(st.insertCalls))
 	}
-	if got.TurnsRemoved != 0 {
-		t.Fatalf("expected no removed turns when delete fails, got %+v", got)
+	// Raw history is immutable - no deletes happen, so deleteErr is never triggered
+	if len(st.deleteCalls) != 0 {
+		t.Fatalf("expected no delete calls (raw immutable), got %d", len(st.deleteCalls))
 	}
 
-	meta := st.insertCalls[0].meta
+	meta := summaryMetadata("s1", 0, sum.summaries[0], []turnRecord{
+		{id: "a", ts: 10, metadata: map[string]any{"userId": "u1"}},
+		{id: "b", ts: 20},
+	}, qualityMetadata{}, priorContextSelection{})
 	if meta["type"] != "summary" {
 		t.Fatalf("expected summary metadata type, got %+v", meta)
 	}
@@ -705,8 +974,9 @@ func TestCompactSessionSanitizesSummarizerInputOnly(t *testing.T) {
 	if !strings.Contains(sum.calls[0][0].Text, "[sanitized transport payload omitted for continuity]") {
 		t.Fatalf("expected sanitized summarizer input, got %q", sum.calls[0][0].Text)
 	}
-	if len(st.deleteCalls) != 1 || len(st.deleteCalls[0].ids) != 2 || st.deleteCalls[0].ids[0] != "a" || st.deleteCalls[0].ids[1] != "b" {
-		t.Fatalf("expected original source IDs preserved for deletion, got %+v", st.deleteCalls)
+	// Lossless continuity: raw history is never deleted
+	if len(st.deleteCalls) != 0 {
+		t.Fatalf("expected no delete calls (raw immutable), got %+v", st.deleteCalls)
 	}
 }
 

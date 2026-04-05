@@ -30,6 +30,7 @@ const (
 	DefaultContinuityTailTokens  = 128
 	DefaultContinuityPriorTokens = 96
 	guidanceShardType            = "guidance_shard"
+	sessionStateRecordKey        = "__session_state__"
 	ElevatedGuidanceMinStability = 0.35
 	ElevatedGuidanceBoosterFloor = 0.78
 )
@@ -50,6 +51,10 @@ type Store interface {
 	ListByMeta(ctx context.Context, collection, key, value string) ([]store.SearchResult, error)
 	InsertText(ctx context.Context, collection, id, text string, meta map[string]any) error
 	DeleteBatch(ctx context.Context, collection string, ids []string) error
+	EnsureLosslessSessionCollections(ctx context.Context, sessionID string) error
+	Get(ctx context.Context, collection, id string) (store.Record, error)
+	WithTx(ctx context.Context, fn func(tx store.TxWriter) error) error
+	ExpandSummary(ctx context.Context, sessionID, summaryID string, maxDepth int) ([]store.SearchResult, error)
 }
 
 type Result struct {
@@ -129,13 +134,20 @@ func CompactSession(
 
 	targetSize = normalizedTargetSize(targetSize)
 	collection := "session:" + sessionID
+	if err := st.EnsureLosslessSessionCollections(ctx, sessionID); err != nil {
+		return Result{}, err
+	}
 	results, err := st.ListByMeta(ctx, collection, "sessionId", sessionID)
+	if err != nil {
+		return Result{}, err
+	}
+	priorSummaryResults, err := st.ListByMeta(ctx, store.SessionSummaryCollection(sessionID), "sessionId", sessionID)
 	if err != nil {
 		return Result{}, err
 	}
 
 	turns := eligibleTurns(results)
-	priorSummaries := eligiblePriorSummaries(results)
+	priorSummaries := eligiblePriorSummaries(priorSummaryResults)
 	if len(turns) < 2 {
 		return Result{DidCompact: false}, nil
 	}
@@ -173,22 +185,16 @@ func CompactSession(
 		}
 
 		protectedTurns, compressibleTurns := partitionProtectedTurns(ctx, group.turns, deonticFrame, canonicalEmbedder(extractive))
-		shardIDs, err := persistProtectedGuidanceShards(ctx, st, collection, sessionID, protectedTurns, now)
-		if err != nil {
-			return Result{}, fmt.Errorf("cluster %d protected shard insert failed: %w", idx, err)
-		}
 
 		if len(compressibleTurns) == 0 {
 			sourceIDs := turnIDs(group.turns)
-			if err := st.DeleteBatch(ctx, collection, sourceIDs); err != nil {
-				log.Printf("compaction: protected shards persisted but source delete failed for cluster %d: %v", idx, err)
-			} else {
-				out.TurnsRemoved += len(sourceIDs)
+			if err := commitCompactionCluster(ctx, st, sessionID, now, protectedTurns, nil, summarize.Summary{}, qualityMetadata{}, priorContextSelection{}, sourceIDs); err != nil {
+				return Result{}, fmt.Errorf("cluster %d protected shard compact commit failed: %w", idx, err)
 			}
+			out.TurnsRemoved += len(sourceIDs)
 			totalConfidence += 1.0
 			replacedClusters++
 			out.SummaryMethod = mergeMethod(out.SummaryMethod, guidanceShardType)
-			_ = shardIDs
 			continue
 		}
 
@@ -216,21 +222,11 @@ func CompactSession(
 		log.Printf("compaction: cluster_id=%d mean_gating_score=%.3f summarizer_used=%s", idx, meanGating, summary.Method)
 
 		summary.SourceIDs = append([]string(nil), sourceIDs...)
-
-		metadata := summaryMetadata(sessionID, now, summary, group.turns, quality, priorContext)
-		summaryID := summaryRecordID(sessionID, summary.SourceIDs)
-		if err := st.InsertText(ctx, collection, summaryID, summary.Text, metadata); err != nil {
-			rollbackShardInserts(ctx, st, collection, shardIDs)
-			return Result{}, fmt.Errorf("summary insert failed, source turns preserved: %w", err)
-		}
-
 		allSourceIDs := turnIDs(group.turns)
-		if err := st.DeleteBatch(ctx, collection, allSourceIDs); err != nil {
-			log.Printf("compaction: summary %s inserted but source delete failed: %v", summaryID, err)
-		} else {
-			out.TurnsRemoved += len(allSourceIDs)
+		if err := commitCompactionCluster(ctx, st, sessionID, now, protectedTurns, compressibleTurns, summary, quality, priorContext, allSourceIDs); err != nil {
+			return Result{}, fmt.Errorf("cluster %d compact commit failed: %w", idx, err)
 		}
-
+		out.TurnsRemoved += len(allSourceIDs)
 		totalConfidence += summary.Confidence
 		replacedClusters++
 		out.SummaryMethod = mergeMethod(out.SummaryMethod, summary.Method)
@@ -241,6 +237,54 @@ func CompactSession(
 		out.MeanConfidence = clamp01(totalConfidence / float64(replacedClusters))
 	}
 	return out, nil
+}
+
+func commitCompactionCluster(
+	ctx context.Context,
+	st Store,
+	sessionID string,
+	compactedAt int64,
+	protectedTurns []turnRecord,
+	compressibleTurns []turnRecord,
+	summary summarize.Summary,
+	quality qualityMetadata,
+	prior priorContextSelection,
+	deleteIDs []string,
+) error {
+	stateRecord, err := st.Get(ctx, store.SessionStateCollection(sessionID), sessionStateRecordKey)
+	if err != nil {
+		return err
+	}
+	stateMeta := cloneMeta(stateRecord.Metadata)
+	stateMeta["updated_at"] = compactedAt
+	stateMeta["last_compacted_at"] = compactedAt
+	stateMeta["compaction_generation"] = metadataInt(stateRecord.Metadata, "compaction_generation") + 1
+	stateMeta["last_summary_id"] = ""
+	if summary.Text != "" {
+		stateMeta["last_summary_id"] = summaryRecordID(sessionID, summary.SourceIDs)
+	}
+
+	return st.WithTx(ctx, func(tx store.TxWriter) error {
+		for _, turn := range protectedTurns {
+			targetCollection := elevatedGuidanceCollection(sessionID, []turnRecord{turn})
+			if err := tx.InsertText(ctx, targetCollection, guidanceShardRecordID(sessionID, turn.id), strings.TrimSpace(turn.text), guidanceShardMetadata(sessionID, compactedAt, turn, strings.TrimSpace(turn.text))); err != nil {
+				return err
+			}
+		}
+		if summary.Text != "" {
+			summaryCollection := store.SessionSummaryCollection(sessionID)
+			summaryID := summaryRecordID(sessionID, summary.SourceIDs)
+			if err := tx.InsertText(ctx, summaryCollection, summaryID, summary.Text, summaryMetadata(sessionID, compactedAt, summary, append([]turnRecord(nil), compressibleTurns...), quality, prior)); err != nil {
+				return err
+			}
+			for idx, turn := range compressibleTurns {
+				if err := tx.InsertRecord(ctx, store.SessionEdgeCollection(sessionID), coverageEdgeRecordID(summaryID, turn.id), []float32{0}, coverageEdgeMetadata(sessionID, compactedAt, summaryID, turn, idx)); err != nil {
+					return err
+				}
+			}
+		}
+		return tx.UpdateRecordIfVersion(ctx, store.SessionStateCollection(sessionID), sessionStateRecordKey, []float32{0}, stateMeta, stateRecord.Version)
+	})
 }
 
 func routeSummarizer(turns []turnRecord, extractive summarize.Summarizer, abstractive summarize.Summarizer) (summarize.Summarizer, float64) {
@@ -466,16 +510,16 @@ func partitionProtectedTurns(ctx context.Context, turns []turnRecord, frame *ast
 // GuidanceEvalTrace records the per-gate decision trace for a single turn evaluated
 // by the Tier 1.5 protection path. Used for debugging false positives and tuning.
 type GuidanceEvalTrace struct {
-	TurnText          string
-	StabilityWeight   float64
-	StabilityOK       bool
-	SigmaPromoted     bool
-	SigmaMask         uint8
+	TurnText           string
+	StabilityWeight    float64
+	StabilityOK        bool
+	SigmaPromoted      bool
+	SigmaMask          uint8
 	SurfaceHintMatched bool
-	BoosterSimilarity float64
-	BoosterAdmitted   bool
-	FinalAdmission    bool
-	AdmissionPath     string // "sigma", "booster", or "none"
+	BoosterSimilarity  float64
+	BoosterAdmitted    bool
+	FinalAdmission     bool
+	AdmissionPath      string // "sigma", "booster", or "none"
 }
 
 // evaluateProtectedGuidanceTurn is the internal evaluator that returns both the
@@ -588,6 +632,10 @@ func guidanceShardRecordID(sessionID, sourceTurnID string) string {
 	return fmt.Sprintf("guidance:%s:%s", sessionID, sourceTurnID)
 }
 
+func coverageEdgeRecordID(parentSummaryID, childID string) string {
+	return fmt.Sprintf("edge:%s:%s", parentSummaryID, childID)
+}
+
 func guidanceShardMetadata(sessionID string, compactedAt int64, turn turnRecord, text string) map[string]any {
 	stability := stabilityWeight(turn.metadata)
 	meta := map[string]any{
@@ -612,6 +660,31 @@ func guidanceShardMetadata(sessionID string, compactedAt int64, turn turnRecord,
 		case "userId", "role":
 			meta[key] = value
 		}
+	}
+	return meta
+}
+
+func coverageEdgeMetadata(sessionID string, compactedAt int64, parentSummaryID string, turn turnRecord, edgeOrder int) map[string]any {
+	childCollection := store.SessionRawCollection(sessionID)
+	childType := "turn"
+	if turnMetaString(turn.metadata, "type") == "summary" {
+		childCollection = store.SessionSummaryCollection(sessionID)
+		childType = "summary"
+	}
+	meta := map[string]any{
+		"type":              "coverage_edge",
+		"ts":                compactedAt,
+		"sessionId":         sessionID,
+		"parent_summary_id": parentSummaryID,
+		"child_id":          turn.id,
+		"child_type":        childType,
+		"child_collection":  childCollection,
+		"child_ts":          turn.ts,
+		"edge_order":        edgeOrder,
+		"compacted_at":      compactedAt,
+	}
+	if userID, ok := turn.metadata["userId"]; ok && userID != nil {
+		meta["userId"] = userID
 	}
 	return meta
 }

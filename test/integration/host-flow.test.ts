@@ -67,6 +67,22 @@ class FakeRpc {
         return {} as T;
       case "ensure_collections":
         return { ok: true } as T;
+      case "insert_session_turn":
+        this.inserted.push({
+          collection: `session:${String(params.sessionId)}`,
+          text: String(params.text),
+          metadata: params.metadata as Record<string, unknown> | undefined,
+        });
+        this.inserted.push({
+          collection: `session_raw:${String(params.sessionId)}`,
+          text: String(params.text),
+          metadata: {
+            ...((params.metadata as Record<string, unknown> | undefined) ?? {}),
+            raw_history: true,
+            active_view: false,
+          },
+        });
+        return { ok: true } as T;
       case "insert_text":
         this.inserted.push({
           collection: String(params.collection),
@@ -171,6 +187,33 @@ class ProjectionStoreRpc {
           items[existingIndex] = record;
         } else {
           items.push(record);
+        }
+        return { ok: true } as T;
+      }
+      case "insert_session_turn": {
+        const sessionId = String(params.sessionId);
+        const id = String(params.id);
+        const text = String(params.text);
+        const metadata = {
+          ...((params.metadata as Record<string, unknown> | undefined) ?? {}),
+        };
+        for (const [collection, recordMetadata] of [
+          [`session:${sessionId}`, metadata],
+          [`session_raw:${sessionId}`, { ...metadata, raw_history: true, active_view: false }],
+        ] as const) {
+          const record: SearchResult = {
+            id,
+            score: 0,
+            text,
+            metadata: recordMetadata,
+          };
+          const items = this.ensureCollection(collection);
+          const existingIndex = items.findIndex((item) => item.id === record.id);
+          if (existingIndex >= 0) {
+            items[existingIndex] = record;
+          } else {
+            items.push(record);
+          }
         }
         return { ok: true } as T;
       }
@@ -1445,6 +1488,22 @@ test("assistant ingest invalidates elevated guidance for same session", async ()
       switch (method) {
         case "ensure_collections":
           return { ok: true } as T;
+        case "insert_session_turn":
+          inserted.push({
+            collection: `session:${String(params.sessionId)}`,
+            text: String(params.text),
+            metadata: params.metadata as Record<string, unknown> | undefined,
+          });
+          inserted.push({
+            collection: `session_raw:${String(params.sessionId)}`,
+            text: String(params.text),
+            metadata: {
+              ...((params.metadata as Record<string, unknown> | undefined) ?? {}),
+              raw_history: true,
+              active_view: false,
+            },
+          });
+          return { ok: true } as T;
         case "insert_text":
           inserted.push({
             collection: String(params.collection),
@@ -1556,6 +1615,8 @@ test("assemble caches authored variant recall for same query", async () => {
       calls.set(method, (calls.get(method) ?? 0) + 1);
       switch (method) {
         case "ensure_collections":
+          return { ok: true } as T;
+        case "insert_session_turn":
           return { ok: true } as T;
         case "insert_text":
           return { ok: true } as T;
@@ -1768,11 +1829,13 @@ test("assemble uses summary-only session search after compaction when experiment
   };
 
   rpc.compactHook = (sessionId) => {
-    const collection = `session:${sessionId}`;
-    const items = rpc.collections.get(collection) ?? [];
+    const sessionCollection = `session:${sessionId}`;
+    const summaryCollection = `session_summary:${sessionId}`;
+    const items = rpc.collections.get(sessionCollection) ?? [];
     const rawTurns = items.filter((item) => item.metadata.type === "turn");
     const preservedTail = rawTurns.slice(-2);
-    rpc.collections.set(collection, [
+    rpc.collections.set(sessionCollection, preservedTail);
+    rpc.collections.set(summaryCollection, [
       {
         id: `${sessionId}:summary`,
         score: 0.86,
@@ -1782,11 +1845,10 @@ test("assemble uses summary-only session search after compaction when experiment
           ts: Date.now() - 10_000,
           type: "summary",
           decay_rate: 0.1,
-          collection,
+          collection: summaryCollection,
           token_estimate: 6,
         },
       },
-      ...preservedTail,
     ]);
   };
 
@@ -1877,10 +1939,12 @@ test("summary-only search still recalls the compacted older decision", async () 
   };
 
   rpc.compactHook = (sessionId) => {
-    const collection = `session:${sessionId}`;
-    const items = rpc.collections.get(collection) ?? [];
+    const sessionCollection = `session:${sessionId}`;
+    const summaryCollection = `session_summary:${sessionId}`;
+    const items = rpc.collections.get(sessionCollection) ?? [];
     const rawTurns = items.filter((item) => item.metadata.type === "turn");
-    rpc.collections.set(collection, [
+    rpc.collections.set(sessionCollection, rawTurns.slice(-2));
+    rpc.collections.set(summaryCollection, [
       {
         id: `${sessionId}:summary`,
         score: 0.9,
@@ -1890,11 +1954,10 @@ test("summary-only search still recalls the compacted older decision", async () 
           ts: Date.now() - 5_000,
           type: "summary",
           decay_rate: 0.05,
-          collection,
+          collection: summaryCollection,
           token_estimate: 7,
         },
       },
-      ...rawTurns.slice(-2),
     ]);
   };
 
@@ -1950,10 +2013,12 @@ test("summary-only search does not leak recent raw turns into recalled memories"
   };
 
   rpc.compactHook = (sessionId) => {
-    const collection = `session:${sessionId}`;
-    const items = rpc.collections.get(collection) ?? [];
+    const sessionCollection = `session:${sessionId}`;
+    const summaryCollection = `session_summary:${sessionId}`;
+    const items = rpc.collections.get(sessionCollection) ?? [];
     const rawTurns = items.filter((item) => item.metadata.type === "turn");
-    rpc.collections.set(collection, [
+    rpc.collections.set(sessionCollection, rawTurns.slice(-2));
+    rpc.collections.set(summaryCollection, [
       {
         id: `${sessionId}:summary`,
         score: 0.82,
@@ -1963,11 +2028,10 @@ test("summary-only search does not leak recent raw turns into recalled memories"
           ts: Date.now() - 8_000,
           type: "summary",
           decay_rate: 0.1,
-          collection,
+          collection: summaryCollection,
           token_estimate: 6,
         },
       },
-      ...rawTurns.slice(-2),
     ]);
   };
 
