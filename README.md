@@ -24,7 +24,7 @@ setup paths and activation flow. The short version is:
 
 - install the plugin with `openclaw plugins install @xdarkicex/openclaw-memory-libravdb`
 - install and start `libravdbd` separately
-- assign `libravdb-memory` to the OpenClaw `memory` slot
+- assign `libravdb-memory` to both the OpenClaw `memory` and `contextEngine` slots
 
 Then activate the plugin in `~/.openclaw/openclaw.json`:
 
@@ -32,7 +32,8 @@ Then activate the plugin in `~/.openclaw/openclaw.json`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     },
     "configs": {
       "libravdb-memory": {

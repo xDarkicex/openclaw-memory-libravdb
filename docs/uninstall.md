@@ -19,8 +19,8 @@ Remove the plugin from the active OpenClaw slot in `~/.openclaw/openclaw.json`:
 ```
 
 Treat that JSON as a minimal example only. If you assigned `libravdb-memory`
-under `memory` or `contextEngine`, remove just that slot entry and leave any
-other plugin slots intact.
+under both `memory` and `contextEngine`, remove those two slot entries and
+leave any other plugin slots intact.
 
 If you installed the package through the OpenClaw.ai plugin UI, remove or
 disable the same package there as well. If you use the CLI, remove it through

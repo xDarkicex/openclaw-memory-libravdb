@@ -5,13 +5,14 @@ reading the code piecemeal.
 
 ## Memory Kind Plus Explicit Context Engine Registration
 
-The plugin declares `kind: "memory"` in
+The plugin declares `kind: ["memory", "context-engine"]` in
 [`openclaw.plugin.json`](../openclaw.plugin.json), but still registers both a
 context engine and a memory prompt section in [`src/index.ts`](../src/index.ts).
 
 Why:
 
-- the exclusive slot takeover happens through the `memory` kind
+- the intended runtime contract is that `libravdb-memory` owns both the
+  `memory` and `contextEngine` slots together
 - the runtime behavior still needs explicit lifecycle hooks for:
   - `bootstrap`
   - `ingest`
