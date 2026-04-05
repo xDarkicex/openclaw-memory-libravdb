@@ -32,6 +32,66 @@ interface HopOptions {
   thetaHop?: number;
 }
 
+interface ExpansionOptions {
+  confidenceThreshold?: number;
+  maxDepth?: number;
+  tokenBudget?: number;
+  penaltyFactor?: number;
+}
+
+export function expandSummaryCandidates(
+  items: SearchResult[],
+  expandFn: (sessionId: string, summaryId: string, maxDepth: number) => Promise<SearchResult[]>,
+  sessionId: string,
+  opts: ExpansionOptions,
+): Promise<SearchResult[]> {
+  const confidenceThreshold = opts.confidenceThreshold ?? 0.7;
+  const maxDepth = opts.maxDepth ?? 2;
+  const penaltyFactor = opts.penaltyFactor ?? 0.85;
+  const tokenBudget = typeof opts.tokenBudget === "number" ? Math.max(0, opts.tokenBudget) : Number.POSITIVE_INFINITY;
+
+  return (async () => {
+    const out: SearchResult[] = [];
+    let remainingBudget = tokenBudget;
+
+    for (const summary of items) {
+      const conf = typeof summary.metadata.confidence === "number" ? summary.metadata.confidence : 0;
+      if (summary.metadata.type !== "summary" || conf < confidenceThreshold) {
+        continue;
+      }
+      if (Number.isFinite(tokenBudget) && remainingBudget <= 0) {
+        break;
+      }
+
+      const rawChildren = await expandFn(sessionId, summary.id, maxDepth);
+      for (const child of rawChildren) {
+        const cost = childTokenCost(child);
+        if (!Number.isFinite(cost)) {
+          continue;
+        }
+        if (Number.isFinite(tokenBudget) && cost > remainingBudget) {
+          continue;
+        }
+        if (Number.isFinite(tokenBudget)) {
+          remainingBudget -= cost;
+        }
+        out.push({
+          ...child,
+          metadata: {
+            ...child.metadata,
+            expanded_from_summary: true,
+            parent_summary_id: summary.id,
+            expansion_depth: (typeof summary.metadata.expansion_depth === "number" ? summary.metadata.expansion_depth : 0) + 1,
+          },
+          finalScore: clamp01((child.finalScore ?? child.score) * penaltyFactor),
+        });
+      }
+    }
+
+    return out;
+  })();
+}
+
 export function mergeSection7VariantCandidates(
   ranked: SearchResult[],
   hopExpanded: SearchResult[],
@@ -176,6 +236,14 @@ export function expandSection7HopCandidates(
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function childTokenCost(item: SearchResult): number {
+  const estimate = item.metadata.token_estimate;
+  if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
+    return Math.max(1, Math.floor(estimate));
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 function clampSimilarity(value: number): number {

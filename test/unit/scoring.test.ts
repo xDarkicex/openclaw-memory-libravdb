@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  expandSummaryCandidates,
   expandSection7HopCandidates,
   mergeSection7VariantCandidates,
   rankSection7VariantCandidates,
@@ -178,6 +179,63 @@ test("summary quality multiplier stays inside [1-delta, 1] at shipped delta", ()
 
   assert.equal(ranked[0]?.finalScore, 1);
   assert.equal(ranked[1]?.finalScore, 0.5);
+});
+
+test("expandSummaryCandidates honors confidence, depth, and token budget", async () => {
+  const calls: Array<{ summaryId: string; depth: number }> = [];
+  const items: SearchResult[] = [
+    {
+      id: "summary-a",
+      score: 0.9,
+      text: "summary a",
+      metadata: { type: "summary", confidence: 0.8, sessionId: "s1" },
+    },
+    {
+      id: "summary-b",
+      score: 0.9,
+      text: "summary b",
+      metadata: { type: "summary", confidence: 0.95, sessionId: "s1" },
+    },
+    {
+      id: "raw-c",
+      score: 0.9,
+      text: "raw c",
+      metadata: { type: "turn", confidence: 1, sessionId: "s1" },
+    },
+  ];
+
+  const expanded = await expandSummaryCandidates(
+    items,
+    async (_sessionId: string, summaryId: string, depth: number) => {
+      calls.push({ summaryId, depth });
+      return summaryId === "summary-a"
+        ? [
+            { id: "child-1", score: 0.9, text: "child one", metadata: { token_estimate: 3 } },
+            { id: "child-2", score: 0.8, text: "child two", metadata: {} },
+          ]
+        : [
+            { id: "child-3", score: 0.7, text: "child three", metadata: { token_estimate: 3 } },
+          ];
+    },
+    "s1",
+    {
+      confidenceThreshold: 0.7,
+      maxDepth: 2,
+      tokenBudget: 5,
+      penaltyFactor: 0.5,
+    },
+  );
+
+  assert.deepEqual(calls, [
+    { summaryId: "summary-a", depth: 2 },
+    { summaryId: "summary-b", depth: 2 },
+  ]);
+  assert.equal(expanded.length, 1);
+  assert.equal(expanded[0]?.id, "child-1");
+  assert.equal(expanded[0]?.metadata.expanded_from_summary, true);
+  assert.equal(expanded[0]?.metadata.parent_summary_id, "summary-a");
+  assert.equal(expanded[0]?.metadata.expansion_depth, 1);
+  assert.equal(expanded[0]?.finalScore, 0.45);
 });
 
 test("session recency decay uses seconds, not milliseconds", () => {

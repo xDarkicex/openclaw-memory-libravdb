@@ -58,6 +58,10 @@ export interface PluginConfig {
   section7AuthorityRecencyWeight?: number;
   section7AuthorityFrequencyWeight?: number;
   section7AuthorityAuthoredWeight?: number;
+  summaryExpansionConfidenceThreshold?: number;
+  summaryExpansionDepth?: number;
+  summaryExpansionTokenBudget?: number;
+  summaryExpansionPenaltyFactor?: number;
   ollamaUrl?: string;
   compactModel?: string;
   rpcTimeoutMs?: number;
@@ -114,6 +118,9 @@ export interface SearchResult {
     source_turn_ts?: number;
     provenance_class?: string;
     stability_weight?: number;
+    expanded_from_summary?: boolean;
+    parent_summary_id?: string;
+    expansion_depth?: number;
     [key: string]: unknown;
   };
   finalScore?: number;

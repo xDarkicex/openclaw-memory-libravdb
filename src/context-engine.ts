@@ -6,6 +6,7 @@ import {
 } from "./continuity.js";
 import {
   expandSection7HopCandidates,
+  expandSummaryCandidates,
   mergeSection7VariantCandidates,
   rankSection7VariantCandidates,
 } from "./scoring.js";
@@ -503,8 +504,31 @@ export function buildContextEngineFactory(
         },
       );
 
-      profiler?.mark("fit");
+      profiler?.mark("expand");
       const mergedCandidates = mergeSection7VariantCandidates(ranked, hopExpanded);
+      const expandTokenBudget = cfg.summaryExpansionTokenBudget ?? 256;
+      const summaryExpanded = await expandSummaryCandidates(
+        mergedCandidates,
+        async (sid, summaryId, depth) => {
+          const result = await rpc.call<{ results: SearchResult[] }>("expand_summary", {
+            sessionId: sid,
+            summaryId,
+            maxDepth: depth,
+          });
+          return result.results ?? [];
+        },
+        sessionId,
+        {
+          confidenceThreshold: cfg.summaryExpansionConfidenceThreshold ?? 0.7,
+          maxDepth: cfg.summaryExpansionDepth ?? 2,
+          tokenBudget: expandTokenBudget,
+          penaltyFactor: cfg.summaryExpansionPenaltyFactor ?? 0.85,
+        },
+      );
+
+      profiler?.mark("fit");
+      // Re-merge with expanded raw turns (penalized so the math still favors direct evidence)
+      const withExpanded = mergeSection7VariantCandidates(mergedCandidates, summaryExpanded);
       const elevatedGuidanceBudget = Math.max(
         0,
         Math.min(
@@ -513,12 +537,12 @@ export function buildContextEngineFactory(
         ),
       );
       const elevatedItems = fitPromptBudget(
-        mergedCandidates.filter((item) => item.metadata.elevated_guidance === true),
+        withExpanded.filter((item) => item.metadata.elevated_guidance === true),
         elevatedGuidanceBudget,
       );
       const remainingAfterElevated = Math.max(0, retrievalBudget - tokenCostSum(elevatedItems));
       const variantItems = fitPromptBudget(
-        mergedCandidates.filter((item) => item.metadata.elevated_guidance !== true),
+        withExpanded.filter((item) => item.metadata.elevated_guidance !== true),
         remainingAfterElevated,
       );
       const selected = [

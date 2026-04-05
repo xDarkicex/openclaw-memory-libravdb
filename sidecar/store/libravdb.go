@@ -791,7 +791,7 @@ func (s *Store) ExpandSummary(ctx context.Context, sessionID, summaryID string, 
 		childCollection := metaString(edge.Metadata, "child_collection")
 		childType := metaString(edge.Metadata, "child_type")
 
-		if childType == "summary" && len(results) < maxDepth {
+		if childType == "summary" && maxDepth > 1 {
 			nested, err := s.ExpandSummary(ctx, sessionID, childID, maxDepth-1)
 			if err == nil {
 				results = append(results, nested...)
