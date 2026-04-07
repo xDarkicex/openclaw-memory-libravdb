@@ -16,7 +16,7 @@
       <key>LIBRAVDB_DB_PATH</key>
       <string>__HOME__/.clawdb/data</string>
       <key>LIBRAVDB_ONNX_RUNTIME</key>
-      <string>__DAEMON_BIN_DIR__/onnxruntime</string>
+      <string>__ONNX_RUNTIME_LIB__</string>
       <key>LIBRAVDB_SUMMARIZER_BACKEND</key>
       <string>bundled</string>
     </dict>

@@ -42,6 +42,11 @@ export function buildFormula({ version, template, checksums }) {
   for (const [placeholder, checksum] of Object.entries(checksums)) {
     output = output.replaceAll(placeholder, checksum);
   }
+  const unreplaced = output.match(/__[A-Z0-9_]+__/g) ?? [];
+  if (unreplaced.length > 0) {
+    const missing = [...new Set(unreplaced)].join(", ");
+    console.warn(`Warning: unreplaced placeholders in formula output: ${missing}`);
+  }
   return output;
 }
 

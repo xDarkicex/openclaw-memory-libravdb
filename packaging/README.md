@@ -17,7 +17,7 @@ Before loading the macOS plist, replace:
 
 - `__LIBRAVDBD_PATH__` with the absolute path to the `libravdbd` binary
 - `__HOME__` with the current user's home directory
-- `__DAEMON_BIN_DIR__` with the directory containing `libravdbd` (where `models/` and `onnxruntime/` live)
+- `__ONNX_RUNTIME_LIB__` with the absolute path to the ONNX runtime shared library (e.g. `/path/to/onnxruntime/onnxruntime-osx-arm64-1.23.0/lib/libonnxruntime.dylib`)
 
 ## Provisioning models and runtime
 
