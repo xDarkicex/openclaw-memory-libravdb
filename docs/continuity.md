@@ -165,6 +165,10 @@ means the runtime may extend $T_{\mathrm{recent}}$ slightly backward to keep a
 recent cause/effect pair, request/response pair, or equivalent tightly coupled
 artifact bundle intact.
 
+**Policy note.** Bundle coupling is a heuristic policy layer, not a formal
+theorem term. It is listed in Section 13.4 as a heuristic and is not part of
+the core $C_{\mathrm{total}}(q)$ assembly theorem.
+
 ## 4. Budget Partition
 
 Let the total prompt budget be $\tau$. Then the continuity-aware allocation is:
@@ -275,6 +279,7 @@ The boundary must also be bundle-safe. If a cluster candidate would split a
 tightly coupled local unit across the tail boundary, the runtime should move the
 boundary backward so that the unit stays entirely in $T_{\mathrm{recent}}$ or
 entirely in $\mathcal{V}_{\mathrm{rest}}$.
+*(This is a heuristic policy; see Section 13.4.)*
 
 ## 6. Compaction Progress Guarantee
 
@@ -316,6 +321,12 @@ $$
 $$
 
 whenever a cluster is actually replaced.
+
+**Edge case — singleton clusters.** If a cluster contains only a single turn
+($|C_j| = 1$), the clustering algorithm produces a `trivial`-tagged summary that
+does not represent meaningful compaction progress. The $\Delta_{\mathrm{compact}} > 0$
+guarantee applies only to clusters with $|C_j| \ge 2$ that are meaningfully replaced;
+trivial singletons are boundary cases excluded from the progress invariant.
 
 ## 7. Summary Lineage And Recoverability
 
@@ -597,3 +608,101 @@ This avoids the failure mode where continuity depends entirely on a semantic
 summary being perfect. It also means compaction is not merely a storage
 optimization. It is a constrained transformation that must preserve exact
 recent state, recoverable lineage, and monotone progress.
+
+## 13. Layer Separation And Review Guidance
+
+The strongest follow-on review result for this document is that the continuity
+theory is healthiest when it keeps three layers separate:
+
+1. storage axioms
+2. core retrieval and assembly math
+3. recoverability policy
+
+The authoritative continuity contract in this document should therefore be read
+as follows.
+
+### 13.1 Storage Axioms
+
+When the lossless extension is enabled, raw-history immutability is a storage
+axiom:
+
+$$
+\mathrm{Compact}(\mathcal{R}_{\mathrm{session}})=\mathcal{R}_{\mathrm{session}}
+$$
+
+That statement is unconditional. It does not depend on query relevance,
+summary confidence, or token budget. It is stronger than lineage metadata or
+query-time expansion. It simply means compaction does not delete raw source
+turns from the immutable raw layer.
+
+### 13.2 Recoverability Theorem
+
+The summary-coverage DAG and $\mathrm{Expand}^{*}$ belong to recoverability,
+not to the primary retrieval theorem. Their job is to guarantee that compacted
+history remains navigable back to raw source turns:
+
+$$
+\forall s\in\mathbf{S},\ \mathrm{Expand}^{*}(s)\subseteq\mathcal{R}_{\mathrm{session}}
+\qquad\text{and}\qquad
+\mathrm{Expand}^{*}(s)\neq\emptyset
+$$
+
+This is a structural property of the continuity graph. It is not by itself a
+claim that every query should traverse that graph during normal assembly.
+
+### 13.3 Retrieval Boundary
+
+The core continuity theorem remains:
+
+$$
+C_{\mathrm{total}}(q)=\mathcal{I}_1\cup \mathcal{I}_2^{*}\cup T_{\mathrm{recent}}\cup \mathrm{Proj}(\mathcal{V}_{\mathrm{rest}}, q)
+$$
+
+This document treats that expression as the primary assembly law. A runtime may
+experiment with query-time summary expansion, but such expansion should be
+treated as a bounded policy layer wrapped around the core theorem unless it is
+formally re-derived inside the governing retrieval math.
+
+In particular, policy knobs such as:
+
+- summary-expansion confidence thresholds
+- expansion token budgets
+- depth limits
+- expansion penalties or attenuations
+
+are not themselves continuity axioms. They are deployment and retrieval-policy
+choices layered on top of the structural guarantees above.
+
+### 13.4 Heuristic vs. Theorem Boundary
+
+The following ideas remain useful, but should be read as heuristics unless
+their mathematics is defined explicitly elsewhere:
+
+- **bundle-safe boundary extension** (Section 3): the runtime may extend
+  $T_{\mathrm{recent}}$ backward to avoid splitting a coupled local bundle;
+  this is a heuristic policy, not a formal tail selector term
+- specific escalation ladders for compaction fallback
+- **confidence-triggered automatic expansion**: query-time summary expansion is
+  explicit recovery/audit only; it was removed from the hot retrieval path and
+  is not the default behavior — see Section 13.3 and memory 283
+- any fixed expansion penalty not derived from the governing score equations
+
+This distinction matters because continuity should stay theorem-safe even when
+those policies are tuned, replaced, or disabled.
+
+### 13.5 Future Theory Direction
+
+Several mathematically interesting review suggestions are worth preserving for
+future refinement, but they are not part of the current authoritative theorem:
+
+- information-theoretic or rate-distortion views of compaction quality
+- hot-spot preservation tiers based on access concentration
+- causal-centrality-aware compaction vetoes
+- entropy-driven tail selection instead of fixed turn-count rules
+- explicit recovery-state machines triggered by retrieval failure (the vNext
+  retrieval-failure signals S1/S2/S3 are defined separately in the vNext spec
+  slice; they are not part of the current $C_{\mathrm{total}}$ theorem)
+
+These are promising research directions for later versions. The current
+document keeps the simpler invariant-first continuity model as the normative
+contract until one of those stronger formulations is deliberately adopted.

@@ -5,8 +5,8 @@ import {
   selectRecentTail,
 } from "./continuity.js";
 import {
+  detectRetrievalFailure,
   expandSection7HopCandidates,
-  expandSummaryCandidates,
   mergeSection7VariantCandidates,
   rankSection7VariantCandidates,
 } from "./scoring.js";
@@ -317,7 +317,10 @@ export function buildContextEngineFactory(
       });
       const rawSessionTurns = sortChronological(
         sessionRecords.results.filter((item) =>
-          item.metadata.type !== "summary" && item.metadata.type !== "guidance_shard"
+          // cascade_tier is ranking metadata (cascade search tier); exclude from session history
+          item.metadata.type !== "summary" &&
+          item.metadata.type !== "guidance_shard" &&
+          typeof item.metadata.cascade_tier !== "number"
         ),
       );
       const minTurns = cfg.continuityMinTurns ?? DEFAULT_CONTINUITY_MIN_TURNS;
@@ -504,31 +507,8 @@ export function buildContextEngineFactory(
         },
       );
 
-      profiler?.mark("expand");
-      const mergedCandidates = mergeSection7VariantCandidates(ranked, hopExpanded);
-      const expandTokenBudget = cfg.summaryExpansionTokenBudget ?? 256;
-      const summaryExpanded = await expandSummaryCandidates(
-        mergedCandidates,
-        async (sid, summaryId, depth) => {
-          const result = await rpc.call<{ results: SearchResult[] }>("expand_summary", {
-            sessionId: sid,
-            summaryId,
-            maxDepth: depth,
-          });
-          return result.results ?? [];
-        },
-        sessionId,
-        {
-          confidenceThreshold: cfg.summaryExpansionConfidenceThreshold ?? 0.7,
-          maxDepth: cfg.summaryExpansionDepth ?? 2,
-          tokenBudget: expandTokenBudget,
-          penaltyFactor: cfg.summaryExpansionPenaltyFactor ?? 0.85,
-        },
-      );
-
       profiler?.mark("fit");
-      // Re-merge with expanded raw turns (penalized so the math still favors direct evidence)
-      const withExpanded = mergeSection7VariantCandidates(mergedCandidates, summaryExpanded);
+      const mergedCandidates = mergeSection7VariantCandidates(ranked, hopExpanded);
       const elevatedGuidanceBudget = Math.max(
         0,
         Math.min(
@@ -537,14 +517,67 @@ export function buildContextEngineFactory(
         ),
       );
       const elevatedItems = fitPromptBudget(
-        withExpanded.filter((item) => item.metadata.elevated_guidance === true),
+        mergedCandidates.filter((item) => item.metadata.elevated_guidance === true),
         elevatedGuidanceBudget,
       );
       const remainingAfterElevated = Math.max(0, retrievalBudget - tokenCostSum(elevatedItems));
+
+      // Reserve a bounded explicit recovery budget before variant fitting.
+      // Recovery is a policy overlay: it appends raw content only when triggered,
+      // and must not cause the final assembly to exceed memoryBudget.
+      // This reserve (min 10% of memoryBudget or 128 tokens) is deducted from the
+      // variant slot so the final total is bounded by construction.
+      const recoveryReserveTokens = Math.min(Math.floor(memoryBudget * 0.10), 128);
+      const remainingForVariant = Math.max(0, remainingAfterElevated - recoveryReserveTokens);
       const variantItems = fitPromptBudget(
-        withExpanded.filter((item) => item.metadata.elevated_guidance !== true),
-        remainingAfterElevated,
+        mergedCandidates.filter((item) => item.metadata.elevated_guidance !== true),
+        remainingForVariant,
       );
+
+      // Build set of theorem-selected IDs for recovery deduplication.
+      // Recovery should only append NEW raw evidence, not re-inject content already
+      // selected by the normal assembly path (hard/soft/tail/elevated/variant).
+      const theoremSelectedIDs = new Set([
+        ...hardItems.map((i) => i.id),
+        ...softItems.map((i) => i.id),
+        ...tailBaseItems.map((i) => i.id),
+        ...tailExtensionItems.map((i) => i.id),
+        ...elevatedItems.map((i) => i.id),
+        ...variantItems.map((i) => i.id),
+      ]);
+
+      // Recovery trigger: evaluated after theorem result is fully assembled.
+      // Recovery is a policy overlay — it appends raw content only when triggered,
+      // it never modifies the C_total(q) output and does not spend from tau_V.
+      profiler?.mark("recovery_trigger");
+      const recoveryTrigger = detectRetrievalFailure(mergedCandidates, {
+        floorScore: cfg.recoveryFloorScore ?? 0.15,
+        minTopK: cfg.recoveryMinTopK ?? 4,
+        meanConfidenceThresh: cfg.recoveryMinConfidenceMean ?? 0.5,
+      });
+      let recoveryItems: SearchResult[] = [];
+      if (recoveryTrigger.fire) {
+        profiler?.mark("recovery_expand");
+        // Recovery searches immutable raw history directly — never the active view, elevated shards,
+        // or authored collections. Raw turns are immutable (storage axiom, unchanged).
+        const recoveryExcludeIDs = [...excluded, ...recentTailIDs, ...theoremSelectedIDs];
+        const rawResults = await rpc.call<{ results: SearchResult[] }>("query_raw_session", {
+          sessionId,
+          text: queryText,
+          k: Math.max(cfg.topK ?? 8, 4),
+          excludeIds: recoveryExcludeIDs,
+        });
+        // Fit recovered raw items to the reserved recovery budget — never exceed it.
+        const fittedRecovery = fitPromptBudget(rawResults.results ?? [], recoveryReserveTokens);
+        recoveryItems = fittedRecovery.map((item: SearchResult) => ({
+          ...item,
+          metadata: {
+            ...item.metadata,
+            recovery_fallback: true,
+          },
+        }));
+      }
+
       const selected = [
         ...hardItems,
         ...tailBaseItems,
@@ -552,6 +585,7 @@ export function buildContextEngineFactory(
         ...tailExtensionItems,
         ...elevatedItems,
         ...variantItems,
+        ...recoveryItems,
       ];
       void rpc.call("bump_access_counts", {
         updates: groupAccessCountUpdates([...elevatedItems, ...variantItems]),
@@ -640,7 +674,10 @@ async function rebuildSessionRecallProjection(
   });
   const rawSessionTurns = sortChronological(
     sessionRecords.results.filter((item) =>
-      item.metadata.type !== "summary" && item.metadata.type !== "guidance_shard"
+      // cascade_tier is ranking metadata (cascade search tier); exclude from session history
+      item.metadata.type !== "summary" &&
+      item.metadata.type !== "guidance_shard" &&
+      typeof item.metadata.cascade_tier !== "number"
     ),
   );
   const recentTail = selectRecentTail(rawSessionTurns, {

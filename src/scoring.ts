@@ -39,6 +39,68 @@ interface ExpansionOptions {
   penaltyFactor?: number;
 }
 
+export interface RecoveryTriggerResult {
+  signal1CascadeTier3: boolean;
+  signal2TopScoreBelowFloor: boolean;
+  signal3AllSummariesLowConfidence: boolean;
+  fire: boolean;
+}
+
+interface RetrievalFailureOptions {
+  floorScore?: number;
+  minTopK?: number;
+  meanConfidenceThresh?: number;
+}
+
+export function detectRetrievalFailure(
+  ranked: SearchResult[],
+  opts: RetrievalFailureOptions = {},
+): RecoveryTriggerResult {
+  if (ranked.length === 0) {
+    return {
+      signal1CascadeTier3: false,
+      signal2TopScoreBelowFloor: false,
+      signal3AllSummariesLowConfidence: false,
+      fire: false,
+    };
+  }
+  const floorScore = opts.floorScore ?? 0.15;
+  const minTopK = Math.max(1, Math.floor(opts.minTopK ?? 4));
+  const meanConfidenceThresh = clamp01(opts.meanConfidenceThresh ?? 0.5);
+
+  // Signal 1: cascade exhaustion (cascade_tier === 3 present)
+  const signal1CascadeTier3 = ranked.some(
+    (item) => item.metadata.cascade_tier === 3,
+  );
+
+  // Signal 2: top score below floor
+  const topScore = ranked[0]!.finalScore ?? 0;
+  const signal2TopScoreBelowFloor = topScore < floorScore;
+
+  // Signal 3: top-k items are all summaries with low mean confidence
+  const topK = ranked.slice(0, Math.min(minTopK, ranked.length));
+  const allSummaries = topK.length > 0 && topK.every((item) => item.metadata.type === "summary");
+  const meanConfidence =
+    allSummaries && topK.length > 0
+      ? topK.reduce(
+          (sum, item) => sum + (typeof item.metadata.confidence === "number" ? item.metadata.confidence : 0),
+          0,
+        ) / topK.length
+      : NaN;
+  const signal3AllSummariesLowConfidence =
+    allSummaries && topK.length >= minTopK && meanConfidence < meanConfidenceThresh;
+
+  // Composite: (S1 AND S2) OR S3
+  const fire = (signal1CascadeTier3 && signal2TopScoreBelowFloor) || signal3AllSummariesLowConfidence;
+
+  return {
+    signal1CascadeTier3,
+    signal2TopScoreBelowFloor,
+    signal3AllSummariesLowConfidence,
+    fire,
+  };
+}
+
 export function expandSummaryCandidates(
   items: SearchResult[],
   expandFn: (sessionId: string, summaryId: string, maxDepth: number) => Promise<SearchResult[]>,

@@ -135,6 +135,8 @@ class FakeRpc {
         return { didCompact: true } as T;
       case "bump_access_counts":
         return { ok: true } as T;
+      case "query_raw_session":
+        return { results: [] } as T; // empty = no recovery needed for healthy session
       default:
         throw new Error(`unexpected rpc method: ${method}`);
     }
@@ -229,35 +231,48 @@ class ProjectionStoreRpc {
       case "search_text": {
         const collection = String(params.collection);
         this.searchedCollections.push(collection);
+        const query = String(params.text ?? "");
         const excludeIds = new Set(Array.isArray(params.excludeIds) ? params.excludeIds.map(String) : []);
         const results = this.ensureCollection(collection)
           .filter((item) => !excludeIds.has(item.id))
-          .map((item) => ({
-            ...item,
-            metadata: {
-              ...item.metadata,
-              collection,
-            },
-          }));
+          .map((item) => scoreMockSearchResult(item, query, collection))
+          .filter((item) => item.score > 0)
+          .sort((a, b) => {
+            if (b.score !== a.score) {
+              return b.score - a.score;
+            }
+            return a.id.localeCompare(b.id);
+          });
         return { results } as T;
       }
       case "search_text_collections":
         return {
           results: (Array.isArray(params.collections) ? params.collections : [])
-            .flatMap((collection) => this.ensureCollection(String(collection)))
-            .map((item) => ({
-              ...item,
-              metadata: {
-                ...item.metadata,
-                collection: typeof item.metadata.collection === "string"
-                  ? item.metadata.collection
-                  : String(
-                    Array.isArray(params.collections) && params.collections.length > 0
-                      ? params.collections[0]
-                      : "",
-                  ),
-              },
-            })),
+            .flatMap((collection) => {
+              const collectionName = String(collection);
+              const query = String(params.text ?? "");
+              return this.ensureCollection(collectionName)
+                .map((item) => scoreMockSearchResult(item, query, collectionName))
+                .filter((item) => item.score > 0)
+                .map((item) => ({
+                  ...item,
+                  metadata: {
+                    ...item.metadata,
+                    collection: typeof item.metadata.collection === "string"
+                      ? item.metadata.collection
+                      : collectionName,
+                  },
+                }));
+            })
+            .sort((a, b) => {
+              if (b.score !== a.score) {
+                return b.score - a.score;
+              }
+              if (a.metadata.collection !== b.metadata.collection) {
+                return String(a.metadata.collection ?? "").localeCompare(String(b.metadata.collection ?? ""));
+              }
+              return a.id.localeCompare(b.id);
+            }),
         } as T;
       case "list_collection": {
         const collection = String(params.collection);
@@ -289,6 +304,22 @@ class ProjectionStoreRpc {
       case "flush":
       case "health":
         return { ok: true } as T;
+      case "query_raw_session": {
+        const sessionId = String(params.sessionId);
+        const excludeIds = new Set(Array.isArray(params.excludeIds) ? params.excludeIds.map(String) : []);
+        const collection = `session_raw:${sessionId}`;
+        const results = (this.collections.get(collection) ?? [])
+          .filter((item) => !excludeIds.has(item.id))
+          .map((item) => ({
+            ...item,
+            metadata: {
+              ...item.metadata,
+              collection,
+              recovery_fallback: true,
+            },
+          }));
+        return { results } as T;
+      }
       default:
         throw new Error(`unexpected rpc method: ${method}`);
     }
@@ -303,6 +334,53 @@ class ProjectionStoreRpc {
     this.collections.set(collection, created);
     return created;
   }
+}
+
+function scoreMockSearchResult(item: SearchResult, query: string, collection: string): SearchResult {
+  const lexicalScore = lexicalSimilarity(query, item.text);
+  const seededScore = typeof item.score === "number" ? item.score : 0;
+  return {
+    ...item,
+    score: Math.max(seededScore, lexicalScore),
+    metadata: {
+      ...item.metadata,
+      collection,
+    },
+  };
+}
+
+function lexicalSimilarity(query: string, text: string): number {
+  const queryTerms = tokenSet(query);
+  const textTerms = tokenSet(text);
+  if (queryTerms.size === 0 || textTerms.size === 0) {
+    return 0;
+  }
+
+  let matches = 0;
+  for (const term of queryTerms) {
+    if (textTerms.has(term)) {
+      matches += 1;
+      continue;
+    }
+    for (const candidate of textTerms) {
+      if (candidate.includes(term) || term.includes(candidate)) {
+        matches += 0.5;
+        break;
+      }
+    }
+  }
+
+  return Math.max(0, Math.min(1, matches / queryTerms.size));
+}
+
+function tokenSet(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/g)
+      .map((token) => token.trim())
+      .filter(Boolean),
+  );
 }
 
 test("retrieval quality harness section 1 prefers fresher durable memory over stale higher-similarity global summary", async () => {
@@ -2291,4 +2369,459 @@ test("user ingest invalidates cached durable recall for that user", async () => 
   assert.equal(searchCallsAfterFirst, 4);
   // After second pair: 4 + 3 = 7 calls total
   assert.equal(searchCallsAfterSecond, 7);
+});
+
+// =============================================================================
+// Recovery trigger validation matrix
+// =============================================================================
+
+test("assemble: normal healthy session does NOT fire the recovery trigger", async () => {
+  // Normal session: strong session hits with turn-type items, high authority,
+  // no cascade_tier=3. Recovery trigger must not fire, so query_raw_session
+  // must not be called.
+  const rpc = new ProjectionStoreRpc();
+  rpc.collections.set("session:s1", [
+    {
+      id: "session-hit-1",
+      score: 0.85,
+      text: "recent session fact about the allocator decision",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now(),
+        collection: "session:s1",
+        type: "turn",
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+  ]);
+  rpc.collections.set("session_raw:s1", [
+    {
+      id: "raw-1",
+      score: 0.8,
+      text: "raw session allocator fact",
+      metadata: { sessionId: "s1", ts: Date.now(), type: "turn" },
+    },
+  ]);
+
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.25,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.bootstrap({ sessionId: "s1", userId: "u1" });
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "allocator decision" }],
+    tokenBudget: 200,
+  });
+
+  // Recovery must not fire for a healthy session — query_raw_session should
+  // not have been called (or called but returned zero results).
+  const rawCallCount = rpc.calls.get("query_raw_session") ?? 0;
+  assert.equal(rawCallCount, 0, "query_raw_session must not fire on a healthy session");
+
+  // Normal assembly result must be present
+  assert.ok(assembled.systemPromptAddition.length > 0);
+  assert.ok(!assembled.systemPromptAddition.includes("recovery_fallback"));
+});
+
+test("assemble: session returning only low-confidence summaries fires signal-3 and appends recovery", async () => {
+  // Session search returns 4 summary items, all with type=summary and
+  // mean confidence < 0.5. Signal 3 must fire, triggering query_raw_session.
+  // Recovery content must appear AFTER the normal assembly result.
+  const rpc = new ProjectionStoreRpc();
+  rpc.collections.set("session:s1", [
+    {
+      id: "summary-1",
+      score: 0.90,
+      text: "low confidence summary item one",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 60_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.30,
+        decay_rate: 0.7,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+    {
+      id: "summary-2",
+      score: 0.88,
+      text: "low confidence summary item two",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 55_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.35,
+        decay_rate: 0.65,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+    {
+      id: "summary-3",
+      score: 0.85,
+      text: "low confidence summary item three",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 50_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.28,
+        decay_rate: 0.72,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+    {
+      id: "summary-4",
+      score: 0.82,
+      text: "low confidence summary item four",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 45_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.40,
+        decay_rate: 0.60,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+  ]);
+  // Seed session_raw with recovery candidates
+  rpc.collections.set("session_raw:s1", [
+    {
+      id: "raw-1",
+      score: 0.75,
+      text: "raw allocator decision from session history",
+      metadata: { sessionId: "s1", ts: Date.now() - 40_000, type: "turn", token_estimate: 6 },
+    },
+    {
+      id: "raw-2",
+      score: 0.70,
+      text: "another raw fact about the earlier decision",
+      metadata: { sessionId: "s1", ts: Date.now() - 35_000, type: "turn", token_estimate: 6 },
+    },
+  ]);
+
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.25,
+    recoveryMinTopK: 4,
+    recoveryMinConfidenceMean: 0.5,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.bootstrap({ sessionId: "s1", userId: "u1" });
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "allocator decision" }],
+    tokenBudget: 400,
+  });
+
+  // Signal 3 must have fired — query_raw_session must be called
+  const rawCallCount = rpc.calls.get("query_raw_session") ?? 0;
+  assert.equal(rawCallCount, 1, "query_raw_session must fire when signal-3 triggers");
+
+  // Recovery content must appear after normal assembly result.
+  // Check that the raw session history text is present in the output
+  // and that it carries the recovery_fallback marker.
+  assert.ok(
+    assembled.systemPromptAddition.includes("raw allocator decision from session history"),
+    "recovery raw content must appear in assembled output",
+  );
+});
+
+test("assemble: session with cascade_tier=3 and weak ranking fires signal-1-plus-2", async () => {
+  // Session search returns hits with cascade_tier=3 in metadata (cascade exhausted
+  // to full embedding L3). Combined with a low finalScore, Signal 1 AND Signal 2
+  // fires: (S1 AND S2) triggers recovery.
+  // We simulate the low finalScore by setting authority=0 so ranking downweights.
+  const rpc = new ProjectionStoreRpc();
+  rpc.collections.set("session:s1", [
+    {
+      id: "session-tier3-weak",
+      score: 0.20,
+      text: "weak semantic match that fell through cascade tiers",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now(),
+        collection: "session:s1",
+        type: "turn",
+        authority: 0,
+        cascade_tier: 3, // cascade exhausted — Signal 1
+        token_estimate: 5,
+      },
+    },
+  ]);
+  rpc.collections.set("session_raw:s1", [
+    {
+      id: "raw-from-cascade",
+      score: 0.70,
+      text: "raw turn recovered after cascade failure",
+      metadata: { sessionId: "s1", ts: Date.now(), type: "turn", token_estimate: 5 },
+    },
+  ]);
+
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.25,
+    section7AuthorityRecencyLambda: 0,
+    section7AuthorityRecencyWeight: 0,
+    section7AuthorityFrequencyWeight: 0,
+    section7AuthorityAuthoredWeight: 0,
+    recoveryFloorScore: 0.15,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.bootstrap({ sessionId: "s1", userId: "u1" });
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "some obscure query" }],
+    tokenBudget: 200,
+  });
+
+  // (S1 AND S2) must fire
+  const rawCallCount = rpc.calls.get("query_raw_session") ?? 0;
+  assert.equal(rawCallCount, 1, "query_raw_session must fire when S1 AND S2 triggers");
+  assert.ok(
+    assembled.systemPromptAddition.includes("raw turn recovered after cascade failure"),
+    "recovery content must appear after cascade failure",
+  );
+});
+
+test("assemble: recovery never touches elevated:, authored:, or active session view collections", async () => {
+  // Verify the recovery search scope is restricted to session_raw: only.
+  // We seed elevated: and authored: collections with items that would match
+  // the query, then verify they are NOT returned as recovery items.
+  const rpc = new ProjectionStoreRpc();
+  // Active session view — should NOT be in recovery
+  rpc.collections.set("session:s1", [
+    {
+      id: "active-session",
+      score: 0.60,
+      text: "active session item that should not be in recovery",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now(),
+        collection: "session:s1",
+        type: "turn",
+        authority: 0,
+        cascade_tier: 3,
+        token_estimate: 5,
+      },
+    },
+  ]);
+  // Elevated guidance shard — should NOT be in recovery
+  rpc.collections.set("elevated:session:s1", [
+    {
+      id: "elevated-shard",
+      score: 0.90,
+      text: "elevated guidance that must stay in the elevated section",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now(),
+        type: "guidance_shard",
+        elevated_guidance: true,
+        token_estimate: 5,
+      },
+    },
+  ]);
+  // Raw session — the ONLY eligible collection for recovery
+  rpc.collections.set("session_raw:s1", [
+    {
+      id: "raw-eligible",
+      score: 0.75,
+      text: "raw eligible recovery turn",
+      metadata: { sessionId: "s1", ts: Date.now(), type: "turn", token_estimate: 5 },
+    },
+  ]);
+
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.25,
+    recoveryFloorScore: 0.15,
+    section7AuthorityRecencyLambda: 0,
+    section7AuthorityRecencyWeight: 0,
+    section7AuthorityFrequencyWeight: 0,
+    section7AuthorityAuthoredWeight: 0,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.bootstrap({ sessionId: "s1", userId: "u1" });
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "query that triggers cascade failure" }],
+    tokenBudget: 400,
+  });
+
+  // Recovery fired
+  const rawCallCount = rpc.calls.get("query_raw_session") ?? 0;
+  assert.equal(rawCallCount, 1);
+
+  // Recovery content must come ONLY from session_raw:
+  assert.ok(
+    assembled.systemPromptAddition.includes("raw eligible recovery turn"),
+    "recovery must include session_raw: content",
+  );
+  assert.ok(
+    !assembled.systemPromptAddition.includes("active session item that should not be in recovery"),
+    "recovery must NOT include active session view",
+  );
+  assert.ok(
+    !assembled.systemPromptAddition.includes("elevated guidance that must stay in the elevated section"),
+    "recovery must NOT include elevated: shards",
+  );
+});
+
+test("assemble: recovery is appended AFTER normal theorem result (theorem output unchanged)", async () => {
+  // When recovery fires, normal theorem output (authored + tail + ranked variant)
+  // must appear BEFORE the recovery content. The theorem does not mutate when
+  // recovery is present — it is the primary surface.
+  const rpc = new ProjectionStoreRpc();
+  rpc.collections.set("authored:hard", [
+    {
+      id: "hard-1",
+      score: 0,
+      text: "Hard authored rule: always validate the math.",
+      metadata: { authored: true, tier: 1, ordinal: 1, source_doc: "AGENTS.md", token_estimate: 6 },
+    },
+  ]);
+  rpc.collections.set("session:s1", [
+    {
+      id: "summary-poor",
+      score: 0.90,
+      text: "poor quality summary",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 90_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.28,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+    {
+      id: "summary-poor-2",
+      score: 0.88,
+      text: "another poor summary",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 80_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.32,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+    {
+      id: "summary-poor-3",
+      score: 0.85,
+      text: "third poor summary",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 70_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.25,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+    {
+      id: "summary-poor-4",
+      score: 0.82,
+      text: "fourth poor summary",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 60_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.30,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+  ]);
+  rpc.collections.set("session_raw:s1", [
+    {
+      id: "raw-recovery-1",
+      score: 0.75,
+      text: "raw recovered fact that provides the ground truth",
+      metadata: { sessionId: "s1", ts: Date.now() - 50_000, type: "turn", token_estimate: 7 },
+    },
+  ]);
+
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.5,
+    recoveryMinTopK: 4,
+    recoveryMinConfidenceMean: 0.5,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.bootstrap({ sessionId: "s1", userId: "u1" });
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "ground truth about the math" }],
+    tokenBudget: 500,
+  });
+
+  // Recovery fired
+  assert.equal(rpc.calls.get("query_raw_session") ?? 0, 1);
+
+  // Theorem result (authored hard) must appear before recovery content
+  const authoredIdx = assembled.systemPromptAddition.indexOf("Hard authored rule");
+  const recoveryIdx = assembled.systemPromptAddition.indexOf("raw recovered fact");
+
+  assert.ok(
+    authoredIdx >= 0,
+    "authored hard invariant must appear in output",
+  );
+  assert.ok(
+    recoveryIdx >= 0,
+    "recovery raw content must appear in output",
+  );
+  assert.ok(
+    authoredIdx < recoveryIdx,
+    "theorem result (authored) must appear BEFORE recovery content",
+  );
 });

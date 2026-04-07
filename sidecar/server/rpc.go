@@ -55,6 +55,7 @@ func New(embedder embed.Embedder, extractive summarize.Summarizer, abstractive s
 		"delete_batch":            s.handleDeleteBatch,
 		"compact_session":         s.handleCompact,
 		"expand_summary":          s.handleExpandSummary,
+		"query_raw_session":       s.handleQueryRawSession,
 		"flush":                   s.handleFlush,
 	}
 	return s
@@ -114,6 +115,13 @@ type expandSummaryParams struct {
 	SessionID string `json:"sessionId"`
 	SummaryID string `json:"summaryId"`
 	MaxDepth  int    `json:"maxDepth,omitempty"`
+}
+
+type queryRawSessionParams struct {
+	SessionID string   `json:"sessionId"`
+	Text     string   `json:"text"`
+	K        int      `json:"k"`
+	ExcludeIDs []string `json:"excludeIds"`
 }
 
 type listLifecycleJournalParams struct {
@@ -509,6 +517,22 @@ func (s *Server) handleExpandSummary(ctx context.Context, raw any) (any, error) 
 		maxDepth = 3
 	}
 	results, err := s.Store.ExpandSummary(ctx, params.SessionID, params.SummaryID, maxDepth)
+	if err != nil {
+		return nil, err
+	}
+	return searchTextResult{Results: results}, nil
+}
+
+func (s *Server) handleQueryRawSession(ctx context.Context, raw any) (any, error) {
+	var params queryRawSessionParams
+	if err := decode(raw, &params); err != nil {
+		return nil, err
+	}
+	if params.SessionID == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+	collection := store.SessionRawCollection(params.SessionID)
+	results, err := s.Store.SearchText(ctx, collection, params.Text, params.K, params.ExcludeIDs)
 	if err != nil {
 		return nil, err
 	}

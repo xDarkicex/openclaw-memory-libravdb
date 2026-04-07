@@ -1291,3 +1291,98 @@ Q(d)\in[1-\delta,\,1]\subseteq[0,1]
 $$
 
 for all valid inputs with $\delta\in[0,1]$.
+
+## 8. Theory Boundary And Future Refinement
+
+Cross-review of this document and [`continuity.md`](./continuity.md) surfaced a
+useful mathematical boundary that this reference should keep explicit:
+
+1. storage and continuity axioms
+2. primary retrieval and assembly math
+3. optional recoverability policy
+
+### 8.1 What Is Core Math
+
+The core retrieval theorem in this document is the scored, budgeted selection
+of retrievable nodes from $\mathcal{V}_{\mathrm{rest}}$ together with authored
+invariants and the exact recent tail. In other words, the primary law remains:
+
+$$
+C_{\mathrm{total}}(q)=\mathcal{I}_1\cup \mathcal{I}_2^{*}\cup T_{\mathrm{recent}}\cup \mathrm{Proj}(\mathcal{V}_{\mathrm{rest}}, q)
+$$
+
+with the retrieval side governed by:
+
+$$
+S_{\mathrm{final}}(d)=S_{\mathrm{base}}(d)\cdot Q(d)
+$$
+
+and the budget side governed by the residual variant budget
+$\tau_{\mathcal{V}}(q)$ defined in Section 7.8.
+
+### 8.2 What Is Not Core Math
+
+The following should be treated as policy or heuristic unless they are derived
+from the governing score equations and budget laws:
+
+- automatic query-time summary expansion
+- fixed expansion penalties
+- fixed expansion token sub-budgets
+- confidence thresholds for expansion eligibility
+- recursion-depth limits for summary expansion
+
+These controls may be useful in runtime experiments, but they are not theorem
+terms by default. They should not be mistaken for new axioms of the scoring
+model.
+
+### 8.3 Lossless Does Not Mean Always Expand
+
+The lossless extension in Section 5.6 strengthens the storage and
+recoverability contract. It does not imply that every relevant summary should be
+expanded into raw turns during ordinary retrieval.
+
+The mathematically safe reading is:
+
+- raw immutability is an axiom
+- $\mathrm{Expand}^{*}$ is a recoverability theorem over the summary DAG
+- query-time expansion is **explicit recovery/audit only** — it was removed from
+  the hot retrieval path and is not the default behavior; any expansion beyond
+  the core $C_{\mathrm{total}}(q)$ assembly must be triggered deliberately, not
+  applied silently to ranked candidates
+
+This distinction preserves the design goal that continuity and recoverability
+support retrieval without silently replacing it.
+
+### 8.4 Preferred Direction For Future Refinement
+
+If a future version wants query-time expansion inside the main retrieval path,
+the preferred direction is to re-derive it from the existing two-pass and
+multi-hop framework rather than introduce standalone penalties and thresholds
+that float outside the score model.
+
+In practical terms, future refinement should prefer one of two paths:
+
+1. keep summary expansion as a separate recovery or audit layer
+2. formally unify summary expansion with the existing hop-expansion math
+
+What this document should avoid is an in-between state where recoverability
+logic behaves like a second retrieval theorem without being derived as one.
+
+### 8.5 Preserved Research Ideas
+
+The review process also surfaced several strong theoretical ideas that are worth
+retaining for future work:
+
+- rate-distortion views of compaction quality
+- information-adaptive clustering instead of equal-size chronological buckets
+- hot-spot preservation tiers driven by access concentration
+- causal-centrality-aware compaction penalties or vetoes
+- entropy-based tail selection
+- retrieval-failure-triggered raw-history recovery (the specific observable
+  signals S1/S2/S3 are defined in the vNext spec slice; this entry refers to the
+  general concept, not the current implementation)
+- closed-loop compaction tuning driven by observed retrieval quality
+
+These ideas are intentionally preserved as future mathematics rather than
+current contract. The present document remains normative only for the formulas
+and invariants already defined above.

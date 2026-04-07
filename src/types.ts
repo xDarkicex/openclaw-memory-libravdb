@@ -62,6 +62,9 @@ export interface PluginConfig {
   summaryExpansionDepth?: number;
   summaryExpansionTokenBudget?: number;
   summaryExpansionPenaltyFactor?: number;
+  recoveryFloorScore?: number;
+  recoveryMinTopK?: number;
+  recoveryMinConfidenceMean?: number;
   ollamaUrl?: string;
   compactModel?: string;
   rpcTimeoutMs?: number;
@@ -121,6 +124,7 @@ export interface SearchResult {
     expanded_from_summary?: boolean;
     parent_summary_id?: string;
     expansion_depth?: number;
+    cascade_tier?: number;
     [key: string]: unknown;
   };
   finalScore?: number;
