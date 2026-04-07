@@ -17,6 +17,7 @@ to preserve project history and design evolution.
 - [ast.md](./ast.md) - Historical predecessor to `ast-v2.md`, kept to show design evolution and earlier bugs.
 - [gating.md](./gating.md) - Full derivation and calibration guide for the domain-adaptive gating scalar.
 - [implementation.md](./implementation.md) - Non-obvious implementation decisions and their rationale.
+- [openclaw-plugin-compat-audit-2026-04.md](./openclaw-plugin-compat-audit-2026-04.md) - Compatibility audit for the OpenClaw dual-kind plugin patch and its impact on `libravdb-memory`.
 - [dependencies.md](./dependencies.md) - Why LibraVDB and slab-based storage were chosen for this plugin.
 - [models.md](./models.md) - ONNX model strategy, latency trade-offs, and shipped model roles.
 - [security.md](./security.md) - Security model, untrusted-memory framing, isolation guarantees, and deletion boundaries.
