@@ -68,6 +68,7 @@ SKIP_SUMMARIZER=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)
+      [[ $# -ge 2 && "$2" != --* ]] || die "Missing argument for --target"
       TARGET_DIR="$2"; shift 2 ;;
     --skip-summarizer)
       SKIP_SUMMARIZER=1; shift ;;
@@ -140,7 +141,7 @@ download() {
 # ── Asset provisioning ───────────────────────────────────────────────
 
 ensure_asset() {
-  local name="$1" url="$2" dest="$3" sha256="${4:-}"
+  local name="$1" url="$2" dest="$3" sha256="${4:-}" optional="${5:-}"
   if verify_sha256 "$dest" "$sha256"; then
     ok "  ✓ ${name} (cached)"
     return 0
@@ -149,6 +150,10 @@ ensure_asset() {
   download "$url" "$dest"
   if [[ -n "$sha256" ]] && ! verify_sha256 "$dest" "$sha256"; then
     rm -f "$dest"
+    if [[ "$optional" == "optional" ]]; then
+      warn "  SHA-256 verification failed for ${name} (skipping optional asset)"
+      return 1
+    fi
     die "SHA-256 verification failed for ${name}"
   fi
   ok "  ✓ ${name}"
@@ -188,6 +193,8 @@ write_minilm_manifest() {
   "tokenizer": "tokenizer.json",
   "dimensions": 384,
   "normalize": true,
+  "inputNames": ["input_ids", "attention_mask", "token_type_ids"],
+  "outputName": "last_hidden_state",
   "pooling": "mean",
   "addSpecialTokens": true
 }
@@ -327,6 +334,7 @@ main() {
       "https://huggingface.co/optimum/t5-small/resolve/main/encoder_model.onnx" \
       "${MODELS_DIR}/t5-small/encoder_model.onnx" \
       "41d326633f1b85f526508cc0db78a5d40877c292c1b6dccae2eacd7d2a53480d" \
+      "optional" \
       || t5_ok=0
 
     if [[ "$t5_ok" -eq 1 ]]; then
@@ -335,6 +343,7 @@ main() {
         "https://huggingface.co/optimum/t5-small/resolve/main/decoder_model.onnx" \
         "${MODELS_DIR}/t5-small/decoder_model.onnx" \
         "0a1451011d61bcc796a87b7306c503562e910f110f884d0cc08532972c2cc584" \
+        "optional" \
         || t5_ok=0
     fi
 
@@ -344,6 +353,7 @@ main() {
         "https://huggingface.co/optimum/t5-small/resolve/main/tokenizer.json" \
         "${MODELS_DIR}/t5-small/tokenizer.json" \
         "5f0ed8ab5b8cfa9812bb73752f1d80c292e52bcf5a87a144dc9ab2d251056cbb" \
+        "optional" \
         || t5_ok=0
     fi
 
@@ -353,6 +363,7 @@ main() {
         "https://huggingface.co/optimum/t5-small/resolve/main/tokenizer_config.json" \
         "${MODELS_DIR}/t5-small/tokenizer_config.json" \
         "4969f8d76ef05a16553bd2b07b3501673ae8d36972aea88a0f78ad31a3ff2de9" \
+        "optional" \
         || t5_ok=0
     fi
 
@@ -362,6 +373,7 @@ main() {
         "https://huggingface.co/optimum/t5-small/resolve/main/config.json" \
         "${MODELS_DIR}/t5-small/config.json" \
         "d112428e703aa7ea0d6b17a77e9739fcc15b87653779d9b7942d5ecbc61c00ed" \
+        "optional" \
         || t5_ok=0
     fi
 
@@ -377,9 +389,7 @@ main() {
 
   echo ""
   ok "Provisioning complete.  Asset directory: ${TARGET_DIR}"
-  ok "To start libravdbd with these assets, ensure the binary is at:"
-  ok "  ${TARGET_DIR}/libravdbd"
-  ok "The daemon will auto-discover models/ and onnxruntime/ relative to its binary."
+  ok "Models and ONNX runtime are ready in: ${TARGET_DIR}"
 }
 
 main "$@"
