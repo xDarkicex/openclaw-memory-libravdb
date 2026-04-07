@@ -45,6 +45,33 @@ func (m fakeMiniLMModel) ComputeEncoding(_ tokenizer.Encoding) ([]float32, error
 	return m.Compute("", true)
 }
 
+type countingMiniLMModel struct {
+	encodeEncoding tokenizer.Encoding
+	vector         []float32
+	encodeCalls    int
+	computeCalls   int
+}
+
+func (m *countingMiniLMModel) Compute(_ string, _ bool) ([]float32, error) {
+	m.computeCalls++
+	return append([]float32(nil), m.vector...), nil
+}
+
+func (m *countingMiniLMModel) TokenCount(_ string, _ bool) (int, error) {
+	return len(m.encodeEncoding.Ids), nil
+}
+
+func (m *countingMiniLMModel) Encode(_ string, _ bool) (*tokenizer.Encoding, error) {
+	m.encodeCalls++
+	encoding := m.encodeEncoding
+	return &encoding, nil
+}
+
+func (m *countingMiniLMModel) ComputeEncoding(_ tokenizer.Encoding) ([]float32, error) {
+	m.computeCalls++
+	return append([]float32(nil), m.vector...), nil
+}
+
 func TestNewUnavailableIsNotReady(t *testing.T) {
 	engine := NewUnavailable("missing runtime")
 	if engine.Ready() {
@@ -235,6 +262,58 @@ func TestEmbedDeterministic384Dimensions(t *testing.T) {
 	}
 	if !differs {
 		t.Fatalf("expected different text to change the embedding")
+	}
+}
+
+func TestEmbedLongDocumentUsesSafeSlidingWindows(t *testing.T) {
+	model := &countingMiniLMModel{
+		encodeEncoding: tokenizer.Encoding{
+			Ids:           make([]int, 513),
+			TypeIds:       make([]int, 513),
+			AttentionMask: make([]int, 513),
+			Tokens:        make([]string, 513),
+			Offsets:       make([][]int, 513),
+			Words:         make([]int, 513),
+		},
+		vector: make([]float32, 768),
+	}
+	for i := range model.encodeEncoding.Ids {
+		model.encodeEncoding.Ids[i] = i + 1
+		model.encodeEncoding.AttentionMask[i] = 1
+		model.encodeEncoding.Tokens[i] = "t"
+		model.encodeEncoding.Offsets[i] = []int{i, i + 1}
+		model.encodeEncoding.Words[i] = i
+	}
+	model.vector[0] = 1
+
+	engine := &Engine{
+		dimensions: 768,
+		ready:      true,
+		backend: miniLMBackend{
+			model:     model,
+			normalize: true,
+		},
+		profile: buildProfile(Profile{
+			Backend:          "bundled",
+			Family:           "nomic-embed-text-v1.5",
+			Dimensions:       768,
+			Normalize:        true,
+			MaxContextTokens: 0,
+		}),
+	}
+
+	vec, ok, err := engine.embedLongDocument("long input")
+	if err != nil {
+		t.Fatalf("embedLongDocument() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected long-document path to be used")
+	}
+	if len(vec) != 768 {
+		t.Fatalf("expected 768-dim vector, got %d", len(vec))
+	}
+	if model.computeCalls < 2 {
+		t.Fatalf("expected multiple window embeddings, got %d", model.computeCalls)
 	}
 }
 

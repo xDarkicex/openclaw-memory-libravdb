@@ -574,14 +574,7 @@ func (e *Engine) embedLongDocument(text string) ([]float32, bool, error) {
 		stride = 1
 	}
 
-	windowed := encoding.Clone()
-	if _, err := windowed.Truncate(windowSize, stride); err != nil {
-		return nil, true, err
-	}
-
-	windows := make([]tokenizer.Encoding, 0, 1+len(windowed.Overflowing))
-	windows = append(windows, *windowed)
-	windows = append(windows, windowed.Overflowing...)
+	windows := buildEncodingWindows(*encoding, windowSize, stride)
 
 	vecs := make([][]float32, 0, len(windows))
 	for _, window := range windows {
@@ -593,6 +586,103 @@ func (e *Engine) embedLongDocument(text string) ([]float32, bool, error) {
 	}
 
 	return meanPoolVectors(vecs), true, nil
+}
+
+func buildEncodingWindows(encoding tokenizer.Encoding, windowSize, stride int) []tokenizer.Encoding {
+	seqLength := len(encoding.Ids)
+	if seqLength == 0 {
+		return []tokenizer.Encoding{encoding}
+	}
+	if windowSize <= 0 || seqLength <= windowSize {
+		return []tokenizer.Encoding{sliceEncodingWindow(encoding, 0, seqLength)}
+	}
+
+	step := windowSize - stride
+	if step <= 0 {
+		step = windowSize
+	}
+	if step <= 0 {
+		step = 1
+	}
+
+	windows := make([]tokenizer.Encoding, 0, 1+(seqLength-windowSize+step-1)/step)
+	for start := 0; start < seqLength; start += step {
+		end := start + windowSize
+		if end > seqLength {
+			end = seqLength
+		}
+		windows = append(windows, sliceEncodingWindow(encoding, start, end))
+		if end == seqLength {
+			break
+		}
+	}
+	if len(windows) == 0 {
+		return []tokenizer.Encoding{sliceEncodingWindow(encoding, 0, seqLength)}
+	}
+	return windows
+}
+
+func sliceEncodingWindow(encoding tokenizer.Encoding, start, end int) tokenizer.Encoding {
+	start = clampIndex(start, len(encoding.Ids))
+	end = clampIndex(end, len(encoding.Ids))
+	if end < start {
+		end = start
+	}
+
+	window := tokenizer.Encoding{
+		Ids:           append([]int(nil), encoding.Ids[start:end]...),
+		TypeIds:       sliceInts(encoding.TypeIds, start, end),
+		AttentionMask: sliceInts(encoding.AttentionMask, start, end),
+		Tokens:        sliceStrings(encoding.Tokens, start, end),
+		Offsets:       sliceOffsets(encoding.Offsets, start, end),
+		Words:         sliceInts(encoding.Words, start, end),
+	}
+	return window
+}
+
+func clampIndex(idx, length int) int {
+	if idx < 0 {
+		return 0
+	}
+	if idx > length {
+		return length
+	}
+	return idx
+}
+
+func sliceInts(values []int, start, end int) []int {
+	start = clampIndex(start, len(values))
+	end = clampIndex(end, len(values))
+	if end < start {
+		end = start
+	}
+	return append([]int(nil), values[start:end]...)
+}
+
+func sliceStrings(values []string, start, end int) []string {
+	start = clampIndex(start, len(values))
+	end = clampIndex(end, len(values))
+	if end < start {
+		end = start
+	}
+	return append([]string(nil), values[start:end]...)
+}
+
+func sliceOffsets(values [][]int, start, end int) [][]int {
+	start = clampIndex(start, len(values))
+	end = clampIndex(end, len(values))
+	if end < start {
+		end = start
+	}
+	out := make([][]int, 0, end-start)
+	for _, offset := range values[start:end] {
+		if offset == nil {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, append([]int(nil), offset...))
+	}
+	return out
 }
 
 func (b deterministicBackend) Embed(text string, dimensions int) ([]float32, error) {

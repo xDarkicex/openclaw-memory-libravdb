@@ -31,6 +31,8 @@
     "gate:assemble_optimization": "./.ts-toolchain/node_modules/.bin/tsc -p tsconfig.tests.json && OPENCLAW_PROFILE_ASSEMBLE=1 OPENCLAW_ENFORCE_ASSEMBLE_EVIDENCE_GATE=1 node --test --test-name-pattern=\"real sidecar mid-sized session search benchmark\" .ts-build/test/integration/host-flow.test.js",
     "probe:session_recall": "./.ts-toolchain/node_modules/.bin/tsc -p tsconfig.tests.json && OPENCLAW_PROFILE_ASSEMBLE=1 node --test --test-name-pattern=\"real sidecar mid-sized session search benchmark\" .ts-build/test/integration/host-flow.test.js",
     "probe:session_recall_threshold": "./.ts-toolchain/node_modules/.bin/tsc -p tsconfig.tests.json && OPENCLAW_PROFILE_ASSEMBLE=1 node --test --test-name-pattern=\"real sidecar session_recall index threshold probe\" .ts-build/test/integration/host-flow.test.js",
+    "benchmark:longmemeval": "./.ts-toolchain/node_modules/.bin/tsc -p tsconfig.tests.json && node --test .ts-build/test/integration/longmemeval-benchmark.test.js",
+    "benchmark:longmemeval:score": "node scripts/longmemeval-score.mjs",
     "build:daemon": "bash scripts/build-daemon.sh"
   },
   "dependencies": {

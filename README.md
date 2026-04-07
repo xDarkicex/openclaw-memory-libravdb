@@ -185,6 +185,59 @@ The formal math lives in:
 - [docs/ast-v2.md](./docs/ast-v2.md)
 - [docs/elevated-guidance.md](./docs/elevated-guidance.md)
 
+## LongMemEval Harness
+
+For internal tuning, the repo includes a local LongMemEval harness that runs the
+dataset through the plugin layer and measures whether the assembled prompt still
+contains the evidence turns.
+
+The benchmark runner is committed, but the dataset and generated reports are not.
+Keep downloaded data and local outputs under `benchmarks/longmemeval/`, which is
+ignored by default.
+
+The harness writes JSONL incrementally, so partial results survive if a transient
+daemon failure interrupts a long run.
+
+The run summary now prints a compact table with total questions, processed rows,
+skipped abstentions, errors, session hit rate, turn hit rate, and average prompt
+size.
+
+Run it with:
+
+```bash
+LONGMEMEVAL_DATA_FILE=/path/to/longmemeval_oracle.json pnpm run benchmark:longmemeval
+```
+
+If you already have a daemon running and do not want the benchmark to spawn
+another one, set:
+
+```bash
+LONGMEMEVAL_USE_EXISTING_DAEMON=1 LONGMEMEVAL_SIDECAR_PATH=unix:/path/to/libravdb.sock
+```
+
+If the local test daemon drops mid-run, the benchmark will restart it and retry
+the current instance once before recording an error result.
+
+Optional outputs:
+
+- `LONGMEMEVAL_LIMIT` to cap the number of questions
+- `LONGMEMEVAL_TOPK` to change the search budget
+- `LONGMEMEVAL_OUT_FILE` to write JSONL records for analysis
+
+To score a hypothesis JSONL file with the official LongMemEval evaluator, point
+the repo at a local checkout of the benchmark and run:
+
+```bash
+LONGMEMEVAL_EVAL_REPO=/path/to/LongMemEval \
+LONGMEMEVAL_HYPOTHESIS_FILE=/path/to/hypotheses.jsonl \
+LONGMEMEVAL_DATA_FILE=/path/to/longmemeval_oracle.json \
+OPENAI_API_KEY=... \
+pnpm run benchmark:longmemeval:score
+```
+
+That scorer wrapper shells out to the official Python evaluation script and then
+prints the aggregate metrics from the generated log when available.
+
 ## Compaction Model
 
 This system does not treat long chats as append-only forever.

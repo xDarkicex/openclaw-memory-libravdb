@@ -314,6 +314,22 @@ func TestRPCUnknownMethodErrors(t *testing.T) {
 	}
 }
 
+func TestRPCCallRecoversFromPanic(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	srv := New(fakeEmbedder{}, nil, nil, st, compact.DefaultGatingConfig(), 500)
+	srv.methods["boom"] = func(context.Context, any) (any, error) {
+		panic("boom")
+	}
+
+	if _, err := srv.Call(ctx, "boom", nil); err == nil {
+		t.Fatalf("expected panic to be converted into an error")
+	}
+}
+
 func TestRPCMalformedParamsError(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})

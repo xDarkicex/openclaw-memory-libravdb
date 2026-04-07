@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -61,11 +63,18 @@ func New(embedder embed.Embedder, extractive summarize.Summarizer, abstractive s
 	return s
 }
 
-func (s *Server) Call(ctx context.Context, method string, params any) (any, error) {
+func (s *Server) Call(ctx context.Context, method string, params any) (result any, err error) {
 	handler, ok := s.methods[method]
 	if !ok {
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("libravdb RPC panic in %s: %v\n%s", method, recovered, debug.Stack())
+			result = nil
+			err = fmt.Errorf("internal server panic in %s: %v", method, recovered)
+		}
+	}()
 	return handler(ctx, params)
 }
 

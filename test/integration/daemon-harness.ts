@@ -17,6 +17,7 @@ const daemonReadyTimeoutMs = 120_000;
 
 export interface TestDaemonHandle {
   endpoint: string;
+  diagnostics(): string;
   stop(): Promise<void>;
 }
 
@@ -79,6 +80,7 @@ async function waitForReachableEndpoint(endpoint: string, child?: { exitCode: nu
 async function launchDaemonAtEndpoint(endpoint: string, tempDir: string): Promise<TestDaemonHandle> {
   const dbPath = path.join(tempDir, "libravdb-data.libravdb");
   let child: ReturnType<typeof spawn> | null = null;
+  let stderr = "";
 
   try {
     child = spawn(daemonBinary, [], {
@@ -92,7 +94,6 @@ async function launchDaemonAtEndpoint(endpoint: string, tempDir: string): Promis
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    let stderr = "";
     if (child.stderr) {
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk) => {
@@ -117,6 +118,14 @@ async function launchDaemonAtEndpoint(endpoint: string, tempDir: string): Promis
 
     return {
       endpoint: reachable,
+      diagnostics() {
+        const proc = child;
+        const exitLine = proc
+          ? `exitCode=${proc.exitCode ?? "null"} signalCode=${proc.signalCode ?? "null"}`
+          : "exitCode=null signalCode=null";
+        const body = stderr.trim();
+        return body ? `${exitLine}\n${body}` : exitLine;
+      },
       async stop() {
         const proc = child;
         if (proc && proc.exitCode === null && proc.signalCode === null) {
@@ -158,6 +167,9 @@ export async function acquireTestDaemonHandle(): Promise<TestDaemonHandle> {
     }
     return {
       endpoint: reachable,
+      diagnostics() {
+        return "existing daemon handle";
+      },
       async stop() {},
     };
   }
