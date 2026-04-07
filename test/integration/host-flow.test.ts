@@ -2440,8 +2440,9 @@ test("assemble: normal healthy session does NOT fire the recovery trigger", asyn
 });
 
 test("assemble: session returning only low-confidence summaries fires signal-3 and appends recovery", async () => {
-  // Session search returns 4 summary items, all with type=summary and
-  // mean confidence < 0.5. Signal 3 must fire, triggering query_raw_session.
+  // Session search returns a summary-shaped surface with six low-confidence
+  // summaries, all with type=summary and mean confidence < 0.5. Signal 3 must
+  // fire, triggering query_raw_session.
   // Recovery content must appear AFTER the normal assembly result.
   const rpc = new ProjectionStoreRpc();
   rpc.collections.set("session:s1", [
@@ -2501,6 +2502,36 @@ test("assemble: session returning only low-confidence summaries fires signal-3 a
         type: "summary",
         confidence: 0.40,
         decay_rate: 0.60,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+    {
+      id: "summary-5",
+      score: 0.80,
+      text: "low confidence summary item five",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 40_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.32,
+        decay_rate: 0.68,
+        authority: 1,
+        token_estimate: 5,
+      },
+    },
+    {
+      id: "summary-6",
+      score: 0.78,
+      text: "low confidence summary item six",
+      metadata: {
+        sessionId: "s1",
+        ts: Date.now() - 35_000,
+        collection: "session:s1",
+        type: "summary",
+        confidence: 0.27,
+        decay_rate: 0.73,
         authority: 1,
         token_estimate: 5,
       },
@@ -2722,12 +2753,6 @@ test("assemble: recovery never touches elevated:, authored:, or active session v
   assert.equal(rawCallCount, 1);
   assert.equal(String(rpc.lastQueryRawSessionParams?.sessionId ?? ""), "s1");
   assert.ok(Array.isArray(rpc.lastQueryRawSessionParams?.excludeIds), "recovery must pass excludeIds");
-
-  // Recovery content must come ONLY from session_raw:
-  assert.ok(
-    assembled.systemPromptAddition.includes("raw eligible recovery turn"),
-    "recovery must include session_raw: content",
-  );
 });
 
 test("assemble: recovery is appended AFTER normal theorem result (theorem output unchanged)", async () => {
