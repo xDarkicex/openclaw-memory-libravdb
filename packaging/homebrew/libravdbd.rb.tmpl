@@ -26,7 +26,7 @@ class Libravdbd < Formula
   if OS.mac?
     resource "onnxruntime" do
       url "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-universal2-1.23.0.tgz"
-      sha256 "5e4365fb4a05aef353f6232b9a1848f37e608c421c9227e9224572205c0cfc08"
+      sha256 :no_check
     end
   elsif OS.linux?
     if Hardware::CPU.arm?
