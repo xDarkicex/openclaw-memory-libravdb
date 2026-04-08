@@ -26,18 +26,18 @@ class Libravdbd < Formula
   if OS.mac?
     resource "onnxruntime" do
       url "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-universal2-1.23.0.tgz"
-      sha256 :no_check
+      sha256 "5e4365fb4a05aef353f6232b9a1848f37e608c421c9227e9224572205c0cfc08"
     end
   elsif OS.linux?
     if Hardware::CPU.arm?
       resource "onnxruntime" do
         url "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-aarch64-1.23.0.tgz"
-        sha256 :no_check # TODO: pin real checksum when Linux ARM64 CI is available
+        sha256 "0b9f47d140411d938e47915824d8daaa424df95a88b5f1fc843172a75168f7a0"
       end
     else
       resource "onnxruntime" do
         url "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-x64-1.23.0.tgz"
-        sha256 :no_check # TODO: pin real checksum when Linux AMD64 CI is available
+        sha256 "b6deea7f2e22c10c043019f294a0ea4d2a6c0ae52a009c34847640db75ec5580"
       end
     end
   end
