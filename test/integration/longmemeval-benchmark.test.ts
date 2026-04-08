@@ -32,9 +32,12 @@ type LongMemEvalInstance = {
 type BenchmarkRecord = {
   question_id: string;
   question_type: string;
+  question: string;
+  reference_answer: string;
   status: "ok" | "error";
   session_hit: boolean;
   turn_hit: boolean;
+  answer_string_hit: boolean;
   session_prompt_hits: number;
   turn_prompt_hits: number;
   prompt_text: string;
@@ -45,6 +48,10 @@ type BenchmarkRecord = {
   evidence_session_ids: string[];
   evidence_snippets: string[];
   recovery_reserve_tokens?: number;
+  temporal_query_indicator?: number;
+  temporal_query_active?: boolean;
+  temporal_query_patterns?: string[];
+  temporal_recovery_slots?: string[];
   raw_user_recovery_candidates?: Array<{
     id: string;
     text: string;
@@ -242,9 +249,14 @@ async function runInstance({
   return {
     question_id: instance.question_id,
     question_type: instance.question_type ?? "unknown",
+    question: instance.question,
+    reference_answer: typeof instance.answer === "string" ? instance.answer : "",
     status: "ok",
     session_hit: sessionPromptHits > 0,
     turn_hit: turnPromptHits > 0,
+    answer_string_hit: typeof instance.answer === "string" && instance.answer.trim().length > 0
+      ? assembledText.toLowerCase().includes(instance.answer.trim().toLowerCase())
+      : false,
     session_prompt_hits: sessionPromptHits,
     turn_prompt_hits: turnPromptHits,
     prompt_text: promptText,
@@ -255,6 +267,10 @@ async function runInstance({
     evidence_session_ids: [...evidenceSessionIds].sort(),
     evidence_snippets: evidenceSnippets,
     recovery_reserve_tokens: assembled._debug?.recoveryReserveTokens,
+    temporal_query_indicator: assembled._debug?.temporalQueryIndicator,
+    temporal_query_active: assembled._debug?.temporalQueryActive,
+    temporal_query_patterns: assembled._debug?.temporalQueryPatterns,
+    temporal_recovery_slots: assembled._debug?.temporalRecoverySlots,
     raw_user_recovery_candidates: assembled._debug?.rawUserRecoveryCandidates,
   };
 }
@@ -263,9 +279,12 @@ function errorRecord(instance: LongMemEvalInstance, error: unknown): BenchmarkRe
   return {
     question_id: instance.question_id,
     question_type: instance.question_type ?? "unknown",
+    question: instance.question,
+    reference_answer: typeof instance.answer === "string" ? instance.answer : "",
     status: "error",
     session_hit: false,
     turn_hit: false,
+    answer_string_hit: false,
     session_prompt_hits: 0,
     turn_prompt_hits: 0,
     prompt_text: "",
@@ -276,6 +295,10 @@ function errorRecord(instance: LongMemEvalInstance, error: unknown): BenchmarkRe
     evidence_session_ids: [],
     evidence_snippets: [],
     recovery_reserve_tokens: 0,
+    temporal_query_indicator: undefined,
+    temporal_query_active: undefined,
+    temporal_query_patterns: undefined,
+    temporal_recovery_slots: undefined,
     raw_user_recovery_candidates: [],
     error: error instanceof Error ? error.message : String(error),
   };
@@ -285,18 +308,46 @@ function summarizeRecords(records: BenchmarkRecord[], total: number) {
   const processed = records.length;
   const sessionHits = records.filter((record) => record.session_hit).length;
   const turnHits = records.filter((record) => record.turn_hit).length;
+  const answerStringHits = records.filter((record) => record.answer_string_hit).length;
   const errors = records.filter((record) => record.status === "error").length;
   const promptTokens = records.map((record) => record.prompt_tokens_estimate).filter((value) => Number.isFinite(value));
   const avgPromptTokens = promptTokens.length > 0
     ? promptTokens.reduce((sum, value) => sum + value, 0) / promptTokens.length
     : 0;
+  const byType = Array.from(records.reduce((map, record) => {
+    const key = record.question_type || "unknown";
+    const current = map.get(key) ?? {
+      questionType: key,
+      processed: 0,
+      sessionHits: 0,
+      turnHits: 0,
+      answerStringHits: 0,
+      errors: 0,
+    };
+    current.processed += 1;
+    current.sessionHits += record.session_hit ? 1 : 0;
+    current.turnHits += record.turn_hit ? 1 : 0;
+    current.answerStringHits += record.answer_string_hit ? 1 : 0;
+    current.errors += record.status === "error" ? 1 : 0;
+    map.set(key, current);
+    return map;
+  }, new Map<string, {
+    questionType: string;
+    processed: number;
+    sessionHits: number;
+    turnHits: number;
+    answerStringHits: number;
+    errors: number;
+  }>()).values()).sort((left, right) => left.questionType.localeCompare(right.questionType));
   return {
     total,
     processed,
     errors,
     sessionRecallAtK: processed > 0 ? sessionHits / processed : 0,
     turnRecallAtK: processed > 0 ? turnHits / processed : 0,
+    answerStringRecallAtK: processed > 0 ? answerStringHits / processed : 0,
     avgPromptTokens,
+    byType,
   };
 }
 
@@ -306,7 +357,16 @@ function formatSummary(summary: {
   errors: number;
   sessionRecallAtK: number;
   turnRecallAtK: number;
+  answerStringRecallAtK: number;
   avgPromptTokens: number;
+  byType: Array<{
+    questionType: string;
+    processed: number;
+    sessionHits: number;
+    turnHits: number;
+    answerStringHits: number;
+    errors: number;
+  }>;
 }, skippedAbstentions: number): string {
   const rows = [
     ["total questions", String(summary.total)],
@@ -315,12 +375,26 @@ function formatSummary(summary: {
     ["errors", String(summary.errors)],
     ["session hit rate", `${(summary.sessionRecallAtK * 100).toFixed(2)}%`],
     ["turn hit rate", `${(summary.turnRecallAtK * 100).toFixed(2)}%`],
+    ["answer string hit rate", `${(summary.answerStringRecallAtK * 100).toFixed(2)}%`],
     ["avg prompt tokens", summary.avgPromptTokens.toFixed(1)],
   ];
   const width = Math.max(...rows.map(([label]) => label.length));
+  const matrixHeader = "  question_type           count  session%  turn%  answer%  errors";
+  const matrixRows = summary.byType.map((row) => {
+    const questionType = row.questionType.padEnd(22);
+    const count = String(row.processed).padStart(5);
+    const sessionRate = `${((row.sessionHits / Math.max(1, row.processed)) * 100).toFixed(0)}%`.padStart(8);
+    const turnRate = `${((row.turnHits / Math.max(1, row.processed)) * 100).toFixed(0)}%`.padStart(5);
+    const answerRate = `${((row.answerStringHits / Math.max(1, row.processed)) * 100).toFixed(0)}%`.padStart(8);
+    const errors = String(row.errors).padStart(7);
+    return `  ${questionType} ${count} ${sessionRate} ${turnRate} ${answerRate} ${errors}`;
+  });
   return [
     "LongMemEval local plugin benchmark",
     ...rows.map(([label, value]) => `  ${label.padEnd(width)} : ${value}`),
+    "  mini scoring matrix:",
+    matrixHeader,
+    ...matrixRows,
   ].join("\n");
 }
 

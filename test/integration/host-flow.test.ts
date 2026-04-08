@@ -963,6 +963,76 @@ test("assemble recovers exact historical user turns from turns:user when the que
   assert.ok((rpc.calls.get("search_text") ?? 0) >= 4, "fresh-session recovery should search turns:user in addition to the normal collections");
 });
 
+test("assemble: temporal fresh-session recovery prefers complementary date anchors over broader topical turns", async () => {
+  const previousDebugFlag = process.env.LONGMEMEVAL_DEBUG_RANKING;
+  process.env.LONGMEMEVAL_DEBUG_RANKING = "1";
+  try {
+    const rpc = new ProjectionStoreRpc();
+    rpc.gatingResult = { ...rpc.gatingResult, g: 0.2 };
+    const recallCache = createRecallCache<SearchResult>();
+    const cfg: PluginConfig = {
+      rpcTimeoutMs: 1000,
+      topK: 8,
+      tokenBudgetFraction: 0.5,
+      ingestionGateThreshold: 0.35,
+    };
+
+    const getRpc = async () => rpc as never;
+    const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+    await context.bootstrap({ sessionId: "history", userId: "u1" });
+    await context.ingest({
+      sessionId: "history",
+      userId: "u1",
+      message: {
+        role: "user",
+        content: "Rachel is helping me find a place near my office.",
+      },
+    });
+    await context.ingest({
+      sessionId: "history",
+      userId: "u1",
+      message: {
+        role: "user",
+        content: "I started working with Rachel on 2/15.",
+      },
+    });
+    await context.ingest({
+      sessionId: "history",
+      userId: "u1",
+      message: {
+        role: "user",
+        content: "I saw a house I loved on 3/1.",
+      },
+    });
+
+    await context.bootstrap({ sessionId: "fresh", userId: "u1" });
+    const assembled = await context.assemble({
+      sessionId: "fresh",
+      userId: "u1",
+      messages: [{ role: "user", content: "How many days did it take for me to find a house I loved after starting to work with Rachel?" }],
+      tokenBudget: 2000,
+    });
+
+    const temporalDebug = assembled._debug;
+    assert.equal(temporalDebug?.temporalQueryActive, true);
+    assert.ok((temporalDebug?.temporalQueryIndicator ?? 0) > 0);
+    assert.ok((temporalDebug?.temporalRecoverySlots ?? []).length >= 1);
+
+    const selectedCandidates = (temporalDebug?.rawUserRecoveryCandidates ?? []).filter((candidate) => candidate.selected);
+    assert.ok(selectedCandidates.some((candidate) => /2\/15|3\/1/.test(candidate.text)), "expected at least one temporal anchor turn to be selected");
+    assert.ok(!selectedCandidates.some((candidate) => /Rachel is helping me find a place near my office/.test(candidate.text)), "expected the broad topical turn to stay out of the temporal selector");
+    assert.match(assembled.systemPromptAddition, /2\/15|3\/1/);
+    assert.equal(rpc.calls.get("query_raw_session") ?? 0, 0, "fresh-session temporal recovery should use turns:user, not session_raw");
+  } finally {
+    if (typeof previousDebugFlag === "string") {
+      process.env.LONGMEMEVAL_DEBUG_RANKING = previousDebugFlag;
+    } else {
+      delete process.env.LONGMEMEVAL_DEBUG_RANKING;
+    }
+  }
+});
+
 test("assemble caches user and global hits without prompt-section seeding", async () => {
   const rpc = new FakeRpc();
   const recallCache = createRecallCache<SearchResult>();

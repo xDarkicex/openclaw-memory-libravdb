@@ -204,13 +204,20 @@ export interface ContextAssembleResult {
       text: string;
       selected: boolean;
       tokenEstimate: number;
+      temporalAnchorDensity: number;
       semanticScore: number;
+      slotCoverage?: number;
+      slotMatches?: string[];
       lexicalCoverage: number;
       recencyScore: number;
       finalScore: number;
       rationale: string;
     }>;
     recoveryReserveTokens?: number;
+    temporalQueryIndicator?: number;
+    temporalQueryActive?: boolean;
+    temporalQueryPatterns?: string[];
+    temporalRecoverySlots?: string[];
   };
 }
 

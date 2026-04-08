@@ -1,4 +1,5 @@
 import type { SearchResult } from "./types.js";
+import { getTemporalAnchorDensity } from "./temporal.js";
 
 interface HybridOptions {
   alpha?: number;
@@ -41,6 +42,7 @@ interface RawUserRecoveryOptions {
 export interface RawUserRecoveryDebugCandidate {
   id: string;
   text: string;
+  temporalAnchorDensity: number;
   semanticScore: number;
   lexicalCoverage: number;
   recencyScore: number;
@@ -326,6 +328,10 @@ export function rankRawUserRecoveryCandidates(
       const semanticScore = clamp01(typeof item.score === "number" ? item.score : 0);
       const lexicalCoverage = normalizedKeywordCoverage(keywords, item.text);
       const recencyScore = computeRecencyScore(item, now, recencyLambda);
+      const temporalAnchorDensity = getTemporalAnchorDensity(
+        `${typeof item.metadata.collection === "string" ? item.metadata.collection : "unknown"}::${item.id}`,
+        item.text,
+      );
       const intentAlignmentBonus = computeIntentAlignmentBonus(item.text, intentPhrases);
       const finalScore = clamp01(
         (0.30 * semanticScore) +
@@ -348,6 +354,7 @@ export function rankRawUserRecoveryCandidates(
         debug: {
           id: item.id,
           text: item.text,
+          temporalAnchorDensity,
           semanticScore,
           lexicalCoverage,
           recencyScore,

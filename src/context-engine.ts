@@ -12,6 +12,8 @@ import {
   rankSection7VariantCandidates,
 } from "./scoring.js";
 import { buildInjectedMemoryMessageContent, buildMemoryHeader, recentIds } from "./recall-utils.js";
+import { detectTemporalQuerySignal, rankTemporalRecoveryCandidates } from "./temporal.js";
+import type { TemporalRecoveryRankingResult } from "./temporal.js";
 import { countTokens, estimateTokens, fitPromptBudget, fitPromptBudgetFirstFit } from "./tokens.js";
 import type { RpcGetter } from "./plugin-runtime.js";
 import type {
@@ -190,6 +192,7 @@ export function buildContextEngineFactory(
           systemPromptAddition: "",
         } satisfies ContextAssembleResult;
       }
+      const temporalQuery = detectTemporalQuerySignal(queryText);
 
       const excluded = recentIds(messages, 4);
       const cached = recallCache.take({ userId, queryText });
@@ -253,6 +256,7 @@ export function buildContextEngineFactory(
           cached,
           excluded,
           queryText,
+          temporalQuery,
           sessionId,
           userId,
           messages,
@@ -287,6 +291,7 @@ export function buildContextEngineFactory(
       cached,
       excluded,
       queryText,
+      temporalQuery,
       sessionId,
       userId,
       messages,
@@ -303,6 +308,7 @@ export function buildContextEngineFactory(
       cached: ReturnType<RecallCache<SearchResult>["take"]>;
       excluded: string[];
       queryText: string;
+      temporalQuery: ReturnType<typeof detectTemporalQuerySignal>;
       sessionId: string;
       userId: string;
       messages: Array<{ role: string; content: string }>;
@@ -562,6 +568,7 @@ export function buildContextEngineFactory(
       // it never modifies the C_total(q) output and does not spend from tau_V.
       let recoveryItems: SearchResult[] = [];
       let rawUserRecoveryDebug: NonNullable<NonNullable<ContextAssembleResult["_debug"]>["rawUserRecoveryCandidates"]> = [];
+      let temporalRecoveryResult: TemporalRecoveryRankingResult | null = null;
       if (recoveryTrigger.fire || crossSessionRawRecovery) {
         profiler?.mark("recovery_expand");
         const recoveryExcludeIDs = [...excluded, ...recentTailIDs, ...theoremSelectedIDs];
@@ -599,15 +606,44 @@ export function buildContextEngineFactory(
             k: Math.max((cfg.topK ?? 8) * 4, 8),
             excludeIds: recoveryExcludeIDs,
           });
-          const reranked = rankRawUserRecoveryCandidates(
-            annotateCollection(rawUserResults.results ?? [], `turns:${userId}`),
-            { queryText },
-          );
+          const annotatedUserResults = annotateCollection(rawUserResults.results ?? [], `turns:${userId}`);
+          temporalRecoveryResult = temporalQuery.active
+            ? rankTemporalRecoveryCandidates(annotatedUserResults, {
+                queryText,
+                maxSelected: 3,
+                nowMs: Date.now(),
+                recencyLambda: cfg.recencyLambdaUser ?? 0.00001,
+              })
+            : null;
+          const reranked = temporalRecoveryResult
+            ? temporalRecoveryResult
+            : rankRawUserRecoveryCandidates(annotatedUserResults, { queryText });
           if (debugRecovery) {
             rawUserRecoveryDebug = reranked.debug.slice(0, 8).map((item) => ({
-              ...item,
+              id: item.id,
+              text: item.text,
               selected: false,
               tokenEstimate: estimateTokens(item.text),
+              temporalAnchorDensity: "temporalAnchorDensity" in item && typeof item.temporalAnchorDensity === "number"
+                ? item.temporalAnchorDensity
+                : 0,
+              semanticScore: "semanticScore" in item && typeof item.semanticScore === "number"
+                ? item.semanticScore
+                : 0,
+              slotCoverage: "slotCoverage" in item && typeof item.slotCoverage === "number"
+                ? item.slotCoverage
+                : undefined,
+              slotMatches: "slotMatches" in item && Array.isArray(item.slotMatches)
+                ? item.slotMatches
+                : undefined,
+              lexicalCoverage: "lexicalCoverage" in item && typeof item.lexicalCoverage === "number"
+                ? item.lexicalCoverage
+                : ("slotCoverage" in item && typeof item.slotCoverage === "number" ? item.slotCoverage : 0),
+              recencyScore: "recencyScore" in item && typeof item.recencyScore === "number"
+                ? item.recencyScore
+                : 0,
+              finalScore: typeof item.finalScore === "number" ? item.finalScore : 0,
+              rationale: typeof item.rationale === "string" ? item.rationale : "",
             }));
           }
           recoveryCandidates.push(
@@ -669,6 +705,10 @@ export function buildContextEngineFactory(
               recoveryTriggerFired: recoveryTrigger.fire,
               crossSessionRawRecovery,
               recoveryReserveTokens,
+              temporalQueryIndicator: temporalQuery.indicator,
+              temporalQueryActive: temporalQuery.active,
+              temporalQueryPatterns: temporalQuery.matchedPatterns,
+              temporalRecoverySlots: temporalRecoveryResult?.slots,
               rawUserRecoveryCandidates: rawUserRecoveryDebug,
             }
           : undefined,

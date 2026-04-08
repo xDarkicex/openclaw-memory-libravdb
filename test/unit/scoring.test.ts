@@ -564,6 +564,8 @@ test("rankRawUserRecoveryCandidates favors tighter lexical match over broader to
 
   assert.equal(ranked[0]?.id, "exact-turn");
   assert.equal(debug[0]?.id, "exact-turn");
+  assert.ok((debug[0]?.temporalAnchorDensity ?? -1) >= 0);
+  assert.ok((debug[0]?.temporalAnchorDensity ?? 2) <= 1);
   assert.ok((debug[0]?.lexicalCoverage ?? 0) > (debug[1]?.lexicalCoverage ?? 0));
   assert.match(debug[0]?.rationale ?? "", /intent phrase overlap|lexical coverage/);
 });

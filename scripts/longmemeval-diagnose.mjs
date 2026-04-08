@@ -5,6 +5,11 @@ function env(name) {
   return value && value.length > 0 ? value : "";
 }
 
+function envFlag(name) {
+  const value = env(name).toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
 function excerpt(value, maxChars = 260) {
   const compact = String(value ?? "").replace(/\s+/g, " ").trim();
   if (compact.length <= maxChars) {
@@ -57,6 +62,7 @@ async function main() {
   const outFile = env("LONGMEMEVAL_OUT_FILE");
   const limitRaw = env("LONGMEMEVAL_LIMIT");
   const limit = limitRaw ? Number.parseInt(limitRaw, 10) : null;
+  const showAll = envFlag("LONGMEMEVAL_DIAGNOSE_ALL");
 
   if (!dataFile) {
     throw new Error("LONGMEMEVAL_DATA_FILE is required");
@@ -72,12 +78,15 @@ async function main() {
 
   const rowById = new Map(rows.map((row) => [row.question_id, row]));
   const sample = Array.isArray(instances) ? instances : [];
-  const relevant = (limit && Number.isFinite(limit) && limit > 0 ? sample.slice(0, Math.floor(limit)) : sample)
+  const selected = (limit && Number.isFinite(limit) && limit > 0 ? sample.slice(0, Math.floor(limit)) : sample)
     .map((instance) => ({ instance, row: rowById.get(instance.question_id) }))
-    .filter(({ row }) => row && row.status === "ok" && !row.turn_hit);
+    .filter(({ row }) => row && row.status === "ok");
+  const relevant = showAll
+    ? selected
+    : selected.filter(({ row }) => !row.turn_hit);
 
-  console.log(`LongMemEval miss diagnosis`);
-  console.log(`  misses: ${relevant.length}`);
+  console.log(showAll ? "LongMemEval comparison report" : "LongMemEval miss diagnosis");
+  console.log(`  rows: ${relevant.length}`);
 
   for (const { instance, row } of relevant) {
     const answerTurns = collectAnswerTurns(instance);
@@ -85,6 +94,9 @@ async function main() {
     console.log("");
     console.log(`question_id: ${instance.question_id}`);
     console.log(`question_type: ${instance.question_type ?? "unknown"}`);
+    console.log(`status: session_hit=${Boolean(row.session_hit)} turn_hit=${Boolean(row.turn_hit)} answer_string_hit=${Boolean(row.answer_string_hit)}`);
+    console.log(`question: ${excerpt(row.question ?? instance.question ?? "", 360)}`);
+    console.log(`expected answer: ${excerpt(row.reference_answer ?? instance.answer ?? "", 240)}`);
     console.log(`classification: ${classify(row, answerTurns)}`);
     console.log(`expected answer turn count: ${answerTurns.length}`);
     answerTurns.slice(0, 2).forEach((turn, index) => {
@@ -95,7 +107,7 @@ async function main() {
     }
     console.log(`produced prompt chars: ${row.prompt_chars}`);
     console.log(`produced prompt tokens: ${row.prompt_tokens_estimate}`);
-    console.log(`produced prompt excerpt: ${excerpt(row.prompt_text, 500)}`);
+    console.log(`produced prompt: ${excerpt(row.prompt_text, 500)}`);
     const snippets = Array.isArray(row.evidence_snippets) ? row.evidence_snippets : [];
     snippets.slice(0, 3).forEach((snippet, index) => {
       console.log(`produced evidence[${index + 1}]: ${excerpt(snippet, 260)}`);
@@ -106,6 +118,16 @@ async function main() {
     console.log(`exact answer turn hits in prompt: ${exactHits.length}`);
     if (typeof row.recovery_reserve_tokens === "number") {
       console.log(`recovery reserve tokens: ${row.recovery_reserve_tokens}`);
+    }
+    if (typeof row.temporal_query_active === "boolean" || typeof row.temporal_query_indicator === "number") {
+      const indicator = typeof row.temporal_query_indicator === "number" ? row.temporal_query_indicator.toFixed(3) : "n/a";
+      console.log(`temporal query: active=${Boolean(row.temporal_query_active)} indicator=${indicator}`);
+    }
+    if (Array.isArray(row.temporal_query_patterns) && row.temporal_query_patterns.length > 0) {
+      console.log(`temporal query patterns: ${row.temporal_query_patterns.join(", ")}`);
+    }
+    if (Array.isArray(row.temporal_recovery_slots) && row.temporal_recovery_slots.length > 0) {
+      console.log(`temporal recovery slots: ${row.temporal_recovery_slots.join(" | ")}`);
     }
     const recoveryCandidates = Array.isArray(row.raw_user_recovery_candidates) ? row.raw_user_recovery_candidates : [];
     if (recoveryCandidates.length > 0) {

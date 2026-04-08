@@ -9,7 +9,7 @@ to preserve project history and design evolution.
 - [uninstall.md](./uninstall.md) - Clean shutdown and removal guide for the plugin, daemon, and optional local data.
 - [architecture.md](./architecture.md) - End-to-end component model, turn lifecycle, compaction flow, and degraded behavior.
 - [problem.md](./problem.md) - Technical argument for replacing the stock OpenClaw memory lifecycle in this use case.
-- [mathematics-v2.md](./mathematics-v2.md) - Formal reference for hybrid scoring, decay, token budgeting, Matryoshka retrieval, compaction, and planned two-pass retrieval.
+- [mathematics-v2.md](./mathematics-v2.md) - Formal reference for hybrid scoring, decay, token budgeting, Matryoshka retrieval, compaction, planned two-pass retrieval, and temporal-compositional projection.
 - [compaction-evaluation.md](./compaction-evaluation.md) - Real-model benchmark notes for T5 summary confidence, Nomic-space preservation, and the hard preservation gate.
 - [continuity.md](./continuity.md) - Continuity model for invariant context, preserved recent raw session tail, and retrieved older memory.
 - [ast-v2.md](./ast-v2.md) - Reviewed authoritative AST partitioning reference for authored Markdown hard invariants, soft invariants, and variant lore.
