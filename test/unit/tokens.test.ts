@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { buildInjectedMemoryMessageContent, buildMemoryHeader, recentIds } from "../../src/recall-utils.js";
-import { countTokens, estimateTokens, fitPromptBudget } from "../../src/tokens.js";
+import { countTokens, estimateTokens, fitPromptBudget, fitPromptBudgetFirstFit } from "../../src/tokens.js";
 import type { SearchResult } from "../../src/types.js";
 
 test("estimateTokens uses denser heuristic for CJK", () => {
@@ -28,6 +28,17 @@ test("fitPromptBudget preserves ranked prefix instead of skipping oversized item
 
   const selected = fitPromptBudget(items, 2);
   assert.equal(selected.length, 0);
+});
+
+test("fitPromptBudgetFirstFit skips oversized leaders and keeps smaller fitting followers", () => {
+  const items: SearchResult[] = [
+    { id: "a", score: 1, text: "this item is definitely longer than short", metadata: {} },
+    { id: "b", score: 0.9, text: "tiny", metadata: {} },
+    { id: "c", score: 0.8, text: "small", metadata: {} },
+  ];
+
+  const selected = fitPromptBudgetFirstFit(items, 3);
+  assert.deepEqual(selected.map((item) => item.id), ["b", "c"]);
 });
 
 test("countTokens sums message contents", () => {

@@ -12,7 +12,7 @@ import {
   rankSection7VariantCandidates,
 } from "./scoring.js";
 import { buildInjectedMemoryMessageContent, buildMemoryHeader, recentIds } from "./recall-utils.js";
-import { countTokens, estimateTokens, fitPromptBudget } from "./tokens.js";
+import { countTokens, estimateTokens, fitPromptBudget, fitPromptBudgetFirstFit } from "./tokens.js";
 import type { RpcGetter } from "./plugin-runtime.js";
 import type {
   ContextAssembleArgs,
@@ -607,6 +607,7 @@ export function buildContextEngineFactory(
             rawUserRecoveryDebug = reranked.debug.slice(0, 8).map((item) => ({
               ...item,
               selected: false,
+              tokenEstimate: estimateTokens(item.text),
             }));
           }
           recoveryCandidates.push(
@@ -622,7 +623,7 @@ export function buildContextEngineFactory(
           );
         }
 
-        const fittedRecovery = fitPromptBudget(
+        const fittedRecovery = fitPromptBudgetFirstFit(
           dedupeRecoveryCandidates(recoveryCandidates),
           recoveryReserveTokens,
         );
@@ -667,6 +668,7 @@ export function buildContextEngineFactory(
           ? {
               recoveryTriggerFired: recoveryTrigger.fire,
               crossSessionRawRecovery,
+              recoveryReserveTokens,
               rawUserRecoveryCandidates: rawUserRecoveryDebug,
             }
           : undefined,

@@ -203,12 +203,14 @@ export interface ContextAssembleResult {
       id: string;
       text: string;
       selected: boolean;
+      tokenEstimate: number;
       semanticScore: number;
       lexicalCoverage: number;
       recencyScore: number;
       finalScore: number;
       rationale: string;
     }>;
+    recoveryReserveTokens?: number;
   };
 }
 

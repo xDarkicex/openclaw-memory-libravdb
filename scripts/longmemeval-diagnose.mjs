@@ -104,13 +104,16 @@ async function main() {
       console.log(`produced evidence[more]: ${snippets.length - 3} additional snippet(s)`);
     }
     console.log(`exact answer turn hits in prompt: ${exactHits.length}`);
+    if (typeof row.recovery_reserve_tokens === "number") {
+      console.log(`recovery reserve tokens: ${row.recovery_reserve_tokens}`);
+    }
     const recoveryCandidates = Array.isArray(row.raw_user_recovery_candidates) ? row.raw_user_recovery_candidates : [];
     if (recoveryCandidates.length > 0) {
       console.log(`raw user recovery candidates: ${recoveryCandidates.length}`);
       recoveryCandidates.slice(0, 5).forEach((candidate, index) => {
         const expectedMatch = includesAnswerTurn(candidate.text, answerTurns);
         console.log(
-          `candidate[${index + 1}]: selected=${candidate.selected} final=${Number(candidate.finalScore ?? 0).toFixed(3)} semantic=${Number(candidate.semanticScore ?? 0).toFixed(3)} lexical=${Number(candidate.lexicalCoverage ?? 0).toFixed(3)} recency=${Number(candidate.recencyScore ?? 0).toFixed(3)} expected_match=${expectedMatch}`,
+          `candidate[${index + 1}]: selected=${candidate.selected} tokens=${Number(candidate.tokenEstimate ?? 0)} final=${Number(candidate.finalScore ?? 0).toFixed(3)} semantic=${Number(candidate.semanticScore ?? 0).toFixed(3)} lexical=${Number(candidate.lexicalCoverage ?? 0).toFixed(3)} recency=${Number(candidate.recencyScore ?? 0).toFixed(3)} expected_match=${expectedMatch}`,
         );
         console.log(`candidate_text[${index + 1}]: ${excerpt(candidate.text, 260)}`);
         console.log(`candidate_why[${index + 1}]: ${candidate.rationale ?? "n/a"}`);

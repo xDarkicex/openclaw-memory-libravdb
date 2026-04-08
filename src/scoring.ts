@@ -319,17 +319,25 @@ export function rankRawUserRecoveryCandidates(
   const now = opts.nowMs ?? Date.now();
   const recencyLambda = Math.max(0, opts.recencyLambda ?? 0.00001);
   const keywords = extractKeywords(opts.queryText);
+  const intentPhrases = extractIntentPhrases(opts.queryText);
 
   const ranked = items
     .map((item) => {
       const semanticScore = clamp01(typeof item.score === "number" ? item.score : 0);
       const lexicalCoverage = normalizedKeywordCoverage(keywords, item.text);
       const recencyScore = computeRecencyScore(item, now, recencyLambda);
-      const finalScore = clamp01((0.30 * semanticScore) + (0.60 * lexicalCoverage) + (0.10 * recencyScore));
+      const intentAlignmentBonus = computeIntentAlignmentBonus(item.text, intentPhrases);
+      const finalScore = clamp01(
+        (0.30 * semanticScore) +
+        (0.60 * lexicalCoverage) +
+        (0.10 * recencyScore) +
+        intentAlignmentBonus,
+      );
       const rationale = buildRawUserRecoveryRationale({
         semanticScore,
         lexicalCoverage,
         recencyScore,
+        intentAlignmentBonus,
       });
 
       return {
@@ -473,7 +481,11 @@ function buildRawUserRecoveryRationale(scores: {
   semanticScore: number;
   lexicalCoverage: number;
   recencyScore: number;
+  intentAlignmentBonus: number;
 }): string {
+  if (scores.intentAlignmentBonus >= 0.04) {
+    return "intent phrase overlap lifted this candidate toward the query's direct ask";
+  }
   const lexicalDelta = scores.lexicalCoverage - scores.semanticScore;
   if (lexicalDelta > 0.15) {
     return "lexical coverage lifted this candidate above its semantic score";
@@ -486,6 +498,79 @@ function buildRawUserRecoveryRationale(scores: {
   }
   return "semantic and lexical scores were balanced";
 }
+
+function computeIntentAlignmentBonus(text: string, intentPhrases: string[]): number {
+  if (intentPhrases.length === 0) {
+    return 0;
+  }
+  const normalized = normalizeTextForPhraseMatch(text);
+  const matched = intentPhrases.filter((phrase) => normalized.includes(phrase)).length;
+  if (matched === 0) {
+    return 0;
+  }
+  return Math.min(0.08, matched * 0.02);
+}
+
+function extractIntentPhrases(text: string): string[] {
+  const terms = normalizeTerms(text).filter((term) => !INTENT_STOPWORDS.has(term));
+  const phrases: string[] = [];
+  for (let size = 4; size >= 2; size -= 1) {
+    for (let i = 0; i <= terms.length - size; i += 1) {
+      const phraseTerms = terms.slice(i, i + size);
+      if (phraseTerms.some((term) => term.length < 3)) {
+        continue;
+      }
+      const phrase = phraseTerms.join(" ");
+      if (!phrases.includes(phrase)) {
+        phrases.push(phrase);
+      }
+    }
+  }
+  return phrases.slice(0, 12);
+}
+
+function normalizeTextForPhraseMatch(text: string): string {
+  return normalizeTerms(text).join(" ");
+}
+
+const INTENT_STOPWORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "that",
+  "this",
+  "have",
+  "from",
+  "your",
+  "what",
+  "when",
+  "where",
+  "which",
+  "would",
+  "could",
+  "should",
+  "about",
+  "into",
+  "some",
+  "before",
+  "after",
+  "them",
+  "they",
+  "been",
+  "just",
+  "want",
+  "looking",
+  "look",
+  "help",
+  "need",
+  "recommend",
+  "suggestions",
+  "suggest",
+  "advice",
+  "think",
+  "also",
+]);
 
 function extractKeywords(text: string): string[] {
   const tokens = normalizeTerms(text);
