@@ -7,6 +7,7 @@ import {
 import {
   detectRetrievalFailure,
   expandSection7HopCandidates,
+  rankRawUserRecoveryCandidates,
   mergeSection7VariantCandidates,
   rankSection7VariantCandidates,
 } from "./scoring.js";
@@ -179,6 +180,7 @@ export function buildContextEngineFactory(
     },
     async assemble({ sessionId, userId, messages, tokenBudget }: ContextAssembleArgs) {
       const PROFILE = process.env.OPENCLAW_PROFILE_ASSEMBLE === "1";
+      const DEBUG_RECOVERY = process.env.LONGMEMEVAL_DEBUG_RANKING === "1";
 
       const queryText = messages.at(-1)?.content ?? "";
       if (!queryText) {
@@ -256,6 +258,7 @@ export function buildContextEngineFactory(
           messages,
           tokenBudget,
           profiler,
+          debugRecovery: DEBUG_RECOVERY,
         });
 
         const profileLines = profiler?.lines() ?? [];
@@ -289,6 +292,7 @@ export function buildContextEngineFactory(
       messages,
       tokenBudget,
       profiler,
+      debugRecovery,
     }: {
       rpc: Awaited<ReturnType<RpcGetter>>;
       cfg: PluginConfig;
@@ -304,6 +308,7 @@ export function buildContextEngineFactory(
       messages: Array<{ role: string; content: string }>;
       tokenBudget: number;
       profiler: { mark(label: string): void; emit(): void } | null;
+      debugRecovery: boolean;
     }): Promise<ContextAssembleResult> {
       const memoryBudget = tokenBudget * (cfg.tokenBudgetFraction ?? 0.25);
       const hardItems = authoredHard;
@@ -517,7 +522,10 @@ export function buildContextEngineFactory(
         minTopK: cfg.recoveryMinTopK ?? 4,
         meanConfidenceThresh: cfg.recoveryMinConfidenceMean ?? 0.5,
       });
-      const recoveryReserveTokens = recoveryTrigger.fire
+      const crossSessionRawRecovery =
+        rawSessionTurns.length === 0 &&
+        sessionHits.results.length === 0;
+      const recoveryReserveTokens = (recoveryTrigger.fire || crossSessionRawRecovery)
         ? Math.min(memoryBudget, Math.max(Math.floor(memoryBudget * 0.10), 16), 128)
         : 0;
       const elevatedGuidanceBudget = Math.max(
@@ -553,26 +561,83 @@ export function buildContextEngineFactory(
       // Recovery is a policy overlay — it appends raw content only when triggered,
       // it never modifies the C_total(q) output and does not spend from tau_V.
       let recoveryItems: SearchResult[] = [];
-      if (recoveryTrigger.fire) {
+      let rawUserRecoveryDebug: NonNullable<NonNullable<ContextAssembleResult["_debug"]>["rawUserRecoveryCandidates"]> = [];
+      if (recoveryTrigger.fire || crossSessionRawRecovery) {
         profiler?.mark("recovery_expand");
-        // Recovery searches immutable raw history directly — never the active view, elevated shards,
-        // or authored collections. Raw turns are immutable (storage axiom, unchanged).
         const recoveryExcludeIDs = [...excluded, ...recentTailIDs, ...theoremSelectedIDs];
-        const rawResults = await rpc.call<{ results: SearchResult[] }>("query_raw_session", {
-          sessionId,
-          text: queryText,
-          k: Math.max(cfg.topK ?? 8, 4),
-          excludeIds: recoveryExcludeIDs,
-        });
-        // Fit recovered raw items to the reserved recovery budget — never exceed it.
-        const fittedRecovery = fitPromptBudget(rawResults.results ?? [], recoveryReserveTokens);
-        recoveryItems = fittedRecovery.map((item: SearchResult) => ({
-          ...item,
-          metadata: {
-            ...item.metadata,
-            recovery_fallback: true,
-          },
-        }));
+        const recoveryCandidates: SearchResult[] = [];
+
+        if (recoveryTrigger.fire) {
+          // Recovery searches immutable raw session history directly — never the active view,
+          // elevated shards, or authored collections.
+          const rawResults = await rpc.call<{ results: SearchResult[] }>("query_raw_session", {
+            sessionId,
+            text: queryText,
+            k: Math.max(cfg.topK ?? 8, 4),
+            excludeIds: recoveryExcludeIDs,
+          });
+          recoveryCandidates.push(
+            ...(rawResults.results ?? []).map((item) => ({
+              ...item,
+              finalScore: typeof item.finalScore === "number" ? item.finalScore : item.score,
+              metadata: {
+                ...item.metadata,
+                recovery_fallback: true,
+                recovery_scope: "session_raw",
+              },
+            })),
+          );
+        }
+
+        if (crossSessionRawRecovery) {
+          // When a fresh query session has no searchable history yet, durable memory can be too
+          // coarse for exact-turn recall. Search the immutable per-user raw turn index instead of
+          // widening topK so precise historical turns still have a bounded path back into context.
+          const rawUserResults = await rpc.call<{ results: SearchResult[] }>("search_text", {
+            collection: `turns:${userId}`,
+            text: queryText,
+            k: Math.max((cfg.topK ?? 8) * 4, 8),
+            excludeIds: recoveryExcludeIDs,
+          });
+          const reranked = rankRawUserRecoveryCandidates(
+            annotateCollection(rawUserResults.results ?? [], `turns:${userId}`),
+            { queryText },
+          );
+          if (debugRecovery) {
+            rawUserRecoveryDebug = reranked.debug.slice(0, 8).map((item) => ({
+              ...item,
+              selected: false,
+            }));
+          }
+          recoveryCandidates.push(
+            ...reranked.ranked.map((item) => ({
+              ...item,
+              finalScore: typeof item.finalScore === "number" ? item.finalScore : item.score,
+              metadata: {
+                ...item.metadata,
+                recovery_fallback: true,
+                recovery_scope: "user_turns",
+              },
+            })),
+          );
+        }
+
+        const fittedRecovery = fitPromptBudget(
+          dedupeRecoveryCandidates(recoveryCandidates),
+          recoveryReserveTokens,
+        );
+        recoveryItems = fittedRecovery;
+        if (debugRecovery && rawUserRecoveryDebug.length > 0) {
+          const selectedIDs = new Set(
+            fittedRecovery
+              .filter((item) => item.metadata.recovery_scope === "user_turns")
+              .map((item: SearchResult) => item.id),
+          );
+          rawUserRecoveryDebug = rawUserRecoveryDebug.map((item) => ({
+            ...item,
+            selected: selectedIDs.has(item.id),
+          }));
+        }
       }
 
       const selected = [
@@ -598,6 +663,13 @@ export function buildContextEngineFactory(
         messages: [...selectedMessages, ...messages],
         estimatedTokens: countTokens(selectedMessages) + countTokens(messages),
         systemPromptAddition: buildMemoryHeader(selected),
+        _debug: debugRecovery
+          ? {
+              recoveryTriggerFired: recoveryTrigger.fire,
+              crossSessionRawRecovery,
+              rawUserRecoveryCandidates: rawUserRecoveryDebug,
+            }
+          : undefined,
       };
     },
     async compact({ sessionId, force, targetSize }: ContextCompactArgs) {
@@ -834,6 +906,19 @@ function groupAccessCountUpdates(items: SearchResult[]): Array<{ collection: str
     grouped.set(collection, ids);
   }
   return [...grouped.entries()].map(([collection, ids]) => ({ collection, ids }));
+}
+
+function dedupeRecoveryCandidates(items: SearchResult[]): SearchResult[] {
+  const byKey = new Map<string, SearchResult>();
+  for (const item of items) {
+    const collection = typeof item.metadata.collection === "string" ? item.metadata.collection : "";
+    const key = `${collection}::${item.id}`;
+    const existing = byKey.get(key);
+    if (!existing || (item.finalScore ?? item.score) > (existing.finalScore ?? existing.score)) {
+      byKey.set(key, item);
+    }
+  }
+  return [...byKey.values()].sort((left, right) => (right.finalScore ?? right.score) - (left.finalScore ?? left.score));
 }
 
 function clampFraction(value: number | undefined): number {

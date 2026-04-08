@@ -44,6 +44,16 @@ type BenchmarkRecord = {
   evidence_turn_count: number;
   evidence_session_ids: string[];
   evidence_snippets: string[];
+  raw_user_recovery_candidates?: Array<{
+    id: string;
+    text: string;
+    selected: boolean;
+    semanticScore: number;
+    lexicalCoverage: number;
+    recencyScore: number;
+    finalScore: number;
+    rationale: string;
+  }>;
   error?: string;
 };
 
@@ -242,6 +252,7 @@ async function runInstance({
     evidence_turn_count: escapedEvidenceTurns.length,
     evidence_session_ids: [...evidenceSessionIds].sort(),
     evidence_snippets: evidenceSnippets,
+    raw_user_recovery_candidates: assembled._debug?.rawUserRecoveryCandidates,
   };
 }
 
@@ -261,6 +272,7 @@ function errorRecord(instance: LongMemEvalInstance, error: unknown): BenchmarkRe
     evidence_turn_count: 0,
     evidence_session_ids: [],
     evidence_snippets: [],
+    raw_user_recovery_candidates: [],
     error: error instanceof Error ? error.message : String(error),
   };
 }

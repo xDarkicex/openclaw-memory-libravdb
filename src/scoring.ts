@@ -32,6 +32,22 @@ interface HopOptions {
   thetaHop?: number;
 }
 
+interface RawUserRecoveryOptions {
+  queryText: string;
+  nowMs?: number;
+  recencyLambda?: number;
+}
+
+export interface RawUserRecoveryDebugCandidate {
+  id: string;
+  text: string;
+  semanticScore: number;
+  lexicalCoverage: number;
+  recencyScore: number;
+  finalScore: number;
+  rationale: string;
+}
+
 interface ExpansionOptions {
   confidenceThreshold?: number;
   maxDepth?: number;
@@ -296,6 +312,61 @@ export function expandSection7HopCandidates(
     .sort((left, right) => (right.finalScore ?? 0) - (left.finalScore ?? 0));
 }
 
+export function rankRawUserRecoveryCandidates(
+  items: SearchResult[],
+  opts: RawUserRecoveryOptions,
+): { ranked: SearchResult[]; debug: RawUserRecoveryDebugCandidate[] } {
+  const now = opts.nowMs ?? Date.now();
+  const recencyLambda = Math.max(0, opts.recencyLambda ?? 0.00001);
+  const keywords = extractKeywords(opts.queryText);
+
+  const ranked = items
+    .map((item) => {
+      const semanticScore = clamp01(typeof item.score === "number" ? item.score : 0);
+      const lexicalCoverage = normalizedKeywordCoverage(keywords, item.text);
+      const recencyScore = computeRecencyScore(item, now, recencyLambda);
+      const finalScore = clamp01((0.30 * semanticScore) + (0.60 * lexicalCoverage) + (0.10 * recencyScore));
+      const rationale = buildRawUserRecoveryRationale({
+        semanticScore,
+        lexicalCoverage,
+        recencyScore,
+      });
+
+      return {
+        ranked: {
+          ...item,
+          finalScore,
+        },
+        debug: {
+          id: item.id,
+          text: item.text,
+          semanticScore,
+          lexicalCoverage,
+          recencyScore,
+          finalScore,
+          rationale,
+        },
+      };
+    })
+    .sort((left, right) => {
+      if (right.ranked.finalScore !== left.ranked.finalScore) {
+        return (right.ranked.finalScore ?? 0) - (left.ranked.finalScore ?? 0);
+      }
+      if (right.debug.lexicalCoverage !== left.debug.lexicalCoverage) {
+        return right.debug.lexicalCoverage - left.debug.lexicalCoverage;
+      }
+      if (right.debug.semanticScore !== left.debug.semanticScore) {
+        return right.debug.semanticScore - left.debug.semanticScore;
+      }
+      return left.ranked.id.localeCompare(right.ranked.id);
+    });
+
+  return {
+    ranked: ranked.map((entry) => entry.ranked),
+    debug: ranked.map((entry) => entry.debug),
+  };
+}
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
@@ -390,6 +461,30 @@ function normalizedFrequency(accessCount: number, maxAccessCount: number): numbe
     return 0;
   }
   return Math.log(1 + accessCount) / Math.log(1 + maxAccessCount + 1);
+}
+
+function computeRecencyScore(item: SearchResult, now: number, recencyLambda: number): number {
+  const ts = typeof item.metadata.ts === "number" ? item.metadata.ts : now;
+  const ageSeconds = Math.max(0, now - ts) / 1000;
+  return Math.exp(-recencyLambda * ageSeconds);
+}
+
+function buildRawUserRecoveryRationale(scores: {
+  semanticScore: number;
+  lexicalCoverage: number;
+  recencyScore: number;
+}): string {
+  const lexicalDelta = scores.lexicalCoverage - scores.semanticScore;
+  if (lexicalDelta > 0.15) {
+    return "lexical coverage lifted this candidate above its semantic score";
+  }
+  if (lexicalDelta < -0.15) {
+    return "semantic similarity carried this candidate despite weaker lexical coverage";
+  }
+  if (scores.recencyScore > 0.9) {
+    return "semantic and lexical scores were close; recency broke the tie";
+  }
+  return "semantic and lexical scores were balanced";
 }
 
 function extractKeywords(text: string): string[] {

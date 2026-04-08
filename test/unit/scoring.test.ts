@@ -5,6 +5,7 @@ import {
   expandSummaryCandidates,
   expandSection7HopCandidates,
   mergeSection7VariantCandidates,
+  rankRawUserRecoveryCandidates,
   rankSection7VariantCandidates,
   scoreCandidates,
 } from "../../src/scoring.js";
@@ -539,4 +540,29 @@ test("rankSection7VariantCandidates stays bounded with empty keywords and cold-s
   assert.ok(Number.isFinite(ranked[0]?.finalScore ?? NaN));
   assert.ok((ranked[0]?.finalScore ?? -1) >= 0);
   assert.ok((ranked[0]?.finalScore ?? 2) <= 1);
+});
+
+test("rankRawUserRecoveryCandidates favors tighter lexical match over broader topical turn", () => {
+  const now = Date.now();
+  const { ranked, debug } = rankRawUserRecoveryCandidates([
+    {
+      id: "broad-topic",
+      score: 0.92,
+      text: "I am trying to get more organized and stay on top of my tasks with better productivity tools.",
+      metadata: { ts: now - 60_000, userId: "u1" },
+    },
+    {
+      id: "exact-turn",
+      score: 0.74,
+      text: "I joined a Data Analysis using Python webinar and want to pick between Matplotlib or Seaborn for charts.",
+      metadata: { ts: now - 30_000, userId: "u1" },
+    },
+  ], {
+    queryText: "Should I start with Matplotlib or Seaborn after my Data Analysis using Python webinar?",
+    nowMs: now,
+  });
+
+  assert.equal(ranked[0]?.id, "exact-turn");
+  assert.equal(debug[0]?.id, "exact-turn");
+  assert.ok((debug[0]?.lexicalCoverage ?? 0) > (debug[1]?.lexicalCoverage ?? 0));
 });

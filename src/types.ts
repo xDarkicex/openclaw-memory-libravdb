@@ -196,6 +196,20 @@ export interface ContextAssembleResult {
   estimatedTokens: number;
   systemPromptAddition: string;
   _profile?: string[];
+  _debug?: {
+    recoveryTriggerFired?: boolean;
+    crossSessionRawRecovery?: boolean;
+    rawUserRecoveryCandidates?: Array<{
+      id: string;
+      text: string;
+      selected: boolean;
+      semanticScore: number;
+      lexicalCoverage: number;
+      recencyScore: number;
+      finalScore: number;
+      rationale: string;
+    }>;
+  };
 }
 
 export interface ContextCompactArgs {

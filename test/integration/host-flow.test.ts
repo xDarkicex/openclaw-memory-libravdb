@@ -927,6 +927,46 @@ test("ingest skips durable user insert when gating score is below threshold", as
   assert.ok(!rpc.inserted.some((item) => item.collection === "user:u1"));
 });
 
+test("assemble recovers exact historical user turns from turns:user when the query session is fresh", async () => {
+  const rpc = new ProjectionStoreRpc();
+  rpc.gatingResult = { ...rpc.gatingResult, g: 0.2 };
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.5,
+    ingestionGateThreshold: 0.35,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.bootstrap({ sessionId: "history", userId: "u1" });
+  await context.ingest({
+    sessionId: "history",
+    userId: "u1",
+    message: {
+      role: "user",
+      content: "Bought Samsung Galaxy S22 for Hawaii adapter.",
+    },
+  });
+
+  assert.equal((rpc.collections.get("user:u1") ?? []).length, 0, "durable user memory should stay empty for this low-gate turn");
+  assert.equal((rpc.collections.get("turns:u1") ?? []).length, 1, "raw per-user turn index should capture the turn");
+
+  await context.bootstrap({ sessionId: "fresh", userId: "u1" });
+  const assembled = await context.assemble({
+    sessionId: "fresh",
+    userId: "u1",
+    messages: [{ role: "user", content: "Samsung Galaxy S22 Hawaii adapter?" }],
+    tokenBudget: 400,
+  });
+
+  assert.match(assembled.systemPromptAddition, /Samsung Galaxy S22/);
+  assert.equal(rpc.calls.get("query_raw_session") ?? 0, 0, "fresh-session recovery should not rely on session_raw");
+  assert.ok((rpc.calls.get("search_text") ?? 0) >= 4, "fresh-session recovery should search turns:user in addition to the normal collections");
+});
+
 test("assemble caches user and global hits under the new memory prompt contract", async () => {
   const rpc = new FakeRpc();
   const recallCache = createRecallCache<SearchResult>();
