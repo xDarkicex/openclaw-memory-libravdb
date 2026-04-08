@@ -75,3 +75,11 @@ Before opening a PR:
 - any new gating signal must come with calibration or invariant coverage
 - any retrieval math change must be reflected in [mathematics-v2.md](./mathematics-v2.md)
 - any gating change must be reflected in [gating.md](./gating.md)
+
+## Release Versioning
+
+`package.json` is the source of truth for the release version.
+
+The release automation syncs `openclaw.plugin.json` from `package.json` during the
+auto-bump/tag flow, and the publish workflow refuses to publish if the Git tag,
+`package.json`, and `openclaw.plugin.json` versions do not all match.

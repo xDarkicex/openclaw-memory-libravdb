@@ -50,6 +50,7 @@ jobs:
         id: version
         run: |
           npm version "${{ steps.bump.outputs.type }}" --no-git-tag-version
+          node --input-type=module -e 'import fs from "node:fs"; const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); const manifest = JSON.parse(fs.readFileSync("openclaw.plugin.json", "utf8")); manifest.version = pkg.version; fs.writeFileSync("openclaw.plugin.json", `${JSON.stringify(manifest, null, 2)}\n`);'
           version=$(node -p "require('./package.json').version")
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -57,7 +58,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json
+          git add package.json openclaw.plugin.json
           git commit -m "Bump version to ${{ steps.version.outputs.version }}"
           git tag "v${{ steps.version.outputs.version }}"
           git push origin HEAD:main --tags
