@@ -131,7 +131,7 @@ If your daemon runs elsewhere, set an explicit `sidecarPath`, for example:
 
 ```text
 OpenClaw host
-  -> memoryPromptSection (durable user/global recall)
+  -> memoryPromptSection (static capability header)
   -> memory runtime bridge (built-in memory_search)
   -> context engine (bootstrap / ingest / assemble / compact)
   -> plugin runtime

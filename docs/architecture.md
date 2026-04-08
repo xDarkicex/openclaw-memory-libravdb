@@ -10,7 +10,7 @@ repository as of the current `main` branch.
 flowchart LR
   Host["OpenClaw host process\n(TypeScript plugin shell)"]
   CE["Context engine factory\nbootstrap / ingest / assemble / compact"]
-  MPS["memoryPromptSection\nuser+global recall"]
+  MPS["memoryPromptSection\nstatic header"]
   Runtime["Plugin runtime\nlazy daemon connect + RPC client"]
   Sidecar["Go daemon process"]
   RPC["JSON-RPC over newline-delimited frames\nUnix socket or TCP loopback on Windows"]
@@ -28,7 +28,6 @@ flowchart LR
   Host --> CE
   Host --> MPS
   CE --> Runtime
-  MPS --> Runtime
   Runtime --> RPC
   RPC --> Sidecar
   Sidecar --> Embed
@@ -80,17 +79,12 @@ Important constraints from the current implementation:
 
 Implemented in [`src/memory-provider.ts`](../src/memory-provider.ts).
 
-Before the main assembly path runs, the plugin builds a lightweight recall
-section:
+Before the main assembly path runs, the plugin returns a lightweight static
+header fragment that tells the host persistent memory is active.
 
-1. search `user:<userId>`
-2. search `global`
-3. hybrid-rank the combined hits
-4. fit them to a fixed prompt budget of `800` estimated tokens
-5. return a textual header fragment for the host prompt
-
-This path does not search session memory. Its job is durable context recall, not
-active-turn recall.
+This path is intentionally synchronous and does not perform RPC retrieval.
+Durable recall now happens entirely inside `assemble`, which keeps embedded
+prompt construction compatible with OpenClaw's synchronous memory prompt hook.
 
 ### 2.3 `assemble`
 
@@ -107,7 +101,7 @@ For the current query text (last message content), the host:
 
 Current implementation details that matter:
 
-- user/global hits may be reused from the earlier prompt-section cache
+- user/global hits are cached within `assemble` and reused on repeated queries
 - `assemble` falls back to the unmodified message list on RPC failure
 - `assemble` does not mutate the original `messages` array in place; it returns
   a new array
@@ -146,7 +140,7 @@ from the original spec phrasing.
 |---|---|---|
 | Daemon unavailable on first RPC use | `getRpc()` rejects when first connect or health check fails | That hook fails or falls back, but plugin registration itself does not crash eagerly |
 | Daemon connection closes mid-session | `SidecarSupervisor` retries with exponential backoff until retry budget is exhausted, then enters degraded mode | Memory becomes unavailable until the daemon is reachable again |
-| `memoryPromptSection` RPC failure | individual searches are caught and replaced with empty result sets | Prompt section becomes empty rather than crashing the run |
+| `memoryPromptSection` failure | returns a static header with no RPC dependency | Prompt section stays available and does not block the run |
 | `assemble` RPC failure | returns original messages, original token count, and empty `systemPromptAddition` | That turn gets no recall augmentation |
 | `ingest` gating or durable insert failure | session write already happened; durable promotion is skipped | Session memory survives, durable memory may miss that turn |
 | Compaction summarizer unavailable | extractive summarizer remains required; optional abstractive path is skipped | Compaction still runs extractively when extractive is healthy |
