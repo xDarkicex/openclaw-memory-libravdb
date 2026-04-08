@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -268,13 +269,42 @@ export function daemonProvisioningHint(): string {
 }
 
 export function defaultEndpoint(platform = process.platform, homeDir = os.homedir()): string {
+  // Honour the daemon's own env var first (set by Homebrew LaunchAgent / systemd unit).
+  const envEndpoint = process.env.LIBRAVDB_RPC_ENDPOINT?.trim();
+  if (envEndpoint && isConfiguredEndpoint(envEndpoint)) {
+    return envEndpoint;
+  }
+
   if (platform === "win32") {
     return "tcp:127.0.0.1:37421";
   }
+
+  const sockName = "libravdb.sock";
+  const candidateDirs = [
+    // User-local (npm plugin convention)
+    homeDir?.trim() ? path.join(homeDir, ".clawdb", "run") : null,
+    // Homebrew (Apple Silicon) — matches the Homebrew formula LaunchAgent
+    "/opt/homebrew/var/clawdb/run",
+    // Homebrew (Intel Mac) / manual Linux installs
+    "/usr/local/var/clawdb/run",
+  ].filter((d): d is string => d !== null);
+
+  for (const dir of candidateDirs) {
+    const sockPath = path.join(dir, sockName);
+    try {
+      if (fs.existsSync(sockPath)) {
+        return `unix:${sockPath}`;
+      }
+    } catch {
+      // Permission error or similar — skip this candidate.
+    }
+  }
+
+  // Fallback to the original user-local path so error messages stay familiar.
   const baseDir = homeDir?.trim()
     ? path.join(homeDir, ".clawdb", "run")
     : path.join(".", ".clawdb", "run");
-  return `unix:${path.join(baseDir, "libravdb.sock")}`;
+  return `unix:${path.join(baseDir, sockName)}`;
 }
 
 export function buildSidecarEnv(cfg: PluginConfig): Record<string, string> {
