@@ -700,6 +700,31 @@ test("afterTurn ingests the current user prompt even when OpenClaw persists it b
   assert.ok(!rpc.inserted.some((item) => item.collection === `turns:${durableNamespace}` && item.text === "stored"));
 });
 
+test("afterTurn keeps using the explicit user-scoped namespace when userId is available", async () => {
+  const rpc = new FakeRpc();
+  const recallCache = createRecallCache<SearchResult>();
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+  };
+
+  const getRpc = async () => rpc as never;
+  const context = buildContextEngineFactory(getRpc, cfg, recallCache);
+
+  await context.bootstrap({ sessionId: "s1", userId: "u-explicit" });
+  await context.afterTurn({
+    sessionId: "s1",
+    userId: "u-explicit",
+    prePromptMessageCount: 1,
+    messages: [
+      { role: "user", content: "remember explicit user namespace" },
+    ],
+  });
+
+  assert.ok(rpc.inserted.some((item) => item.collection === "turns:u-explicit" && item.text === "remember explicit user namespace"));
+  assert.ok(rpc.inserted.some((item) => item.collection === "user:u-explicit" && item.text === "remember explicit user namespace"));
+});
+
 test("assemble uses the sessionKey-derived durable namespace without changing retrieval weighting", async () => {
   const rpc = new ProjectionStoreRpc();
   const recallCache = createRecallCache<SearchResult>();

@@ -219,8 +219,9 @@ async function readStatus(
 ): Promise<MemoryRuntimeStatus & Record<string, unknown>> {
   try {
     const rpc = await getRpc();
-    const status = await rpc.call<MemoryRuntimeStatus>("status", {});
+    const status = await rpc.call<MemoryRuntimeStatus & Record<string, unknown>>("status", {});
     return {
+      ...status,
       backend: "builtin",
       provider: "libravdb",
       model: status.embeddingProfile ?? "unknown",

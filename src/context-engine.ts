@@ -122,9 +122,10 @@ export function buildContextEngineFactory(
       });
       return { ingested: result.ingested };
     },
-    async afterTurn({ sessionId, sessionKey, messages, prePromptMessageCount, isHeartbeat }: {
+    async afterTurn({ sessionId, sessionKey, userId, messages, prePromptMessageCount, isHeartbeat }: {
       sessionId: string;
       sessionKey?: string;
+      userId?: string;
       messages: Array<{ role: string; content: unknown }>;
       prePromptMessageCount: number;
       isHeartbeat?: boolean;
@@ -157,6 +158,7 @@ export function buildContextEngineFactory(
           clearElevatedCacheForSession,
           sessionId,
           sessionKey,
+          userId,
           message: {
             ...normalized,
             id: `after-turn:${index}`,

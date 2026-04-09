@@ -205,7 +205,8 @@ global memory remain the most stable.
 
 When the host supplies an explicit `userId`, the durable namespace matches that
 `userId`. When the host does not provide a `userId`, the plugin derives a stable
-durable namespace from the session key so the retrieval math and scope
+durable namespace from the session key, or falls back to `session:${sessionId}`
+when both `userId` and `sessionKey` are absent, so the retrieval math and scope
 weighting stay unchanged even when the host does not expose a separate user principal.
 
 **Note on symbol disambiguation.** The symbol $\lambda_s$ here denotes the
