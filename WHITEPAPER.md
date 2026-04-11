@@ -9,7 +9,7 @@
 
 AI assistants forget. Every session starts cold, every context window has a hard token ceiling, and standard retrieval-augmented systems treat memory as a flat similarity problem — the most semantically similar chunk wins, regardless of whether it is a behavioral rule, a fleeting remark, or yesterday's critical architectural decision.
 
-LibraVDB is an embedded, CPU-only memory system designed for long-horizon AI sessions. It partitions memory into structured tiers based on authorial intent and informational value, applies a domain-adaptive gate to decide what is worth remembering, and guarantees that continuity does not depend on summarization being perfect. The result is a system that keeps the right context in the prompt without blowing the token budget, degrades gracefully under failure, and never silently destroys what the author declared invariant.
+LibraVDB is an embedded memory system designed for long-horizon AI sessions. It partitions memory into structured tiers based on authorial intent and informational value, applies a domain-adaptive gate to decide what is worth remembering, and guarantees that continuity does not depend on summarization being perfect. The result is a system that keeps the right context in the prompt without blowing the token budget, degrades gracefully under failure, and never silently destroys what the author declared invariant.
 
 ---
 
