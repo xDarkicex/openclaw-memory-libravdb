@@ -30,7 +30,7 @@ None of these problems are solved by choosing a different similarity metric or a
 
 ## Design Goals
 
-- **CPU-only, no GPU dependency** — the entire embedding and summarization pipeline runs on commodity hardware as an embedded binary
+- **Local ONNX runtime with hardware acceleration support** — the embedding and summarization pipeline runs as an embedded binary and can use the runtime's available acceleration backend
 - **Single-process sidecar** — memory is managed by a Go daemon that the host plugin supervises; no cloud dependency, no network egress of session content
 - **Deterministic recall guarantees** — certain classes of content are injected unconditionally, independent of query similarity scores
 - **Bounded token usage** — every memory tier has a hard budget fraction; the system cannot silently overflow the host context window
