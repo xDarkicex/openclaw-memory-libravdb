@@ -8,7 +8,6 @@ and private design notes are kept out of the public index on purpose.
 - [uninstall.md](./uninstall.md) - Clean shutdown and removal guide for the plugin, daemon, and optional local data.
 - [architecture.md](./architecture.md) - Public system overview covering the plugin, daemon, storage, retrieval, and compaction flow.
 - [problem.md](./problem.md) - Technical argument for replacing the stock OpenClaw memory lifecycle in this use case.
-- [implementation.md](./implementation.md) - Non-obvious implementation decisions and their rationale.
 - [dependencies.md](./dependencies.md) - Why LibraVDB and slab-based storage were chosen for this plugin.
 - [models.md](./models.md) - ONNX model strategy, latency trade-offs, and shipped model roles.
 - [security.md](./security.md) - Security model, untrusted-memory framing, isolation guarantees, and deletion boundaries.

@@ -269,7 +269,6 @@ Good entry points:
 - [docs/installation.md](./docs/installation.md)
 - [docs/uninstall.md](./docs/uninstall.md)
 - [docs/architecture.md](./docs/architecture.md)
-- [docs/implementation.md](./docs/implementation.md)
 
 ## For Researchers And Builders
 
@@ -289,7 +288,6 @@ Start here:
 
 - [docs/problem.md](./docs/problem.md)
 - [docs/architecture.md](./docs/architecture.md)
-- [docs/implementation.md](./docs/implementation.md)
 
 ## Runtime Facts
 
@@ -310,8 +308,6 @@ Start here:
 - [docs/uninstall.md](./docs/uninstall.md): clean shutdown and removal
 - [docs/architecture.md](./docs/architecture.md): current implemented system
   architecture
-- [docs/implementation.md](./docs/implementation.md): important implementation
-  contracts
 
 ## Current Constraint
 
