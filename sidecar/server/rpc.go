@@ -44,6 +44,7 @@ func New(embedder embed.Embedder, extractive summarize.Summarizer, abstractive s
 		"list_lifecycle_journal":   s.handleListLifecycleJournal,
 		"ensure_collections":       s.handleEnsureCollections,
 		"ingest_markdown_document": s.handleIngestMarkdownDocument,
+		"promote_dream_entries":    s.handlePromoteDreamEntries,
 		"delete_authored_document": s.handleDeleteAuthoredDocument,
 		"insert_text":              s.handleInsertText,
 		"insert_session_turn":      s.handleInsertSessionTurn,
@@ -108,6 +109,31 @@ type ingestMarkdownDocumentParams struct {
 
 type deleteAuthoredDocumentParams struct {
 	SourceDoc string `json:"sourceDoc"`
+}
+
+type promoteDreamEntriesParams struct {
+	UserID        string                `json:"userId"`
+	SourceDoc     string                `json:"sourceDoc"`
+	SourceRoot    string                `json:"sourceRoot,omitempty"`
+	SourcePath    string                `json:"sourcePath,omitempty"`
+	SourceKind    string                `json:"sourceKind,omitempty"`
+	FileHash      string                `json:"fileHash,omitempty"`
+	SourceSize    int64                 `json:"sourceSize,omitempty"`
+	SourceMtimeMs int64                 `json:"sourceMtimeMs,omitempty"`
+	IngestVersion int                   `json:"ingestVersion,omitempty"`
+	HashBackend   string                `json:"hashBackend,omitempty"`
+	Entries       []dreamPromotionEntry `json:"entries"`
+}
+
+type dreamPromotionEntry struct {
+	Text          string         `json:"text"`
+	Score         float64        `json:"score"`
+	RecallCount   int            `json:"recallCount"`
+	UniqueQueries int            `json:"uniqueQueries"`
+	Section       string         `json:"section,omitempty"`
+	Line          int            `json:"line,omitempty"`
+	SourceLine    int            `json:"sourceLine,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
 }
 
 type markdownSourceMeta struct {
@@ -240,6 +266,11 @@ type exportMemoryRecord struct {
 
 type exportMemoryResult struct {
 	Records []exportMemoryRecord `json:"records"`
+}
+
+type dreamPromotionResult struct {
+	Promoted int `json:"promoted"`
+	Rejected int `json:"rejected"`
 }
 
 func (s *Server) handleHealth(_ context.Context, _ any) (any, error) {
@@ -387,6 +418,47 @@ func (s *Server) handleIngestMarkdownDocument(ctx context.Context, raw any) (any
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+func (s *Server) handlePromoteDreamEntries(ctx context.Context, raw any) (any, error) {
+	var params promoteDreamEntriesParams
+	if err := decode(raw, &params); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(params.UserID) == "" {
+		return nil, fmt.Errorf("userId is required")
+	}
+	if strings.TrimSpace(params.SourceDoc) == "" {
+		return nil, fmt.Errorf("sourceDoc is required")
+	}
+
+	entries := make([]store.DreamPromotionEntry, 0, len(params.Entries))
+	for _, entry := range params.Entries {
+		entries = append(entries, store.DreamPromotionEntry{
+			Text:          entry.Text,
+			Score:         entry.Score,
+			RecallCount:   entry.RecallCount,
+			UniqueQueries: entry.UniqueQueries,
+			Section:       entry.Section,
+			Line:          firstNonZero(entry.Line, entry.SourceLine),
+			Metadata:      entry.Metadata,
+		})
+	}
+
+	result, err := s.Store.PromoteDreamEntries(ctx, params.UserID, params.SourceDoc, store.DreamSourceMetadata{
+		SourceRoot:    params.SourceRoot,
+		SourcePath:    params.SourcePath,
+		SourceKind:    firstNonEmpty(params.SourceKind, "dream"),
+		FileHash:      params.FileHash,
+		SourceSize:    params.SourceSize,
+		SourceMtimeMs: params.SourceMtimeMs,
+		IngestVersion: params.IngestVersion,
+		HashBackend:   params.HashBackend,
+	}, entries)
+	if err != nil {
+		return nil, err
+	}
+	return dreamPromotionResult(result), nil
 }
 
 func (s *Server) handleDeleteAuthoredDocument(ctx context.Context, raw any) (any, error) {
@@ -675,4 +747,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }

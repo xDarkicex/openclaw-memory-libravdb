@@ -13,6 +13,7 @@ import {
   rankSection7VariantCandidates,
 } from "./scoring.js";
 import { buildInjectedMemoryMessageContent, buildMemoryHeader, recentIds } from "./recall-utils.js";
+import { detectDreamQuerySignal, resolveDreamCollection } from "./dream-routing.js";
 import {
   decideTemporalSelectorGuard,
   detectTemporalQuerySignal,
@@ -187,11 +188,12 @@ export function buildContextEngineFactory(
           systemPromptAddition: "",
         } satisfies ContextAssembleResult;
       }
+      const dreamQuery = detectDreamQuerySignal(queryText);
       const temporalQuery = detectTemporalQuerySignal(queryText);
       const temporalSelectorGuard = decideTemporalSelectorGuard(queryText, temporalQuery);
 
       const excluded = recentIds(normalizedMessages, 4);
-      const cached = recallCache.take({ userId: durableNamespace, queryText });
+      const cached = dreamQuery.active ? undefined : recallCache.take({ userId: durableNamespace, queryText });
 
       const rpc = await getRpc();
 
@@ -252,6 +254,7 @@ export function buildContextEngineFactory(
           cached,
           excluded,
           queryText,
+          dreamQuery,
           temporalQuery,
           temporalSelectorGuard,
           sessionId,
@@ -289,6 +292,7 @@ export function buildContextEngineFactory(
       cached,
       excluded,
       queryText,
+      dreamQuery,
       temporalQuery,
       temporalSelectorGuard,
       sessionId,
@@ -308,6 +312,7 @@ export function buildContextEngineFactory(
       cached: ReturnType<RecallCache<SearchResult>["take"]>;
       excluded: string[];
       queryText: string;
+      dreamQuery: ReturnType<typeof detectDreamQuerySignal>;
       temporalQuery: ReturnType<typeof detectTemporalQuerySignal>;
       temporalSelectorGuard: ReturnType<typeof decideTemporalSelectorGuard>;
       sessionId: string;
@@ -321,6 +326,52 @@ export function buildContextEngineFactory(
       const memoryBudget = tokenBudget * (cfg.tokenBudgetFraction ?? 0.25);
       const hardItems = authoredHard;
       const hardUsed = tokenCostSum(hardItems);
+      const dreamMode = dreamQuery.active;
+      const dreamCollection = resolveDreamCollection(userId);
+
+      if (dreamMode) {
+        const authoredSoftTarget = Math.max(0, memoryBudget * (cfg.authoredSoftBudgetFraction ?? 0.3));
+        const softBudget = Math.max(0, Math.min(authoredSoftTarget, memoryBudget - hardUsed));
+        const softItems = fitPromptBudget(authoredSoft, softBudget);
+        const remainingBudget = Math.max(0, memoryBudget - hardUsed - tokenCostSum(softItems));
+
+        profiler?.mark("dream_search");
+        const dreamTopK = Math.max(cfg.topK ?? 8, 1);
+        const dreamHits = await rpc.call<{ results: SearchResult[] }>("search_text", {
+          collection: dreamCollection,
+          text: queryText,
+          k: dreamTopK,
+        });
+
+        profiler?.mark("dream_rank");
+        const rankedDream = rankSection7VariantCandidates(
+          annotateCollection(dreamHits.results ?? [], dreamCollection),
+          {
+            queryText,
+            k1: dreamTopK,
+            k2: dreamTopK,
+            theta1: cfg.section7Theta1,
+            kappa: cfg.section7Kappa,
+            authorityRecencyLambda: cfg.section7AuthorityRecencyLambda,
+            authorityRecencyWeight: cfg.section7AuthorityRecencyWeight,
+            authorityFrequencyWeight: cfg.section7AuthorityFrequencyWeight,
+            authorityAuthoredWeight: cfg.section7AuthorityAuthoredWeight,
+            sessionId,
+            userId,
+          },
+        );
+        const dreamItems = fitPromptBudget(rankedDream, remainingBudget);
+        const selected = [...hardItems, ...softItems, ...dreamItems];
+        const selectedMessages = selected.map((item) => ({
+          role: "system",
+          content: buildInjectedMemoryMessageContent(item),
+        }));
+        return {
+          messages: [...selectedMessages, ...visibleMessages],
+          estimatedTokens: countTokens(selectedMessages) + countTokens(visibleMessages),
+          systemPromptAddition: buildMemoryHeader(selected),
+        };
+      }
 
       profiler?.mark("session");
       const sessionRecords = await rpc.call<{ results: SearchResult[] }>("list_by_meta", {
@@ -397,7 +448,10 @@ export function buildContextEngineFactory(
       const searchSessionSummary = useSessionSummarySearchExperiment(cfg);
       let sessionSearchCollection = `session:${sessionId}`;
       let sessionExcludeIds = [...excluded, ...recentTailIDs];
-      if (searchSessionSummary) {
+      if (dreamMode) {
+        sessionSearchCollection = dreamCollection;
+        sessionExcludeIds = [...excluded];
+      } else if (searchSessionSummary) {
         const summaryCollection = sessionSummaryCollection(sessionId);
         const summaryRecords = await rpc.call<{ results: SearchResult[] }>("list_collection", {
           collection: summaryCollection,
@@ -423,14 +477,18 @@ export function buildContextEngineFactory(
 
       profiler?.mark("recall_user_global");
       const [userHits, globalHits] = await Promise.all([
-        cached?.userHits
+        dreamMode
+          ? Promise.resolve({ results: [] as SearchResult[] })
+          : cached?.userHits
           ? Promise.resolve({ results: cached.userHits })
           : rpc.call<{ results: SearchResult[] }>("search_text", {
               collection: `user:${userId}`,
               text: queryText,
               k: Math.ceil((cfg.topK ?? 8) / 2),
             }),
-        cached?.globalHits
+        dreamMode
+          ? Promise.resolve({ results: [] as SearchResult[] })
+          : cached?.globalHits
           ? Promise.resolve({ results: cached.globalHits })
           : rpc.call<{ results: SearchResult[] }>("search_text", {
               collection: "global",
@@ -439,7 +497,7 @@ export function buildContextEngineFactory(
             }),
       ]);
 
-      if (!cached) {
+      if (!cached && !dreamMode) {
         recallCache.put({
           userId,
           queryText,
@@ -453,7 +511,9 @@ export function buildContextEngineFactory(
       const authoredVariantKey = `${queryText}\n${coarseTopK}`;
       const cachedAuthoredVariantHits = authoredVariantRecallCache.get(authoredVariantKey);
       const [authoredVariantHits] = await Promise.all([
-        cachedAuthoredVariantHits
+        dreamMode
+          ? Promise.resolve({ results: [] as SearchResult[] })
+          : cachedAuthoredVariantHits
           ? Promise.resolve({ results: cachedAuthoredVariantHits })
           : rpc.call<{ results: SearchResult[] }>("search_text", {
               collection: AUTHORED_VARIANT_COLLECTION,
@@ -470,7 +530,9 @@ export function buildContextEngineFactory(
       const elevatedKey = `${sessionId}\n${elevatedGeneration}\n${userId}\n${queryText}`;
       const cachedElevated = elevatedRecallCache.get(elevatedKey);
       const [elevatedHits] = await Promise.all([
-        cachedElevated
+        dreamMode
+          ? Promise.resolve({ results: [] as SearchResult[] })
+          : cachedElevated
           ? Promise.resolve({ results: cachedElevated })
           : rpc.call<{ results: SearchResult[] }>("search_text_collections", {
               collections: [
@@ -489,7 +551,7 @@ export function buildContextEngineFactory(
       profiler?.mark("rank");
       const ranked = rankSection7VariantCandidates(
         [
-          ...annotateCollection(sessionHits.results, `session:${sessionId}`),
+          ...annotateCollection(sessionHits.results, sessionSearchCollection),
           ...elevatedHits.results,
           ...userHits.results,
           ...globalHits.results,
@@ -525,12 +587,19 @@ export function buildContextEngineFactory(
       // Recovery trigger is evaluated before variant fitting so healthy sessions
       // do not lose recall budget to an unused recovery reserve.
       profiler?.mark("recovery_trigger");
-      const recoveryTrigger = detectRetrievalFailure(mergedCandidates, {
-        floorScore: cfg.recoveryFloorScore ?? 0.15,
-        minTopK: cfg.recoveryMinTopK ?? 4,
-        meanConfidenceThresh: cfg.recoveryMinConfidenceMean ?? 0.5,
-      });
-      const crossSessionRawRecovery =
+      const recoveryTrigger = dreamMode
+        ? {
+            signal1CascadeTier3: false,
+            signal2TopScoreBelowFloor: false,
+            signal3AllSummariesLowConfidence: false,
+            fire: false,
+          }
+        : detectRetrievalFailure(mergedCandidates, {
+            floorScore: cfg.recoveryFloorScore ?? 0.15,
+            minTopK: cfg.recoveryMinTopK ?? 4,
+            meanConfidenceThresh: cfg.recoveryMinConfidenceMean ?? 0.5,
+          });
+      const crossSessionRawRecovery = !dreamMode &&
         rawSessionTurns.length === 0 &&
         sessionHits.results.length === 0;
       const recoveryReserveTokens = (recoveryTrigger.fire || crossSessionRawRecovery)
@@ -571,7 +640,7 @@ export function buildContextEngineFactory(
       let recoveryItems: SearchResult[] = [];
       let rawUserRecoveryDebug: NonNullable<NonNullable<ContextAssembleResult["_debug"]>["rawUserRecoveryCandidates"]> = [];
       let temporalRecoveryResult: TemporalRecoveryRankingResult | null = null;
-      if (recoveryTrigger.fire || crossSessionRawRecovery) {
+      if (!dreamMode && (recoveryTrigger.fire || crossSessionRawRecovery)) {
         profiler?.mark("recovery_expand");
         const recoveryExcludeIDs = [...excluded, ...recentTailIDs, ...theoremSelectedIDs];
         const recoveryCandidates: SearchResult[] = [];

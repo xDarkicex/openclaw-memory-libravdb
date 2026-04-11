@@ -146,6 +146,13 @@ class FakeRpc {
                 text: `session recall for ${collection}`,
                 metadata: { sessionId: collection.slice("session:".length), ts: Date.now(), collection },
               }]
+            : collection.startsWith("dream:")
+              ? [{
+                  id: collection,
+                  score: 0.86,
+                  text: `dream recall for ${collection}`,
+                  metadata: { userId: collection.slice("dream:".length), ts: Date.now(), collection },
+                }]
             : [];
         return { results } as T;
       }
@@ -785,6 +792,82 @@ test("assemble uses the sessionKey-derived durable namespace without changing re
   assert.ok(userIndex >= 0, "expected derived durable namespace memory in assembled recall");
   assert.ok(globalIndex >= 0, "expected stale global summary in assembled recall");
   assert.ok(userIndex < globalIndex, "expected fresher durable namespace memory to outrank stale global summary");
+});
+
+test("assemble routes explicit dream questions to the dedicated dream collection", async () => {
+  const rpc = new ProjectionStoreRpc();
+  const recallCache = createRecallCache<SearchResult>();
+  const now = Date.now();
+
+  rpc.collections.set("dream:u1", [
+    {
+      id: "dream-1",
+      score: 0.94,
+      text: "dream recall for vector data store",
+      metadata: {
+        userId: "u1",
+        ts: now,
+        collection: "dream:u1",
+        token_estimate: 4,
+      },
+    },
+  ]);
+  rpc.collections.set("user:u1", [
+    {
+      id: "user-1",
+      score: 0.99,
+      text: "ordinary user memory should stay out of dream recall",
+      metadata: {
+        userId: "u1",
+        ts: now,
+        collection: "user:u1",
+        token_estimate: 4,
+      },
+    },
+  ]);
+  rpc.collections.set("global", [
+    {
+      id: "global-1",
+      score: 0.99,
+      text: "ordinary global memory should stay out of dream recall",
+      metadata: {
+        ts: now,
+        collection: "global",
+        token_estimate: 4,
+      },
+    },
+  ]);
+
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    topK: 8,
+    tokenBudgetFraction: 0.8,
+    section7CoarseTopK: 8,
+    section7SecondPassTopK: 8,
+    section7Theta1: 0,
+    section7Kappa: 0.3,
+    section7AuthorityRecencyLambda: 0,
+    section7AuthorityRecencyWeight: 0,
+    section7AuthorityFrequencyWeight: 0,
+    section7AuthorityAuthoredWeight: 1,
+  };
+
+  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  await context.bootstrap({ sessionId: "s1", userId: "u1" });
+
+  const assembled = await context.assemble({
+    sessionId: "s1",
+    userId: "u1",
+    messages: [{ role: "user", content: "tell me about your dreams from last week" }],
+    tokenBudget: 200,
+  });
+
+  assert.match(assembled.systemPromptAddition, /dream recall for vector data store/);
+  assert.ok(!assembled.systemPromptAddition.includes("ordinary user memory should stay out of dream recall"));
+  assert.ok(!assembled.systemPromptAddition.includes("ordinary global memory should stay out of dream recall"));
+  assert.equal(rpc.calls.get("search_text_collections") ?? 0, 0);
+  assert.deepEqual(rpc.searchedCollections, ["dream:u1"]);
+  assert.equal(rpc.calls.get("query_raw_session") ?? 0, 0);
 });
 
 test("assemble preserves original host-visible messages even when retrieval normalizes its query surface", async () => {

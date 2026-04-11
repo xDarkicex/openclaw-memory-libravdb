@@ -301,6 +301,61 @@ func TestRPCBumpAccessCountsUpdatesMetadata(t *testing.T) {
 	}
 }
 
+func TestRPCPromoteDreamEntriesWritesDreamCollection(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	srv := New(fakeEmbedder{}, nil, nil, st, compact.DefaultGatingConfig(), 500)
+
+	got, err := srv.Call(ctx, "promote_dream_entries", map[string]any{
+		"userId":     "u1",
+		"sourceDoc":  "/tmp/DREAMS.md",
+		"sourceKind": "dream",
+		"fileHash":   "abc123",
+		"entries": []map[string]any{
+			{
+				"text":          "Preserve the tail",
+				"score":         0.82,
+				"recallCount":   3,
+				"uniqueQueries": 2,
+				"section":       "deep sleep",
+				"line":          9,
+			},
+			{
+				"text":          "skip me",
+				"score":         0.1,
+				"recallCount":   1,
+				"uniqueQueries": 1,
+				"section":       "deep sleep",
+				"line":          10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("promote_dream_entries error = %v", err)
+	}
+	result, ok := got.(dreamPromotionResult)
+	if !ok {
+		t.Fatalf("expected dreamPromotionResult, got %T", got)
+	}
+	if result.Promoted != 1 || result.Rejected != 1 {
+		t.Fatalf("unexpected promote result: %+v", result)
+	}
+
+	listed, err := st.ListCollection(ctx, store.DreamCollection("u1"))
+	if err != nil {
+		t.Fatalf("ListCollection(dream:u1) error = %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("expected one dream record, got %+v", listed)
+	}
+	if listed[0].Metadata["source_kind"] != "dream" {
+		t.Fatalf("source_kind = %+v, want dream", listed[0].Metadata["source_kind"])
+	}
+}
+
 func TestRPCUnknownMethodErrors(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.libravdb"), fakeEmbedder{})

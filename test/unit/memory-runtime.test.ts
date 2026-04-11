@@ -11,6 +11,17 @@ class FakeRpc {
     this.calls.push({ method, params });
 
     switch (method) {
+      case "search_text":
+        return {
+          results: [
+            {
+              id: "dream-1",
+              score: 0.93,
+              text: "dream recall item",
+              metadata: { collection: String(params.collection) },
+            },
+          ],
+        } as T;
       case "search_text_collections":
         {
           const collections = params.collections as string[] | undefined;
@@ -70,6 +81,21 @@ test("memory runtime bridge searches the resolved durable namespace under the la
   assert.equal(result.length, 1);
   assert.equal(result[0]?.snippet, "remembered item");
   assert.equal(result[0]?.source, "memory");
+});
+
+test("memory runtime bridge routes dream queries to the dream collection only", async () => {
+  const rpc = new FakeRpc();
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "tell me about your dreams from last week", userId: "u1" });
+
+  assert.ok(Array.isArray(result));
+  assert.equal(rpc.calls[1]?.method, "search_text");
+  assert.deepEqual(rpc.calls[1]?.params.collection, "dream:u1");
+  assert.equal(rpc.calls.some((call) => call.method === "search_text_collections"), false);
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.snippet, "dream recall item");
 });
 
 test("memory runtime bridge falls back to session-scoped namespace when no other identity is present", async () => {

@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveDurableNamespace } from "./durable-namespace.js";
+import { promoteDreamDiaryFile } from "./dream-promotion.js";
 import type { PluginRuntime } from "./plugin-runtime.js";
 import type { LoggerLike, PluginConfig } from "./types.js";
 
@@ -26,6 +27,7 @@ type ExportResult = {
 };
 
 type CliOptionBag = {
+  dreamFile?: string;
   userId?: string;
   sessionKey?: string;
   sessionId?: string;
@@ -94,6 +96,17 @@ export function registerMemoryCli(
       journal.option("--session-id <sessionId>", "Restrict journal entries to one session id");
       journal.option("--limit <limit>", "Maximum journal entries to show");
       journal.action((opts) => void runJournal(runtime, opts, logger));
+
+      const dreamPromote = ensureCommand(root, "dream-promote")
+        .description("Promote vetted dream diary entries into the dedicated dream collection");
+      if (dreamPromote.requiredOption) {
+        dreamPromote.requiredOption("--user-id <userId>", "User id whose dream collection should receive the promotion");
+        dreamPromote.requiredOption("--dream-file <path>", "Dream diary markdown file to promote from");
+      } else {
+        dreamPromote.option("--user-id <userId>", "User id whose dream collection should receive the promotion");
+        dreamPromote.option("--dream-file <path>", "Dream diary markdown file to promote from");
+      }
+      dreamPromote.action((opts) => void runDreamPromote(runtime, opts, logger));
     },
     {
       descriptors: [
@@ -203,6 +216,27 @@ async function runJournal(runtime: PluginRuntime, opts: CliOptionBag | undefined
     }
   } catch (error) {
     logger.error(`LibraVDB journal lookup failed: ${formatError(error)}`);
+    process.exitCode = 1;
+  }
+}
+
+async function runDreamPromote(runtime: PluginRuntime, opts: CliOptionBag | undefined, logger: LoggerLike): Promise<void> {
+  const userId = opts?.userId?.trim();
+  const dreamFile = opts?.dreamFile?.trim();
+  if (!userId || !dreamFile) {
+    logger.error("LibraVDB dream-promote requires --user-id <userId> and --dream-file <path>.");
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const rpc = await runtime.getRpc();
+    const result = await promoteDreamDiaryFile(rpc, { userId, diaryPath: dreamFile });
+    console.log(
+      `Promoted ${result.promoted ?? 0} dream entr${(result.promoted ?? 0) === 1 ? "y" : "ies"}; rejected ${result.rejected ?? 0}.`,
+    );
+  } catch (error) {
+    logger.error(`LibraVDB dream promotion failed: ${formatError(error)}`);
     process.exitCode = 1;
   }
 }

@@ -142,6 +142,40 @@ By default, the Obsidian adapter only auto-ingests notes that look like memory
 notes, using frontmatter tags or inline tags like `#project`. The OpenClaw
 stock `MEMORY.md` file is always eligible through the generic adapter path.
 
+## Dream Promotion
+
+Dream promotion is a separate, opt-in path for promoting vetted dream diary
+entries directly into a dedicated `dream:{userId}` collection.
+
+It does not use `MEMORY.md`. Instead, it expects a dream diary markdown file
+that contains explicit candidate bullets under promotion-oriented headings such
+as `## Deep Sleep`. Each promoted bullet should include a trailing metadata
+block with the gating fields:
+
+```md
+- Preserve the recent tail buffer {score=0.82 recall=3 unique=2}
+```
+
+Only bullets that satisfy the sidecar gates are inserted. The dream collection
+is isolated from normal `user:` and `global` retrieval by default, and dream
+phrasing in chat or search queries routes there automatically.
+
+Configure automatic diary watching with:
+
+- `dreamPromotionEnabled`
+- `dreamPromotionDiaryPath`
+- `dreamPromotionUserId`
+- `dreamPromotionDebounceMs`
+
+For a manual run, use:
+
+```bash
+openclaw memory dream-promote --user-id <userId> --dream-file /path/to/DREAMS.md
+```
+
+The manual command and the automatic watcher both go through the same sidecar
+promotion RPC, so the admission gates and provenance metadata are identical.
+
 ## Install Model
 
 This plugin is intentionally **connect-only** at install time.

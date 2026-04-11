@@ -85,6 +85,20 @@
         "type": "number",
         "default": 150
       },
+      "dreamPromotionEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "dreamPromotionDiaryPath": {
+        "type": "string"
+      },
+      "dreamPromotionUserId": {
+        "type": "string"
+      },
+      "dreamPromotionDebounceMs": {
+        "type": "number",
+        "default": 150
+      },
       "gatingWeights": {
         "type": "object",
         "additionalProperties": false,

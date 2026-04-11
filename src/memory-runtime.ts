@@ -1,6 +1,11 @@
 import type { RpcGetter } from "./plugin-runtime.js";
 import { resolveDurableNamespace } from "./durable-namespace.js";
+import { detectDreamQuerySignal, resolveDreamCollection } from "./dream-routing.js";
 import type { PluginConfig, SearchResult } from "./types.js";
+
+type RpcLike = {
+  call<T>(method: string, params: unknown): Promise<T>;
+};
 
 type MemorySearchParams = {
   query?: string;
@@ -78,6 +83,7 @@ function createMemorySearchManager(
         return legacyCall ? { results: [], error: "Missing query text for LibraVDB memory search" } : [];
       }
 
+      const dreamQuery = detectDreamQuerySignal(queryText);
       const sessionId = firstString(params.sessionId, params.context?.sessionId);
       const userId = resolveDurableNamespace({
         userId: firstString(params.userId, params.context?.userId),
@@ -86,21 +92,15 @@ function createMemorySearchManager(
         fallback: sessionId ? `session:${sessionId}` : undefined,
       });
       const k = normalizePositiveInteger(params.k, params.limit, params.topK, cfg.topK, 8);
-      const collections = resolveSearchCollections(cfg, userId, sessionId);
       const rpc = await getRpc();
 
-      const result = collections.length === 1
+      const result = dreamQuery.active
         ? await rpc.call<{ results: SearchResult[] }>("search_text", {
-            collection: collections[0],
+            collection: resolveDreamCollection(userId),
             text: queryText,
             k,
           })
-        : await rpc.call<{ results: SearchResult[] }>("search_text_collections", {
-            collections,
-            text: queryText,
-            k,
-            excludeByCollection: {},
-          });
+        : await searchResolvedCollections(rpc, cfg, userId, sessionId, queryText, k);
 
       const legacyResults = result.results.map((item) => ({
         ...item,
@@ -148,6 +148,29 @@ function createMemorySearchManager(
       // The sidecar connection is shared by the plugin runtime.
     },
   };
+}
+
+async function searchResolvedCollections(
+  rpc: RpcLike,
+  cfg: PluginConfig,
+  userId: string,
+  sessionId: string | undefined,
+  queryText: string,
+  k: number,
+): Promise<{ results: SearchResult[] }> {
+  const collections = resolveSearchCollections(cfg, userId, sessionId);
+  return collections.length === 1
+    ? await rpc.call<{ results: SearchResult[] }>("search_text", {
+        collection: collections[0],
+        text: queryText,
+        k,
+      })
+    : await rpc.call<{ results: SearchResult[] }>("search_text_collections", {
+        collections,
+        text: queryText,
+        k,
+        excludeByCollection: {},
+      });
 }
 
 function resolveSearchCollections(cfg: PluginConfig, userId: string, sessionId?: string): string[] {

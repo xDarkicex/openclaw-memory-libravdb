@@ -35,6 +35,10 @@ export interface PluginConfig {
   markdownIngestionExclude?: string[];
   markdownIngestionCollection?: string;
   markdownIngestionDebounceMs?: number;
+  dreamPromotionEnabled?: boolean;
+  dreamPromotionDiaryPath?: string;
+  dreamPromotionUserId?: string;
+  dreamPromotionDebounceMs?: number;
   gatingWeights?: {
     w1c?: number;
     w2c?: number;
