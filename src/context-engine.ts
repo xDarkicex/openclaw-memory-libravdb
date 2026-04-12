@@ -14,6 +14,7 @@ import {
 } from "./scoring.js";
 import { buildInjectedMemoryMessageContent, buildMemoryHeader, recentIds } from "./recall-utils.js";
 import { detectDreamQuerySignal, resolveDreamCollection } from "./dream-routing.js";
+import { resolveComparisonExperimentConfig } from "./comparison-experiments.js";
 import {
   decideTemporalSelectorGuard,
   detectTemporalQuerySignal,
@@ -59,6 +60,8 @@ export function buildContextEngineFactory(
   let authoredVariantCache: SearchResult[] | null = null;
   const authoredVariantRecallCache = new Map<string, SearchResult[]>();
   const afterTurnIngestedKeys = new Map<string, number>();
+  // Tracks accumulated uncompacted token count per session for auto-compaction
+  const sessionTokenAccumulators = new Map<string, number>();
 
   // Session-scoped elevated-guidance cache keyed by sessionId + generation + durable namespace + queryText
   const elevatedRecallCache = new Map<string, SearchResult[]>();
@@ -169,6 +172,20 @@ export function buildContextEngineFactory(
         if (result.ingested) {
           rememberAfterTurnIngest(afterTurnIngestedKeys, dedupeKey);
         }
+
+        // Auto-trigger compaction when the session's uncompacted token count exceeds
+        // the budget. This keeps session size bounded without relying on the host
+        // to call compact() explicitly.
+        const sessionTokenBudget = cfg.compactSessionTokenBudget ?? 2000;
+        if (sessionTokenBudget > 0) {
+          const tokens = estimateTokens(normalized.content);
+          const accumulated = (sessionTokenAccumulators.get(sessionId) ?? 0) + tokens;
+          sessionTokenAccumulators.set(sessionId, accumulated);
+          if (accumulated >= sessionTokenBudget) {
+            sessionTokenAccumulators.set(sessionId, 0);
+            void this.compact({ sessionId, force: false }).catch(() => {});
+          }
+        }
       }
     },
     async assemble({ sessionId, sessionKey, userId, messages, tokenBudget, ...rest }: ContextAssembleArgs & Record<string, unknown>) {
@@ -191,6 +208,8 @@ export function buildContextEngineFactory(
       const dreamQuery = detectDreamQuerySignal(queryText);
       const temporalQuery = detectTemporalQuerySignal(queryText);
       const temporalSelectorGuard = decideTemporalSelectorGuard(queryText, temporalQuery);
+      const comparisonExperiment = resolveComparisonExperimentConfig();
+      const emitComparisonProfile = comparisonExperiment.profilingEnabled;
 
       const excluded = recentIds(normalizedMessages, 4);
       const cached = dreamQuery.active ? undefined : recallCache.take({ userId: durableNamespace, queryText });
@@ -257,6 +276,8 @@ export function buildContextEngineFactory(
           dreamQuery,
           temporalQuery,
           temporalSelectorGuard,
+          comparisonExperiment,
+          emitComparisonProfile,
           sessionId,
           userId: durableNamespace,
           visibleMessages: originalMessages,
@@ -295,6 +316,8 @@ export function buildContextEngineFactory(
       dreamQuery,
       temporalQuery,
       temporalSelectorGuard,
+      comparisonExperiment,
+      emitComparisonProfile,
       sessionId,
       userId,
       visibleMessages,
@@ -315,6 +338,8 @@ export function buildContextEngineFactory(
       dreamQuery: ReturnType<typeof detectDreamQuerySignal>;
       temporalQuery: ReturnType<typeof detectTemporalQuerySignal>;
       temporalSelectorGuard: ReturnType<typeof decideTemporalSelectorGuard>;
+      comparisonExperiment: ReturnType<typeof resolveComparisonExperimentConfig>;
+      emitComparisonProfile: boolean;
       sessionId: string;
       userId: string;
       visibleMessages: MemoryMessage[];
@@ -607,8 +632,10 @@ export function buildContextEngineFactory(
         : 0;
       const isComparisonTemporalRecovery = temporalSelectorGuard.shouldApply &&
         temporalQuery.matchedPatterns.includes("first or earlier");
-      const recoveryReserveTokens = isComparisonTemporalRecovery && baseRecoveryReserveTokens > 0
-        ? Math.min(memoryBudget, Math.max(baseRecoveryReserveTokens, Math.ceil(baseRecoveryReserveTokens * 1.6)))
+      const recoveryReserveTokens = isComparisonTemporalRecovery &&
+        !comparisonExperiment.disableReserveBump &&
+        baseRecoveryReserveTokens > 0
+        ? Math.min(memoryBudget, Math.max(baseRecoveryReserveTokens, Math.ceil(baseRecoveryReserveTokens * 1.8)))
         : baseRecoveryReserveTokens;
       const elevatedGuidanceBudget = Math.max(
         0,
@@ -780,10 +807,19 @@ export function buildContextEngineFactory(
         }
 
         const dedupedRecovery = dedupeRecoveryCandidates(recoveryCandidates);
-        const fittedRecovery = fitPromptBudgetFirstFit(
-          dedupedRecovery,
-          recoveryReserveTokens,
-        );
+        const packingStart = temporalRecoveryResult?.comparisonProfile ? process.hrtime.bigint() : 0n;
+        const fittedRecovery = comparisonExperiment.disableProtectedPairPack
+          ? fitPromptBudgetFirstFit(dedupedRecovery, recoveryReserveTokens)
+          : fitProtectedComparisonRecovery(
+            dedupedRecovery,
+            recoveryReserveTokens,
+            temporalRecoveryResult?.comparisonCoverageApplied === true
+              ? temporalRecoveryResult.comparisonWitnessIds
+              : undefined,
+          );
+        if (temporalRecoveryResult?.comparisonProfile) {
+          temporalRecoveryResult.comparisonProfile.recoveryPackingMs += Number(process.hrtime.bigint() - packingStart) / 1_000_000;
+        }
         recoveryItems = fittedRecovery;
         if (debugRecovery) {
           dedupedRecoveryDebug = dedupedRecovery.map((item) => ({
@@ -831,11 +867,11 @@ export function buildContextEngineFactory(
         content: buildInjectedMemoryMessageContent(item),
       }));
 
-      return {
-        messages: [...selectedMessages, ...visibleMessages],
-        estimatedTokens: countTokens(selectedMessages) + countTokens(visibleMessages),
-        systemPromptAddition: buildMemoryHeader(selected),
-        _debug: debugRecovery
+        return {
+          messages: [...selectedMessages, ...visibleMessages],
+          estimatedTokens: countTokens(selectedMessages) + countTokens(visibleMessages),
+          systemPromptAddition: buildMemoryHeader(selected),
+          _debug: (debugRecovery || emitComparisonProfile)
           ? {
               recoveryTriggerFired: recoveryTrigger.fire,
               crossSessionRawRecovery,
@@ -849,12 +885,14 @@ export function buildContextEngineFactory(
               temporalComparisonCoverageApplied: temporalRecoveryResult?.comparisonCoverageApplied,
               temporalComparisonCoverageSlots: temporalRecoveryResult?.comparisonCoverageSlots,
               temporalComparisonCoverageMinTokens: temporalRecoveryResult?.comparisonCoverageMinTokens,
+              temporalComparisonWitnessIds: temporalRecoveryResult?.comparisonWitnessIds,
+              comparisonProfile: temporalRecoveryResult?.comparisonProfile,
               recoveryDedupedOrder: dedupedRecoveryDebug,
               recoveryFittedOrder: fittedRecoveryDebug,
               rawUserRecoveryCandidates: rawUserRecoveryDebug,
             }
           : undefined,
-      };
+        };
     },
     async compact({ sessionId, force, targetSize }: ContextCompactArgs) {
       const rpc = await getRpc();
@@ -1105,6 +1143,42 @@ function dedupeRecoveryCandidates(items: SearchResult[]): SearchResult[] {
   return [...byKey.values()].sort((left, right) => (right.finalScore ?? right.score) - (left.finalScore ?? left.score));
 }
 
+function fitProtectedComparisonRecovery(
+  items: SearchResult[],
+  tokenBudget: number,
+  protectedWitnessIds?: string[],
+): SearchResult[] {
+  if (!protectedWitnessIds || protectedWitnessIds.length === 0) {
+    return fitPromptBudgetFirstFit(items, tokenBudget);
+  }
+
+  const protectedById = new Map<string, SearchResult>();
+  const remaining: SearchResult[] = [];
+
+  for (const item of items) {
+    if (protectedWitnessIds.includes(item.id) && !protectedById.has(item.id)) {
+      protectedById.set(item.id, item);
+      continue;
+    }
+    remaining.push(item);
+  }
+
+  const protectedItems = protectedWitnessIds
+    .map((id) => protectedById.get(id))
+    .filter((item): item is SearchResult => Boolean(item));
+  if (protectedItems.length !== protectedWitnessIds.length) {
+    return fitPromptBudgetFirstFit(items, tokenBudget);
+  }
+
+  const protectedTokens = protectedItems.reduce((sum, item) => sum + estimateTokens(item.text), 0);
+  if (protectedTokens > tokenBudget) {
+    return fitPromptBudgetFirstFit(items, tokenBudget);
+  }
+
+  const tail = fitPromptBudgetFirstFit(remaining, tokenBudget - protectedTokens);
+  return [...protectedItems, ...tail];
+}
+
 function clampFraction(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return 0;
@@ -1184,33 +1258,35 @@ async function ingestCanonicalMessage(params: {
       text: normalized.content,
     });
 
-    if (gating.g >= (params.cfg.ingestionGateThreshold ?? 0.35)) {
-      void rpc.call("insert_text", {
-        collection: `user:${durableNamespace}`,
-        id: `${durableNamespace}:${turnId}`,
-        text: normalized.content,
-        metadata: {
-          role: normalized.role,
-          ts,
-          sessionId: params.sessionId,
-          type: "turn",
-          userId: durableNamespace,
-          source_turn_id: turnId,
-          provenance_class: "durable_user_memory",
-          stability_weight: Math.max(stabilityWeightForMessage(normalized.role), gating.g),
-          gating_score: gating.g,
-          gating_t: gating.t,
-          gating_h: gating.h,
-          gating_r: gating.r,
-          gating_d: gating.d,
-          gating_p: gating.p,
-          gating_a: gating.a,
-          gating_dtech: gating.dtech,
-          gating_gconv: gating.gconv,
-          gating_gtech: gating.gtech,
-        },
-      }).catch(console.error);
-    }
+    // Gating is designed for markdown file deduplication — not conversational content.
+    // User turns must be stored durably regardless of gating score so the agent can recall
+    // friends, preferences, and context across sessions. Gating signals are still
+    // recorded in metadata for observability, but do not gate the insert.
+    void rpc.call("insert_text", {
+      collection: `user:${durableNamespace}`,
+      id: `${durableNamespace}:${turnId}`,
+      text: normalized.content,
+      metadata: {
+        role: normalized.role,
+        ts,
+        sessionId: params.sessionId,
+        type: "turn",
+        userId: durableNamespace,
+        source_turn_id: turnId,
+        provenance_class: "durable_user_memory",
+        stability_weight: Math.max(stabilityWeightForMessage(normalized.role), gating.g),
+        gating_score: gating.g,
+        gating_t: gating.t,
+        gating_h: gating.h,
+        gating_r: gating.r,
+        gating_d: gating.d,
+        gating_p: gating.p,
+        gating_a: gating.a,
+        gating_dtech: gating.dtech,
+        gating_gconv: gating.gconv,
+        gating_gtech: gating.gtech,
+      },
+    }).catch(console.error);
   } catch {
     // Session storage already happened; skip durable promotion on gating failure.
   }

@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Persistent vector memory with three-tier hybrid scoring",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "kind": ["memory", "context-engine"],
   "configSchema": {
     "type": "object",
@@ -137,6 +137,11 @@
       "recencyLambdaGlobal": { "type": "number" },
       "tokenBudgetFraction": { "type": "number" },
       "compactThreshold": { "type": "number" },
+      "compactSessionTokenBudget": {
+        "type": "number",
+        "default": 2000,
+        "description": "Auto-trigger compaction when the session accumulates this many tokens since the last compaction. Set to 0 to disable auto-compaction."
+      },
       "ollamaUrl": { "type": "string" },
       "compactModel": { "type": "string" },
       "rpcTimeoutMs": { "type": "number", "default": 30000 },

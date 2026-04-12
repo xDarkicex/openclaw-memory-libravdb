@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 
+import { mergeComparisonProfileSummaries, type ComparisonProfileSummary } from "../../src/comparison-experiments.js";
 import { buildContextEngineFactory } from "../../src/context-engine.js";
 import { createPluginRuntime } from "../../src/plugin-runtime.js";
 import { createRecallCache } from "../../src/recall-cache.js";
@@ -91,6 +92,8 @@ type BenchmarkRecord = {
     finalScore: number;
     tokenEstimate: number;
   }>;
+  temporal_comparison_witness_ids?: string[];
+  comparison_profile?: ComparisonProfileSummary;
   error?: string;
 };
 
@@ -107,7 +110,14 @@ test("LongMemEval local plugin benchmark", async (t) => {
     return;
   }
 
-  const instances = limitInstances(parseInstances(JSON.parse(await readFile(dataFile, "utf8"))), envLimit());
+  const rawData = JSON.parse(await readFile(dataFile, "utf8"));
+  const parsedData = parseInstances(rawData);
+  const targetId = process.env.LONGMEMEVAL_QUESTION_ID?.trim();
+  const instances = targetId
+    ? (parsedData.filter((inst) => inst.question_id === targetId).length > 0
+      ? parsedData.filter((inst) => inst.question_id === targetId)
+      : limitInstances(parsedData, envLimit()))
+    : limitInstances(parsedData, envLimit());
   const topK = normalizePositiveInteger(process.env.LONGMEMEVAL_TOPK, 8);
   const includeAbstentions = process.env.LONGMEMEVAL_INCLUDE_ABSTENTIONS === "1";
   const outFile = process.env.LONGMEMEVAL_OUT_FILE?.trim() || "";
@@ -151,6 +161,9 @@ test("LongMemEval local plugin benchmark", async (t) => {
       console.log(
         `[longmemeval] ${record.question_id} status=${record.status} session_hit=${record.session_hit} turn_hit=${record.turn_hit} session_prompt_hits=${record.session_prompt_hits} turn_prompt_hits=${record.turn_prompt_hits}${record.error ? ` error=${record.error}` : ""}`,
       );
+      if (record.comparison_profile) {
+        console.log(formatComparisonProfile(record.question_id, record.comparison_profile));
+      }
     }
   } finally {
     await stack.runtime.shutdown();
@@ -302,6 +315,8 @@ async function runInstance({
     raw_user_recovery_candidates: assembled._debug?.rawUserRecoveryCandidates,
     recovery_deduped_order: assembled._debug?.recoveryDedupedOrder,
     recovery_fitted_order: assembled._debug?.recoveryFittedOrder,
+    temporal_comparison_witness_ids: assembled._debug?.temporalComparisonWitnessIds,
+    comparison_profile: assembled._debug?.comparisonProfile,
   };
 }
 
@@ -332,6 +347,8 @@ function errorRecord(instance: LongMemEvalInstance, error: unknown): BenchmarkRe
     raw_user_recovery_candidates: [],
     recovery_deduped_order: [],
     recovery_fitted_order: [],
+    temporal_comparison_witness_ids: undefined,
+    comparison_profile: undefined,
     error: error instanceof Error ? error.message : String(error),
   };
 }
@@ -371,6 +388,9 @@ function summarizeRecords(records: BenchmarkRecord[], total: number) {
     answerStringHits: number;
     errors: number;
   }>()).values()).sort((left, right) => left.questionType.localeCompare(right.questionType));
+  const comparisonProfiles = records
+    .map((record) => record.comparison_profile)
+    .filter((profile): profile is ComparisonProfileSummary => Boolean(profile));
   return {
     total,
     processed,
@@ -380,6 +400,8 @@ function summarizeRecords(records: BenchmarkRecord[], total: number) {
     answerStringRecallAtK: processed > 0 ? answerStringHits / processed : 0,
     avgPromptTokens,
     byType,
+    comparisonProfileCount: comparisonProfiles.length,
+    comparisonProfileAggregate: mergeComparisonProfileSummaries(comparisonProfiles),
   };
 }
 
@@ -399,6 +421,8 @@ function formatSummary(summary: {
     answerStringHits: number;
     errors: number;
   }>;
+  comparisonProfileCount: number;
+  comparisonProfileAggregate: ComparisonProfileSummary | null;
 }, skippedAbstentions: number): string {
   const rows = [
     ["total questions", String(summary.total)],
@@ -421,13 +445,64 @@ function formatSummary(summary: {
     const errors = String(row.errors).padStart(7);
     return `  ${questionType} ${count} ${sessionRate} ${turnRate} ${answerRate} ${errors}`;
   });
-  return [
+  const lines = [
     "LongMemEval local plugin benchmark",
     ...rows.map(([label, value]) => `  ${label.padEnd(width)} : ${value}`),
     "  mini scoring matrix:",
     matrixHeader,
     ...matrixRows,
-  ].join("\n");
+  ];
+
+  if (summary.comparisonProfileAggregate && summary.comparisonProfileCount > 0) {
+    const profile = summary.comparisonProfileAggregate;
+    lines.push("  comparison profile:");
+    lines.push(`    profiled questions      : ${summary.comparisonProfileCount}`);
+    lines.push(`    ablation mode           : ${profile.ablationMode ?? "baseline"}`);
+    lines.push(`    rank total ms           : ${profile.rankTotalMs.toFixed(2)}`);
+    lines.push(`    decorate ms             : ${profile.decorateMs.toFixed(2)}`);
+    lines.push(`    slot coverage ms        : ${profile.slotCoverageMs.toFixed(2)}`);
+    lines.push(`    side affiliation ms     : ${profile.sideAffiliationMs.toFixed(2)}`);
+    lines.push(`    specificity ms          : ${profile.specificityMs.toFixed(2)}`);
+    lines.push(`    pair selection ms       : ${profile.pairSelectionMs.toFixed(2)}`);
+    lines.push(`    greedy fill ms          : ${profile.greedyFillMs.toFixed(2)}`);
+    lines.push(`    recovery packing ms     : ${profile.recoveryPackingMs.toFixed(2)}`);
+    lines.push(`    debug build ms          : ${profile.debugBuildMs.toFixed(2)}`);
+    lines.push(`    raw candidate count     : ${profile.rawCandidateCount}`);
+    lines.push(`    comparison candidates   : ${profile.comparisonCandidateCount}`);
+    lines.push(`    side0 affiliated        : ${profile.side0AffiliatedCount}`);
+    lines.push(`    side1 affiliated        : ${profile.side1AffiliatedCount}`);
+    lines.push(`    normalizeTerms calls    : ${profile.normalizeTermsCalls}`);
+    lines.push(`    content-term calls      : ${profile.normalizeContentTermsCalls}`);
+    lines.push(`    estimateTokens calls    : ${profile.estimateTokensCalls}`);
+    lines.push(`    sort calls              : ${profile.sortCalls}`);
+    lines.push(`    total sorted length     : ${profile.totalSortedLength}`);
+  }
+
+  return lines.join("\n");
+}
+
+function formatComparisonProfile(questionId: string, profile: ComparisonProfileSummary): string {
+  return [
+    `[comparison-profile] ${questionId}`,
+    `mode=${profile.ablationMode ?? "baseline"}`,
+    `rank_ms=${profile.rankTotalMs.toFixed(2)}`,
+    `decorate_ms=${profile.decorateMs.toFixed(2)}`,
+    `slot_ms=${profile.slotCoverageMs.toFixed(2)}`,
+    `affiliation_ms=${profile.sideAffiliationMs.toFixed(2)}`,
+    `specificity_ms=${profile.specificityMs.toFixed(2)}`,
+    `pair_ms=${profile.pairSelectionMs.toFixed(2)}`,
+    `greedy_ms=${profile.greedyFillMs.toFixed(2)}`,
+    `pack_ms=${profile.recoveryPackingMs.toFixed(2)}`,
+    `debug_ms=${profile.debugBuildMs.toFixed(2)}`,
+    `raw=${profile.rawCandidateCount}`,
+    `comparison=${profile.comparisonCandidateCount}`,
+    `side0=${profile.side0AffiliatedCount}`,
+    `side1=${profile.side1AffiliatedCount}`,
+    `norm=${profile.normalizeTermsCalls}`,
+    `content=${profile.normalizeContentTermsCalls}`,
+    `tokens=${profile.estimateTokensCalls}`,
+    `sorts=${profile.sortCalls}`,
+  ].join(" ");
 }
 
 function parseInstances(raw: unknown): LongMemEvalInstance[] {

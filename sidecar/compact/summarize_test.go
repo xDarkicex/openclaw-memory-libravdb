@@ -342,7 +342,13 @@ func (f fakeEmbedder) Ready() bool    { return true }
 func (f fakeEmbedder) Reason() string { return "" }
 func (f fakeEmbedder) Mode() string   { return "primary" }
 
-func TestCompactSessionSkipsBelowThresholdWithoutForce(t *testing.T) {
+// TestCompactSessionShortSessionAttemptsCompaction verifies that sessions with
+// enough compactable turns attempt compaction even without force. The summarizer
+// is called but all clusters may still be declined via strict-progress — in which
+// case DidCompact is false and no data is mutated. The removed gate was:
+//   if !force && len(compactable) < targetSize { return early }
+// which incorrectly blocked short sessions from compaction at all.
+func TestCompactSessionShortSessionAttemptsCompaction(t *testing.T) {
 	st := &fakeStore{
 		results: []store.SearchResult{
 			{ID: "a", Text: "alpha", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10)}},
@@ -355,15 +361,24 @@ func TestCompactSessionSkipsBelowThresholdWithoutForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompactSession() error = %v", err)
 	}
+	// Summarizer was reached (compaction was attempted), but all clusters were
+	// declined on strict-progress grounds — so DidCompact is correctly false
+	// and no store mutations occurred.
 	if got.DidCompact {
-		t.Fatalf("expected no compaction below threshold, got %+v", got)
+		t.Fatalf("expected DidCompact=false (declined), got %+v", got)
 	}
-	if len(sum.calls) != 0 || len(st.insertCalls) != 0 || len(st.deleteCalls) != 0 {
-		t.Fatalf("expected no summarizer/store writes, got calls=%d inserts=%d deletes=%d", len(sum.calls), len(st.insertCalls), len(st.deleteCalls))
+	if got.ClustersDeclined == 0 {
+		t.Fatalf("expected ClustersDeclined > 0, got %d", got.ClustersDeclined)
+	}
+	if len(st.insertCalls) != 0 || len(st.deleteCalls) != 0 {
+		t.Fatalf("expected no store mutations, got inserts=%d deletes=%d", len(st.insertCalls), len(st.deleteCalls))
 	}
 }
 
-func TestCompactSessionNormalizesNonPositiveTargetSizeToDefault(t *testing.T) {
+// TestCompactSessionWithZeroTargetSizeAttemptsCompaction verifies that targetSize=0
+// is normalized to DefaultTargetSize (20) but still allows compaction to be attempted.
+// The removed gate len(compactable) < targetSize would have silently skipped this session.
+func TestCompactSessionWithZeroTargetSizeAttemptsCompaction(t *testing.T) {
 	st := &fakeStore{
 		results: []store.SearchResult{
 			{ID: "a", Text: "first", Metadata: map[string]any{"sessionId": "s1", "ts": int64(10)}},
@@ -377,11 +392,13 @@ func TestCompactSessionNormalizesNonPositiveTargetSizeToDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompactSession() error = %v", err)
 	}
+	// DidCompact may be false because clusters were declined, but compaction was
+	// correctly attempted (summarizer was called), unlike before the fix.
 	if got.DidCompact {
-		t.Fatalf("expected default target size normalization to skip small input, got %+v", got)
+		t.Fatalf("expected DidCompact=false (declined), got %+v", got)
 	}
-	if len(sum.calls) != 0 {
-		t.Fatalf("expected no summarize calls after default target size normalization, got %d", len(sum.calls))
+	if len(sum.calls) == 0 {
+		t.Fatalf("expected summarizer calls (compaction was attempted), got 0")
 	}
 }
 

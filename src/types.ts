@@ -1,3 +1,5 @@
+import type { ComparisonProfileSummary } from "./comparison-experiments.js";
+
 export interface PluginConfig {
   dbPath?: string;
   sidecarPath?: string;
@@ -63,6 +65,7 @@ export interface PluginConfig {
   continuityTailBudgetTokens?: number;
   continuityPriorContextTokens?: number;
   compactThreshold?: number;
+  compactSessionTokenBudget?: number;
   section7CoarseTopK?: number;
   section7SecondPassTopK?: number;
   section7Theta1?: number;
@@ -262,6 +265,8 @@ export interface ContextAssembleResult {
     temporalComparisonCoverageApplied?: boolean;
     temporalComparisonCoverageSlots?: string[];
     temporalComparisonCoverageMinTokens?: number;
+    temporalComparisonWitnessIds?: string[];
+    comparisonProfile?: ComparisonProfileSummary;
   };
 }
 

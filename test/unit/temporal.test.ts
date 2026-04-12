@@ -151,6 +151,34 @@ test("rankTemporalRecoveryCandidates filters generic comparison slots before sco
     (result.ranked.find((item) => item.id === "europe-anchor")?.finalScore ?? 0));
 });
 
+test("rankTemporalRecoveryCandidates does not affiliate Europe travel context to Thailand on generic solo-trip overlap", () => {
+  resetTemporalCachesForTest();
+
+  const now = Date.now();
+  const result = rankTemporalRecoveryCandidates([
+    {
+      id: "europe-with-solo-language",
+      score: 0.72,
+      text: "I went on a two-week trip to Europe with my parents and younger brother, and it felt really different from traveling solo.",
+      metadata: { ts: now - 10_000, userId: "u1", collection: "turns:u1" },
+    },
+    {
+      id: "thailand-anchor",
+      score: 0.66,
+      text: "I had experience traveling solo before when I went to Thailand in 2023, and I liked being able to set my own pace and itinerary.",
+      metadata: { ts: now - 5_000, userId: "u1", collection: "turns:u1" },
+    },
+  ], {
+    queryText: "Which trip did I take first, the one to Europe with family or the solo trip to Thailand?",
+    nowMs: now,
+    maxSelected: 2,
+  });
+
+  const europeContext = result.debug.find((item) => item.id === "europe-with-solo-language");
+  assert.ok(europeContext);
+  assert.notEqual(europeContext.comparisonSide, 1);
+});
+
 test("rankTemporalRecoveryCandidates reserves one feasible witness per comparison side before greedy fill", () => {
   resetTemporalCachesForTest();
 

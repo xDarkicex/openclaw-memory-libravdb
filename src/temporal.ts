@@ -1,5 +1,11 @@
 import { estimateTokens } from "./tokens.js";
 import type { SearchResult } from "./types.js";
+import {
+  createComparisonProfileSummary,
+  resolveComparisonExperimentConfig,
+  type ComparisonExperimentConfig,
+  type ComparisonProfileSummary,
+} from "./comparison-experiments.js";
 
 const TEMPORAL_PATTERN_WEIGHTS: Array<{ label: string; weight: number; patterns: RegExp[] }> = [
   {
@@ -132,6 +138,11 @@ const COMPARISON_GENERIC_SLOT_PREFIXES = new Set([
   "session",
 ]);
 
+const COMPARISON_GENERIC_AFFILIATION_TERMS = new Set([
+  ...COMPARISON_GENERIC_SLOT_PREFIXES,
+  "solo",
+]);
+
 const COMPARISON_FIRST_PERSON_CLAUSE_PATTERNS: RegExp[] = [
   /\bi\b/gi,
   /\bi'm\b/gi,
@@ -205,7 +216,12 @@ export interface TemporalRecoveryRankingResult {
   comparisonCoverageApplied?: boolean;
   comparisonCoverageSlots?: string[];
   comparisonCoverageMinTokens?: number;
+  comparisonWitnessIds?: string[];
+  comparisonProfile?: ComparisonProfileSummary;
 }
+
+let activeComparisonProfile: ComparisonProfileSummary | null = null;
+let activeComparisonExperimentConfig: ComparisonExperimentConfig | null = null;
 
 export function detectTemporalQuerySignal(queryText: string): TemporalQuerySignal {
   const matchedPatterns: string[] = [];
@@ -259,6 +275,7 @@ export function rankTemporalRecoveryCandidates(
     selectionTokenBudget?: number;
   },
 ): TemporalRecoveryRankingResult {
+  const comparisonExperiment = resolveComparisonExperimentConfig();
   const temporalQuery = detectTemporalQuerySignal(opts.queryText);
   const slots = extractTemporalSlots(opts.queryText);
   const isComparisonQuery = temporalQuery.matchedPatterns.includes("first or earlier");
@@ -268,61 +285,91 @@ export function rankTemporalRecoveryCandidates(
   const now = opts.nowMs ?? Date.now();
   const maxSelected = Math.max(1, Math.floor(opts.maxSelected ?? 3));
   const selectionTokenBudget = Math.max(0, Math.floor(opts.selectionTokenBudget ?? Number.MAX_SAFE_INTEGER));
+  const comparisonProfile = comparisonExperiment.profilingEnabled && isComparisonQuery
+    ? createComparisonProfileSummary(comparisonExperiment.ablationMode)
+    : null;
+  const previousProfile = activeComparisonProfile;
+  const previousExperimentConfig = activeComparisonExperimentConfig;
+  activeComparisonProfile = comparisonProfile;
+  activeComparisonExperimentConfig = comparisonExperiment;
+  const totalStart = comparisonProfile ? process.hrtime.bigint() : 0n;
 
-  const decorated = items.map((item) => {
-    const semanticScore = clamp01(typeof item.finalScore === "number" ? item.finalScore : item.score ?? 0);
-    const recencyScore = computeRecencyScore(item, now, recencyLambda);
-    const temporalAnchorDensity = getTemporalAnchorDensity(
-      `${typeof item.metadata.collection === "string" ? item.metadata.collection : "unknown"}::${item.id}`,
-      item.text,
-    );
-    const { coverage, matches } = computeSlotCoverage(effectiveSlots, item.text);
-    const tokenEstimate = estimateTokens(item.text);
-    const comparisonSide = comparisonSlots.length === 2
-      ? computeComparisonSideAffiliation(comparisonSlots, item.text)
-      : null;
-    const comparisonMetrics = comparisonSide !== null
-      ? computeComparisonSlotSpecificityMetrics(comparisonSlots[comparisonSide]!, item.text)
-      : null;
-    const comparisonSideWitnessScore = comparisonMetrics
-      ? comparisonMetrics.sideWitnessScore
-      : undefined;
-    const finalScore = clamp01(isComparisonQuery
-      ? (0.15 * semanticScore) +
-        (0.15 * recencyScore) +
-        (0.15 * coverage) +
-        (0.55 * (comparisonSideWitnessScore ?? 0))
-      : (0.40 * semanticScore) +
-        (0.25 * recencyScore) +
-        (0.20 * temporalAnchorDensity) +
-        (0.15 * coverage) +
-        (temporalQuery.active ? 0.05 : 0));
-    return {
-      item,
-      semanticScore,
-      recencyScore,
-      temporalAnchorDensity,
-      slotCoverage: coverage,
-      slotMatches: matches,
-      tokenEstimate,
-      comparisonSide,
-      comparisonMetrics,
-      comparisonSideWitnessScore,
-      finalScore,
-    };
-  });
+  try {
+    if (comparisonProfile) {
+      comparisonProfile.rawCandidateCount = items.length;
+    }
 
-  const selectedIDs = new Set<string>();
-  const coveredSlots = new Set<string>();
-  const selected: SearchResult[] = [];
-  let comparisonCoverageApplied = false;
-  let comparisonCoverageMinTokens: number | undefined;
+    const decorateStart = comparisonProfile ? process.hrtime.bigint() : 0n;
+    const decorated = items.map((item) => {
+      const semanticScore = clamp01(typeof item.finalScore === "number" ? item.finalScore : item.score ?? 0);
+      const recencyScore = computeRecencyScore(item, now, recencyLambda);
+      const temporalAnchorDensity = getTemporalAnchorDensity(
+        `${typeof item.metadata.collection === "string" ? item.metadata.collection : "unknown"}::${item.id}`,
+        item.text,
+      );
+      const { coverage, matches } = computeSlotCoverage(effectiveSlots, item.text);
+      const tokenEstimate = estimateTokensWithProfile(item.text);
+      const comparisonSide = comparisonSlots.length === 2
+        ? computeComparisonSideAffiliation(comparisonSlots, item.text)
+        : null;
+      const comparisonMetrics = comparisonSide !== null
+        ? computeComparisonSlotSpecificityMetrics(
+          comparisonSlots[comparisonSide]!,
+          item.text,
+          comparisonSlots[1 - comparisonSide],
+        )
+        : null;
+      const comparisonSideWitnessScore = comparisonMetrics
+        ? comparisonMetrics.sideWitnessScore
+        : undefined;
+      const finalScore = clamp01(isComparisonQuery
+        ? computeComparisonFinalScore({
+          semanticScore,
+          recencyScore,
+          temporalAnchorDensity,
+          coverage,
+          comparisonSideWitnessScore,
+          temporalQueryActive: temporalQuery.active,
+        })
+        : (0.40 * semanticScore) +
+          (0.25 * recencyScore) +
+          (0.20 * temporalAnchorDensity) +
+          (0.15 * coverage) +
+          (temporalQuery.active ? 0.05 : 0));
+      return {
+        item,
+        semanticScore,
+        recencyScore,
+        temporalAnchorDensity,
+        slotCoverage: coverage,
+        slotMatches: matches,
+        tokenEstimate,
+        comparisonSide,
+        comparisonMetrics,
+        comparisonSideWitnessScore,
+        finalScore,
+      };
+    });
+    if (comparisonProfile) {
+      comparisonProfile.decorateMs += elapsedMs(decorateStart);
+      comparisonProfile.comparisonCandidateCount = decorated.filter((candidate) => candidate.comparisonSide !== null).length;
+      comparisonProfile.side0AffiliatedCount = decorated.filter((candidate) => candidate.comparisonSide === 0).length;
+      comparisonProfile.side1AffiliatedCount = decorated.filter((candidate) => candidate.comparisonSide === 1).length;
+    }
 
-  if (comparisonSlots.length === 2) {
-    const sideCandidates = comparisonSlots.map((_, sideIndex) =>
-      decorated
-        .filter((candidate) => candidate.comparisonSide === sideIndex)
-        .sort((left, right) => {
+    const selectedIDs = new Set<string>();
+    const coveredSlots = new Set<string>();
+    const selected: SearchResult[] = [];
+    let comparisonCoverageApplied = false;
+    let comparisonCoverageMinTokens: number | undefined;
+    let comparisonWitnessIds: string[] | undefined;
+
+    if (comparisonSlots.length === 2) {
+      const sideCandidates = comparisonSlots.map((_, sideIndex) => {
+        const candidates = decorated
+          .filter((candidate) => candidate.comparisonSide === sideIndex);
+        recordSort(candidates.length);
+        return candidates.sort((left, right) => {
           const leftWitnessScore = left.comparisonSideWitnessScore ?? Number.NEGATIVE_INFINITY;
           const rightWitnessScore = right.comparisonSideWitnessScore ?? Number.NEGATIVE_INFINITY;
           if (rightWitnessScore !== leftWitnessScore) {
@@ -332,107 +379,127 @@ export function rankTemporalRecoveryCandidates(
             return right.finalScore - left.finalScore;
           }
           return left.tokenEstimate - right.tokenEstimate;
-        }),
-    );
-    const cheapestSideTokenSum = sideCandidates.reduce((sum, candidates) => (
-      candidates.length > 0 ? sum + candidates.reduce((best, candidate) => Math.min(best, candidate.tokenEstimate), Number.POSITIVE_INFINITY) : sum
-    ), 0);
-    if (sideCandidates.every((candidates) => candidates.length > 0) && Number.isFinite(cheapestSideTokenSum)) {
-      comparisonCoverageMinTokens = cheapestSideTokenSum;
-      const bestPair = findBestComparisonCoveragePair(sideCandidates[0], sideCandidates[1], selectionTokenBudget);
-      if (bestPair) {
-        for (const candidate of bestPair) {
-          selectedIDs.add(candidate.item.id);
-          for (const slot of candidate.slotMatches) {
-            coveredSlots.add(slot);
+        });
+      });
+      const cheapestSideTokenSum = sideCandidates.reduce((sum, candidates) => (
+        candidates.length > 0 ? sum + candidates.reduce((best, candidate) => Math.min(best, candidate.tokenEstimate), Number.POSITIVE_INFINITY) : sum
+      ), 0);
+      if (sideCandidates.every((candidates) => candidates.length > 0) && Number.isFinite(cheapestSideTokenSum)) {
+        comparisonCoverageMinTokens = cheapestSideTokenSum;
+        const bestPair = findBestComparisonCoveragePair(sideCandidates[0], sideCandidates[1], selectionTokenBudget);
+        if (bestPair) {
+          for (const candidate of bestPair) {
+            selectedIDs.add(candidate.item.id);
+            for (const slot of candidate.slotMatches) {
+              coveredSlots.add(slot);
+            }
+            selected.push({
+              ...candidate.item,
+              finalScore: candidate.finalScore,
+            });
           }
-          selected.push({
-            ...candidate.item,
-            finalScore: candidate.finalScore,
-          });
+          comparisonCoverageApplied = true;
+          comparisonWitnessIds = [bestPair[0].item.id, bestPair[1].item.id];
         }
-        comparisonCoverageApplied = true;
       }
     }
+
+    const greedyStart = comparisonProfile ? process.hrtime.bigint() : 0n;
+    for (let pass = selected.length; pass < maxSelected; pass += 1) {
+      let best: (typeof decorated)[number] | null = null;
+      let bestScore = Number.NEGATIVE_INFINITY;
+
+      for (const candidate of decorated) {
+        if (selectedIDs.has(candidate.item.id)) {
+          continue;
+        }
+        const marginalCoverage =
+          candidate.slotMatches.filter((slot) => !coveredSlots.has(slot)).length / Math.max(1, effectiveSlots.length);
+        const combined = candidate.finalScore + (0.25 * marginalCoverage);
+        if (combined > bestScore) {
+          best = candidate;
+          bestScore = combined;
+        }
+      }
+
+      if (!best || bestScore < 0.12) {
+        break;
+      }
+
+      selectedIDs.add(best.item.id);
+      for (const slot of best.slotMatches) {
+        coveredSlots.add(slot);
+      }
+      selected.push({
+        ...best.item,
+        finalScore: best.finalScore,
+      });
+    }
+    if (comparisonProfile) {
+      comparisonProfile.greedyFillMs += elapsedMs(greedyStart);
+    }
+
+    const remainingCandidates = decorated
+      .filter((candidate) => !selectedIDs.has(candidate.item.id));
+    recordSort(remainingCandidates.length);
+    const remaining = remainingCandidates
+      .sort((left, right) => right.finalScore - left.finalScore)
+      .map((candidate) => ({
+        ...candidate.item,
+        finalScore: candidate.finalScore,
+      }));
+
+    const ranked = [...selected, ...remaining];
+    const debugStart = comparisonProfile ? process.hrtime.bigint() : 0n;
+    const debugCandidates = [...decorated];
+    recordSort(debugCandidates.length);
+    const debug = debugCandidates
+      .sort((left, right) => right.finalScore - left.finalScore)
+      .map((candidate) => ({
+        id: candidate.item.id,
+        text: candidate.item.text,
+        selected: selectedIDs.has(candidate.item.id),
+        temporalAnchorDensity: candidate.temporalAnchorDensity,
+        semanticScore: candidate.semanticScore,
+        recencyScore: candidate.recencyScore,
+        slotCoverage: candidate.slotCoverage,
+        slotMatches: candidate.slotMatches,
+        finalScore: candidate.finalScore,
+        rationale: buildTemporalRecoveryRationale(candidate.slotCoverage, candidate.temporalAnchorDensity, candidate.semanticScore),
+        comparisonSide: candidate.comparisonSide,
+        comparisonSlot: candidate.comparisonSide !== null ? comparisonSlots[candidate.comparisonSide] : undefined,
+        comparisonSlotRecall: candidate.comparisonMetrics?.recall,
+        comparisonSlotPrecision: candidate.comparisonMetrics?.precision,
+        comparisonSlotSpecificity: candidate.comparisonMetrics?.specificity,
+        comparisonSlotPositionWeightedRecall: candidate.comparisonMetrics?.positionWeightedRecall,
+        comparisonSlotPositionWeightedPrecision: candidate.comparisonMetrics?.positionWeightedPrecision,
+        comparisonSlotPositionWeightedSpecificity: candidate.comparisonMetrics?.positionWeightedSpecificity,
+        comparisonFirstPersonClauseCount: candidate.comparisonMetrics?.firstPersonClauseCount,
+        comparisonProspectivePersonalVerbCount: candidate.comparisonMetrics?.prospectivePersonalVerbCount,
+        comparisonPlanningDensity: candidate.comparisonMetrics?.planningDensity,
+        comparisonPastness: candidate.comparisonMetrics?.pastness,
+        comparisonSideWitnessScore: candidate.comparisonSideWitnessScore,
+      }));
+    if (comparisonProfile) {
+      comparisonProfile.debugBuildMs += elapsedMs(debugStart);
+      comparisonProfile.rankTotalMs += elapsedMs(totalStart);
+    }
+
+    return {
+      ranked,
+      debug,
+      temporalQuery,
+      slots: effectiveSlots,
+      comparisonCoverageApplied,
+      comparisonCoverageSlots: comparisonSlots.length === 2 ? comparisonSlots : undefined,
+      comparisonCoverageMinTokens,
+      comparisonWitnessIds,
+      comparisonProfile: comparisonProfile ?? undefined,
+    };
+  } finally {
+    activeComparisonProfile = previousProfile;
+    activeComparisonExperimentConfig = previousExperimentConfig;
   }
-
-  for (let pass = selected.length; pass < maxSelected; pass += 1) {
-    let best: (typeof decorated)[number] | null = null;
-    let bestScore = Number.NEGATIVE_INFINITY;
-
-    for (const candidate of decorated) {
-      if (selectedIDs.has(candidate.item.id)) {
-        continue;
-      }
-      const marginalCoverage =
-        candidate.slotMatches.filter((slot) => !coveredSlots.has(slot)).length / Math.max(1, effectiveSlots.length);
-      const combined = candidate.finalScore + (0.25 * marginalCoverage);
-      if (combined > bestScore) {
-        best = candidate;
-        bestScore = combined;
-      }
-    }
-
-    if (!best || bestScore < 0.12) {
-      break;
-    }
-
-    selectedIDs.add(best.item.id);
-    for (const slot of best.slotMatches) {
-      coveredSlots.add(slot);
-    }
-    selected.push({
-      ...best.item,
-      finalScore: best.finalScore,
-    });
-  }
-
-  const remaining = decorated
-    .filter((candidate) => !selectedIDs.has(candidate.item.id))
-    .sort((left, right) => right.finalScore - left.finalScore)
-    .map((candidate) => ({
-      ...candidate.item,
-      finalScore: candidate.finalScore,
-    }));
-
-  const ranked = [...selected, ...remaining];
-  const debug = decorated
-    .sort((left, right) => right.finalScore - left.finalScore)
-    .map((candidate) => ({
-      id: candidate.item.id,
-      text: candidate.item.text,
-      selected: selectedIDs.has(candidate.item.id),
-      temporalAnchorDensity: candidate.temporalAnchorDensity,
-      semanticScore: candidate.semanticScore,
-      recencyScore: candidate.recencyScore,
-      slotCoverage: candidate.slotCoverage,
-      slotMatches: candidate.slotMatches,
-      finalScore: candidate.finalScore,
-      rationale: buildTemporalRecoveryRationale(candidate.slotCoverage, candidate.temporalAnchorDensity, candidate.semanticScore),
-      comparisonSide: candidate.comparisonSide,
-      comparisonSlot: candidate.comparisonSide !== null ? comparisonSlots[candidate.comparisonSide] : undefined,
-      comparisonSlotRecall: candidate.comparisonMetrics?.recall,
-      comparisonSlotPrecision: candidate.comparisonMetrics?.precision,
-      comparisonSlotSpecificity: candidate.comparisonMetrics?.specificity,
-      comparisonSlotPositionWeightedRecall: candidate.comparisonMetrics?.positionWeightedRecall,
-      comparisonSlotPositionWeightedPrecision: candidate.comparisonMetrics?.positionWeightedPrecision,
-      comparisonSlotPositionWeightedSpecificity: candidate.comparisonMetrics?.positionWeightedSpecificity,
-      comparisonFirstPersonClauseCount: candidate.comparisonMetrics?.firstPersonClauseCount,
-      comparisonProspectivePersonalVerbCount: candidate.comparisonMetrics?.prospectivePersonalVerbCount,
-      comparisonPlanningDensity: candidate.comparisonMetrics?.planningDensity,
-      comparisonPastness: candidate.comparisonMetrics?.pastness,
-      comparisonSideWitnessScore: candidate.comparisonSideWitnessScore,
-    }));
-
-  return {
-    ranked,
-    debug,
-    temporalQuery,
-    slots: effectiveSlots,
-    comparisonCoverageApplied,
-    comparisonCoverageSlots: comparisonSlots.length === 2 ? comparisonSlots : undefined,
-    comparisonCoverageMinTokens,
-  };
 }
 
 export function decideTemporalSelectorGuard(
@@ -601,24 +668,55 @@ function computeComparisonSideScore(slots: string[], candidateText: string): num
 }
 
 function computeComparisonSideAffiliation(slots: string[], candidateText: string): 0 | 1 | null {
-  if (slots.length < 2) {
-    return null;
-  }
+  const start = activeComparisonProfile ? process.hrtime.bigint() : 0n;
+  try {
+    if (slots.length < 2) {
+      return null;
+    }
 
-  const leftCoverage = computeSlotCoverage([slots[0]!], candidateText).coverage;
-  const rightCoverage = computeSlotCoverage([slots[1]!], candidateText).coverage;
-  if (leftCoverage >= 0.5 && leftCoverage > rightCoverage) {
+    const leftCoverage = activeComparisonExperimentConfig?.disableDiscriminativeAffiliation
+      ? computeSlotCoverage([slots[0]!], candidateText).coverage
+      : computeComparisonAffiliationCoverage(slots[0]!, slots[1]!, candidateText);
+    const rightCoverage = activeComparisonExperimentConfig?.disableDiscriminativeAffiliation
+      ? computeSlotCoverage([slots[1]!], candidateText).coverage
+      : computeComparisonAffiliationCoverage(slots[1]!, slots[0]!, candidateText);
+    if (leftCoverage >= 0.5 && leftCoverage > rightCoverage) {
+      return 0;
+    }
+    if (rightCoverage >= 0.5 && rightCoverage > leftCoverage) {
+      return 1;
+    }
+    return null;
+  } finally {
+    if (activeComparisonProfile) {
+      activeComparisonProfile.sideAffiliationMs += elapsedMs(start);
+    }
+  }
+}
+
+function computeComparisonAffiliationCoverage(slot: string, otherSlot: string, candidateText: string): number {
+  const slotTerms = normalizeTerms(slot).filter(
+    (term) => term.length >= 3 && !TEMPORAL_SLOT_STOPWORDS.has(term),
+  );
+  const otherTerms = new Set(normalizeTerms(otherSlot).filter(
+    (term) => term.length >= 3 && !TEMPORAL_SLOT_STOPWORDS.has(term),
+  ));
+  const discriminativeTerms = slotTerms.filter((term) => (
+    !COMPARISON_GENERIC_AFFILIATION_TERMS.has(term) && !otherTerms.has(term)
+  ));
+  if (discriminativeTerms.length === 0) {
     return 0;
   }
-  if (rightCoverage >= 0.5 && rightCoverage > leftCoverage) {
-    return 1;
-  }
-  return null;
+
+  const candidateTerms = new Set(normalizeTerms(candidateText));
+  const matched = discriminativeTerms.filter((term) => candidateTerms.has(term)).length;
+  return matched / discriminativeTerms.length;
 }
 
 function computeComparisonSlotSpecificityMetrics(
   slot: string,
   candidateText: string,
+  otherSlot?: string,
 ): {
   recall: number;
   precision: number;
@@ -632,55 +730,76 @@ function computeComparisonSlotSpecificityMetrics(
   pastness: number;
   sideWitnessScore: number;
 } {
-  const slotTerms = normalizeContentTerms(slot);
-  const candidateTerms = normalizeContentTerms(candidateText);
-  const candidateTermSequence = normalizeContentTermSequence(candidateText);
-  const firstPositions = buildFirstContentTermPositions(candidateTermSequence);
-  const matchedTerms = [...slotTerms].filter((term) => candidateTerms.has(term));
-  const matched = matchedTerms.length;
-  const positionWeightedMatched = matchedTerms.reduce((sum, term) => {
-    const position = firstPositions.get(term);
-    if (typeof position !== "number") {
-      return sum;
+  const start = activeComparisonProfile ? process.hrtime.bigint() : 0n;
+  try {
+    const slotTerms = normalizeContentTerms(slot);
+    const candidateTerms = normalizeContentTerms(candidateText);
+    const candidateTermSequence = normalizeContentTermSequence(candidateText);
+    const firstPositions = buildFirstContentTermPositions(candidateTermSequence);
+    const matchedTerms = [...slotTerms].filter((term) => candidateTerms.has(term));
+    const matched = matchedTerms.length;
+    const positionWeightedMatched = matchedTerms.reduce((sum, term) => {
+      const position = firstPositions.get(term);
+      if (typeof position !== "number") {
+        return sum;
+      }
+      const earlyThreshold = candidateTermSequence.length * 0.3;
+      return sum + (position < earlyThreshold ? 1 : 0.5);
+    }, 0);
+    const recall = slotTerms.size > 0 ? matched / slotTerms.size : 0;
+    const precision = matched / Math.max(5, candidateTerms.size);
+    const useSpecificity = slotTerms.size >= 2;
+    const specificity = recall * precision;
+    const positionWeightedRecall = slotTerms.size > 0 ? positionWeightedMatched / slotTerms.size : 0;
+    const positionWeightedPrecision = positionWeightedMatched / Math.max(5, candidateTerms.size);
+    const positionWeightedSpecificity = positionWeightedRecall * positionWeightedPrecision;
+    const { firstPersonClauseCount, prospectivePersonalVerbCount, planningDensity, pastness } = computePastness(candidateText);
+    const otherSlotTerms = otherSlot ? normalizeContentTerms(otherSlot) : new Set<string>();
+    const otherMatched = otherSlotTerms.size > 0
+      ? [...otherSlotTerms].filter((term) => candidateTerms.has(term)).length
+      : 0;
+    const otherSlotRecall = otherSlotTerms.size > 0 ? otherMatched / otherSlotTerms.size : 0;
+    const purity = clamp01(1 - otherSlotRecall);
+    const purityMultiplier = activeComparisonExperimentConfig?.disableContaminationPenalty
+      ? 1
+      : 0.7 + (0.3 * purity);
+    const rawWitnessScore = useSpecificity
+      ? (activeComparisonExperimentConfig?.disableWitnessPositionPastness
+        ? specificity
+        : positionWeightedSpecificity * Math.max(0.6, pastness))
+      : recall;
+    return {
+      recall,
+      precision,
+      specificity,
+      positionWeightedRecall,
+      positionWeightedPrecision,
+      positionWeightedSpecificity,
+      firstPersonClauseCount,
+      prospectivePersonalVerbCount,
+      planningDensity,
+      pastness,
+      sideWitnessScore: clamp01(rawWitnessScore * purityMultiplier),
+    };
+  } finally {
+    if (activeComparisonProfile) {
+      activeComparisonProfile.specificityMs += elapsedMs(start);
     }
-    const earlyThreshold = candidateTermSequence.length * 0.3;
-    return sum + (position < earlyThreshold ? 1 : 0.5);
-  }, 0);
-  const recall = slotTerms.size > 0 ? matched / slotTerms.size : 0;
-  const precision = matched / Math.max(5, candidateTerms.size);
-  const useSpecificity = slotTerms.size >= 2;
-  const specificity = recall * precision;
-  const positionWeightedRecall = slotTerms.size > 0 ? positionWeightedMatched / slotTerms.size : 0;
-  const positionWeightedPrecision = positionWeightedMatched / Math.max(5, candidateTerms.size);
-  const positionWeightedSpecificity = positionWeightedRecall * positionWeightedPrecision;
-  const { firstPersonClauseCount, prospectivePersonalVerbCount, planningDensity, pastness } = computePastness(candidateText);
-  return {
-    recall,
-    precision,
-    specificity,
-    positionWeightedRecall,
-    positionWeightedPrecision,
-    positionWeightedSpecificity,
-    firstPersonClauseCount,
-    prospectivePersonalVerbCount,
-    planningDensity,
-    pastness,
-    sideWitnessScore: useSpecificity
-      ? positionWeightedSpecificity * Math.max(0.6, pastness)
-      : recall,
-  };
+  }
 }
 
 function findBestComparisonCoveragePair(
   leftCandidates: Array<{
     item: SearchResult;
     finalScore: number;
+    comparisonSideWitnessScore?: number;
     tokenEstimate: number;
     slotMatches: string[];
   }>,
   rightCandidates: Array<{
     item: SearchResult;
     finalScore: number;
+    comparisonSideWitnessScore?: number;
     tokenEstimate: number;
     slotMatches: string[];
   }>,
@@ -688,12 +807,15 @@ function findBestComparisonCoveragePair(
 ): Array<{
   item: SearchResult;
   finalScore: number;
+  comparisonSideWitnessScore?: number;
   tokenEstimate: number;
   slotMatches: string[];
 }> | null {
+  const start = activeComparisonProfile ? process.hrtime.bigint() : 0n;
   let bestPair: Array<{
     item: SearchResult;
     finalScore: number;
+    comparisonSideWitnessScore?: number;
     tokenEstimate: number;
     slotMatches: string[];
   }> | null = null;
@@ -708,7 +830,13 @@ function findBestComparisonCoveragePair(
       if (totalTokens > selectionTokenBudget) {
         continue;
       }
-      const pairScore = left.finalScore + right.finalScore;
+      const leftWitness = activeComparisonExperimentConfig?.disablePairScoreOnWitness
+        ? left.finalScore
+        : (left.comparisonSideWitnessScore ?? left.finalScore);
+      const rightWitness = activeComparisonExperimentConfig?.disablePairScoreOnWitness
+        ? right.finalScore
+        : (right.comparisonSideWitnessScore ?? right.finalScore);
+      const pairScore = leftWitness + rightWitness;
       const currentTokens = bestPair ? bestPair[0]!.tokenEstimate + bestPair[1]!.tokenEstimate : Number.POSITIVE_INFINITY;
       if (pairScore > bestPairScore || (pairScore === bestPairScore && totalTokens < currentTokens)) {
         bestPair = [left, right];
@@ -716,7 +844,9 @@ function findBestComparisonCoveragePair(
       }
     }
   }
-
+  if (activeComparisonProfile) {
+    activeComparisonProfile.pairSelectionMs += elapsedMs(start);
+  }
   return bestPair;
 }
 
@@ -750,6 +880,9 @@ function splitTemporalClauses(text: string): string[] {
 }
 
 function normalizeTerms(text: string): string[] {
+  if (activeComparisonProfile) {
+    activeComparisonProfile.normalizeTermsCalls += 1;
+  }
   return text
     .toLowerCase()
     .split(/[^a-z0-9_]+/i)
@@ -757,12 +890,18 @@ function normalizeTerms(text: string): string[] {
 }
 
 function normalizeContentTerms(text: string): Set<string> {
+  if (activeComparisonProfile) {
+    activeComparisonProfile.normalizeContentTermsCalls += 1;
+  }
   return new Set(
     normalizeContentTermSequence(text),
   );
 }
 
 function normalizeContentTermSequence(text: string): string[] {
+  if (activeComparisonProfile) {
+    activeComparisonProfile.normalizeContentTermsCalls += 1;
+  }
   return normalizeTerms(text).filter((term) => term.length >= 3 && !TEMPORAL_SLOT_STOPWORDS.has(term));
 }
 
@@ -775,6 +914,54 @@ function buildFirstContentTermPositions(terms: string[]): Map<string, number> {
     }
   }
   return positions;
+}
+
+function computeComparisonFinalScore({
+  semanticScore,
+  recencyScore,
+  temporalAnchorDensity,
+  coverage,
+  comparisonSideWitnessScore,
+  temporalQueryActive,
+}: {
+  semanticScore: number;
+  recencyScore: number;
+  temporalAnchorDensity: number;
+  coverage: number;
+  comparisonSideWitnessScore?: number;
+  temporalQueryActive: boolean;
+}): number {
+  if (activeComparisonExperimentConfig?.disableComparisonBlend) {
+    return (0.40 * semanticScore) +
+      (0.25 * recencyScore) +
+      (0.20 * temporalAnchorDensity) +
+      (0.15 * coverage) +
+      (temporalQueryActive ? 0.05 : 0);
+  }
+
+  return (0.15 * semanticScore) +
+    (0.15 * recencyScore) +
+    (0.15 * coverage) +
+    (0.55 * (comparisonSideWitnessScore ?? 0));
+}
+
+function estimateTokensWithProfile(text: string): number {
+  if (activeComparisonProfile) {
+    activeComparisonProfile.estimateTokensCalls += 1;
+  }
+  return estimateTokens(text);
+}
+
+function recordSort(length: number): void {
+  if (!activeComparisonProfile) {
+    return;
+  }
+  activeComparisonProfile.sortCalls += 1;
+  activeComparisonProfile.totalSortedLength += length;
+}
+
+function elapsedMs(start: bigint): number {
+  return Number(process.hrtime.bigint() - start) / 1_000_000;
 }
 
 function computePastness(text: string): {

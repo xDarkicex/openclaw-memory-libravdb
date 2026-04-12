@@ -156,9 +156,12 @@ func CompactSession(
 	if len(compactable) < 2 {
 		return Result{DidCompact: false}, nil
 	}
-	if !force && len(compactable) < targetSize {
-		return Result{DidCompact: false}, nil
-	}
+	// Compaction clusters older turns into summaries. partitionChronological handles
+	// any compactable count correctly (it creates one cluster per group of targetSize
+	// turns). The len(compactable) < targetSize gate was incorrectly blocking short
+	// sessions from compaction — only the len < 2 guard is needed to ensure we have
+	// enough material to form at least one cluster.
+	_ = targetSize // retained for partitionChronological; do not gate on it here
 
 	clusters := partitionChronological(compactable, targetSize)
 	if len(clusters) == 0 {
