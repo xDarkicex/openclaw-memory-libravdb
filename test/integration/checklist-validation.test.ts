@@ -42,7 +42,7 @@ test("source checklist invariants are present in host code", async () => {
   assert.match(indexTs, /api\.on\("before_reset"/);
   assert.match(indexTs, /api\.on\("session_end"/);
   assert.match(indexTs, /api\.on\("gateway_stop"/);
-  assert.match(indexTs, /registrationMode === "cli-metadata"/);
+  assert.match(indexTs, /(?:registrationMode|mode) === "cli-metadata"/);
   assert.doesNotMatch(indexTs, /registerMemoryPromptSection/);
   assert.doesNotMatch(indexTs, /registerMemoryRuntime\?\.\(/);
   assert.doesNotMatch(indexTs, /api\.on\("shutdown"/);
