@@ -12,6 +12,7 @@ Why:
 - MiniLM keeps the local LongMemEval retrieval slice inside the target memory envelope on macOS.
 - Nomic remains available as an explicit opt-in profile for long-context experiments.
 - Nomic ONNX on macOS is fragile with CoreML execution and can trigger multi-GB RSS, so it is no longer the safe bundled default.
+- Intel Macs without reliable Metal/MPS support should set `onnxDevice: "cpu"` to force CPU ONNX execution and bypass CoreML.
 
 Current shipped profile names:
 
@@ -33,6 +34,7 @@ How it works:
 - `onnx-local` still requires local model assets through `embeddingModelPath`, typically a directory containing `embedding.json`.
 - The manifest may override or refine the profile, but explicit dimension mismatches fail closed.
 - The sidecar store persists an embedding fingerprint, so reopening an existing store with a different effective model profile will fail instead of silently mixing vector spaces.
+- `onnxDevice` is passed through as `LIBRAVDB_ONNX_DEVICE` for daemon versions that support execution-provider selection (`auto`, `cpu`, `cuda`, `coreml`, `directml`, `openvino`).
 
 Recommended usage:
 

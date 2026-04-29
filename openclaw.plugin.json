@@ -28,6 +28,18 @@
       "embeddingRuntimePath": {
         "type": "string"
       },
+      "onnxDevice": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "cpu",
+          "cuda",
+          "coreml",
+          "directml",
+          "openvino"
+        ],
+        "description": "Optional ONNX execution provider override passed to libravdbd. Use cpu to bypass CoreML/MPS on Intel Macs."
+      },
       "embeddingBackend": {
         "type": "string",
         "enum": [

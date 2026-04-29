@@ -16,6 +16,9 @@ export interface PluginConfig {
   useSessionRecallProjection?: boolean;
   useSessionSummarySearchExperiment?: boolean;
   embeddingRuntimePath?: string;
+  /** Optional ONNX execution provider override passed through to libravdbd.
+   *  Use "cpu" to bypass CoreML/MPS on Intel Macs or fragile GPU/NPU providers. */
+  onnxDevice?: "auto" | "cpu" | "cuda" | "coreml" | "directml" | "openvino";
   embeddingBackend?: "bundled" | "onnx-local" | "custom-local";
   embeddingProfile?: string;
   fallbackProfile?: string;

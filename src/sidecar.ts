@@ -442,6 +442,9 @@ export function buildSidecarEnv(cfg: PluginConfig): Record<string, string> {
   if (cfg.embeddingRuntimePath) {
     env.LIBRAVDB_ONNX_RUNTIME = cfg.embeddingRuntimePath;
   }
+  if (cfg.onnxDevice) {
+    env.LIBRAVDB_ONNX_DEVICE = cfg.onnxDevice;
+  }
   if (cfg.embeddingBackend) {
     env.LIBRAVDB_EMBEDDING_BACKEND = cfg.embeddingBackend;
   }
