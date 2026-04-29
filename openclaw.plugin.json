@@ -150,10 +150,6 @@
           "type": "string"
         }
       },
-      "markdownIngestionCollection": {
-        "type": "string",
-        "default": "global"
-      },
       "markdownIngestionDebounceMs": {
         "type": "number",
         "default": 150

@@ -51,7 +51,6 @@ Relevant config fields:
 | `markdownIngestionRoots` | Generic markdown roots to watch. |
 | `markdownIngestionInclude` | Optional include globs for generic roots. |
 | `markdownIngestionExclude` | Optional exclude globs for generic roots. |
-| `markdownIngestionCollection` | Target collection for generic markdown, default `global`. |
 | `markdownIngestionDebounceMs` | Watch debounce window, default `150`. |
 | `markdownIngestionObsidianEnabled` | Enables Obsidian ingestion when vault roots exist. |
 | `markdownIngestionObsidianRoots` | Obsidian vault roots to watch. |
