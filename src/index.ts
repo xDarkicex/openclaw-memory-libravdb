@@ -16,20 +16,20 @@ export const MEMORY_ID = "libravdb-memory";
 const LIGHTWEIGHT_MODES = new Set(["cli-metadata", "setup-only"]);
 
 export function register(api: OpenClawPluginApi) {
-  const mode = api.registrationMode as string;
+  const registrationMode = api.registrationMode;
   const logger = api.logger ?? console;
 
-  if (mode === "cli-metadata") {
+  if (registrationMode === "cli-metadata") {
     registerMemoryCliMetadata(api);
     return;
   }
 
   const cfg = api.pluginConfig as PluginConfig;
-  const isLightweight = LIGHTWEIGHT_MODES.has(mode);
-  const isDiscovery = mode === "discovery";
+  const isLightweight = LIGHTWEIGHT_MODES.has(registrationMode);
+  const isDiscovery = registrationMode === "discovery";
 
   logger.info?.(
-    `LibraVDB registering mode=${mode} lightweight=${isLightweight} ` +
+    `LibraVDB registering mode=${registrationMode} lightweight=${isLightweight} ` +
     `discovery=${isDiscovery} userId=${cfg.userId ?? "(auto)"} ` +
     `crossSessionRecall=${cfg.crossSessionRecall !== false}`,
   );
@@ -54,7 +54,7 @@ export function register(api: OpenClawPluginApi) {
       );
     } else {
       logger.warn?.(
-        `LibraVDB: registration mode is "${mode}". ` +
+        `LibraVDB: registration mode is "${registrationMode}". ` +
         `Context engine hooks (bootstrap, ingest, afterTurn) are NOT registered. ` +
         `Memory will not be written automatically — only CLI commands are available.`,
       );
