@@ -43,13 +43,19 @@
         "description": "Optional gRPC kernel endpoint for hosts using the daemon kernel transport."
       },
       "authoredHardBudgetFraction": {
-        "type": "number"
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
       },
       "authoredSoftBudgetFraction": {
-        "type": "number"
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
       },
       "elevatedGuidanceBudgetFraction": {
-        "type": "number"
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
       },
       "useSessionSummarySearchExperiment": {
         "type": "boolean"
