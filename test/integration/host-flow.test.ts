@@ -449,7 +449,7 @@ test("compact omits invalid currentTokenCount values from the wire request", asy
   assert.equal("currentTokenCount" in params, false);
 });
 
-test("afterTurn forwards message arrays and pre-prompt counts correctly", async () => {
+test("afterTurn forwards only daemon-relevant fields, strips prePromptMessageCount", async () => {
   const rpc = new StaticContractRpc();
   const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
@@ -473,7 +473,7 @@ test("afterTurn forwards message arrays and pre-prompt counts correctly", async 
   assert.ok(params, "Expected after_turn_kernel to be called");
   assert.equal(params.sessionId, "test-session");
   assert.equal(params.userId, "test-user");
-  assert.equal(params.prePromptMessageCount, 1);
+  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon — daemon defaults to 0 and uses content-hash dedup");
   assert.equal(params.isHeartbeat, false);
   assert.deepEqual(params.messages, mockMessages);
 });

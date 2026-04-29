@@ -978,7 +978,6 @@ export function buildContextEngineFactory(
             sessionKey: args.sessionKey,
             userId,
             messages,
-            prePromptMessageCount: args.prePromptMessageCount,
             isHeartbeat: args.isHeartbeat,
           });
           await performAfterTurnPredictiveCompaction({
@@ -990,9 +989,11 @@ export function buildContextEngineFactory(
         }
         const rpc = await runtime.getRpc();
         const result = await rpc.call("after_turn_kernel", {
-          ...args,
+          sessionId: args.sessionId,
+          sessionKey: args.sessionKey,
           userId,
           messages,
+          isHeartbeat: args.isHeartbeat,
         });
         await performAfterTurnPredictiveCompaction({
           sessionId: args.sessionId,
