@@ -212,6 +212,83 @@ test("status command shuts the plugin runtime down after printing status", async
   assert.equal(shutdownCalls, 1);
 });
 
+test("status --deep probes authored collection search health", async () => {
+  let registered: RegisteredCli | null = null;
+  let shutdownCalls = 0;
+  const rpcCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string, params: Record<string, unknown>) {
+            rpcCalls.push({ method, params });
+            if (method === "status") {
+              return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+            }
+            if (method === "search_text") {
+              if (params.collection === "authored:soft") {
+                throw new Error("query vector dimension 384 does not match collection dimension 1");
+              }
+              return { results: [] };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      getKernel() {
+        return null;
+      },
+      async emitLifecycleHint() {},
+      async shutdown() {
+        shutdownCalls += 1;
+      },
+    },
+    {},
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const status = memory?.commands.find((command) => command.name() === "status");
+  assert.ok(status?.handler);
+
+  const originalLog = console.log;
+  const previousExitCode = process.exitCode;
+  const logs: string[] = [];
+  let observedExitCode: string | number | undefined;
+  console.log = ((message?: unknown) => { logs.push(String(message)); }) as typeof console.log;
+  process.exitCode = undefined;
+  try {
+    await status.handler?.({ deep: true, json: true });
+    observedExitCode = process.exitCode;
+  } finally {
+    console.log = originalLog;
+    process.exitCode = previousExitCode;
+  }
+
+  const payload = JSON.parse(logs[0] ?? "{}");
+  assert.equal(payload.status.ok, true);
+  assert.equal(payload.deep.ok, false);
+  assert.deepEqual(
+    rpcCalls.filter((call) => call.method === "search_text").map((call) => call.params.collection),
+    ["authored:hard", "authored:soft", "authored:variant"],
+  );
+  assert.match(payload.deep.probes[1]?.error ?? "", /dimension 384/);
+  assert.equal(observedExitCode, 1);
+  assert.equal(shutdownCalls, 1);
+});
+
 test("non-full CLI registration exposes command structure without action handlers", () => {
   let registered: RegisteredCli | null = null;
   const api = {
