@@ -147,11 +147,7 @@ export function registerMemoryCli(
 
       const flush = ensureCommand(root, "flush")
         .description("Wipe a durable memory namespace after confirmation");
-      if (flush.requiredOption) {
-        flush.requiredOption("--user-id <userId>", "User id whose durable memory should be deleted");
-      } else {
-        flush.option("--user-id <userId>", "User id whose durable memory should be deleted");
-      }
+      flush.option("--user-id <userId>", "User id whose durable memory should be deleted");
       flush.option("--session-key <sessionKey>", "Session key whose derived durable namespace should be deleted");
       flush
         .option("--yes", "Skip the confirmation prompt")

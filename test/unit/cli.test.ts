@@ -21,6 +21,7 @@ class FakeCommand {
   public commands: FakeCommand[] = [];
   public descriptions: string[] = [];
   public options: string[] = [];
+  public requiredOptions: string[] = [];
   public arguments: string[] = [];
   public handler: ((...args: unknown[]) => unknown) | null = null;
 
@@ -49,6 +50,7 @@ class FakeCommand {
 
   requiredOption(flags: string): FakeCommand {
     this.options.push(flags);
+    this.requiredOptions.push(flags);
     return this;
   }
 
@@ -148,6 +150,17 @@ test("full CLI registration exposes standard memory commands and LibraVDB operat
   assert.ok(search.options.includes("--query <text>"));
   assert.ok(search.options.includes("--max-results <n>"));
   assert.ok(search.options.includes("--json"));
+
+  const flush = memory.commands.find((command) => command.name() === "flush");
+  assert.ok(flush);
+  assert.ok(flush.options.includes("--user-id <userId>"));
+  assert.ok(flush.options.includes("--session-key <sessionKey>"));
+  assert.equal(flush.requiredOptions.includes("--user-id <userId>"), false);
+
+  const dreamPromote = memory.commands.find((command) => command.name() === "dream-promote");
+  assert.ok(dreamPromote);
+  assert.ok(dreamPromote.requiredOptions.includes("--user-id <userId>"));
+  assert.ok(dreamPromote.requiredOptions.includes("--dream-file <path>"));
 });
 
 test("status command shuts the plugin runtime down after printing status", async () => {
