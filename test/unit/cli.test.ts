@@ -289,6 +289,70 @@ test("status --deep probes authored collection search health", async () => {
   assert.equal(shutdownCalls, 1);
 });
 
+test("status --deep includes authored probe rows in table output", async () => {
+  let registered: RegisteredCli | null = null;
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string, params: Record<string, unknown>) {
+            if (method === "status") {
+              return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+            }
+            if (method === "search_text") {
+              return { results: params.collection === "authored:variant" ? [{ id: "v1" }] : [] };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      getKernel() {
+        return null;
+      },
+      async emitLifecycleHint() {},
+      async shutdown() {},
+    },
+    {},
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const status = memory?.commands.find((command) => command.name() === "status");
+  assert.ok(status?.handler);
+
+  const originalTable = console.table;
+  const previousExitCode = process.exitCode;
+  const tables: Array<Record<string, unknown>> = [];
+  console.table = ((value?: unknown) => {
+    tables.push(value as Record<string, unknown>);
+  }) as typeof console.table;
+  process.exitCode = undefined;
+  try {
+    await status.handler?.({ deep: true });
+  } finally {
+    console.table = originalTable;
+    process.exitCode = previousExitCode;
+  }
+
+  assert.equal(tables.length, 1);
+  assert.equal(tables[0]?.["Deep probe"], "ok");
+  assert.equal(tables[0]?.["Probe authored:hard"], "ok (0 hits)");
+  assert.equal(tables[0]?.["Probe authored:soft"], "ok (0 hits)");
+  assert.equal(tables[0]?.["Probe authored:variant"], "ok (1 hits)");
+});
+
 test("non-full CLI registration exposes command structure without action handlers", () => {
   let registered: RegisteredCli | null = null;
   const api = {
