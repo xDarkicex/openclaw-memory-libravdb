@@ -87,6 +87,53 @@ test("context engine uses gRPC kernel on cold bootstrap without falling back to 
   assert.equal(calls[1]?.params.userId, "fixed-user");
 });
 
+test("context engine falls back to RPC when kernel lookup fails during bootstrap", async () => {
+  const rpc = new FakeRpc();
+  const warnings: string[] = [];
+  const runtime: PluginRuntime = {
+    getRpc: async () => rpc as unknown as RpcClient,
+    getKernel: async () => {
+      throw new Error("kernel unavailable");
+    },
+    emitLifecycleHint: async () => {},
+    shutdown: async () => {},
+  };
+  const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn(message: string) { warnings.push(message); },
+  });
+
+  await engine.bootstrap({ sessionId: "s1", sessionKey: "sk1" });
+
+  const call = rpc.calls.find((c) => c.method === "bootstrap_session_kernel");
+  assert.ok(call, "bootstrap should fall back to sidecar RPC");
+  assert.equal(call.params.sessionId, "s1");
+  assert.equal(call.params.sessionKey, "sk1");
+  assert.equal(call.params.userId, "fixed-user");
+  assert.match(warnings[0] ?? "", /bootstrap kernel unavailable/);
+});
+
+test("context engine returns compact failure instead of throwing when kernel and RPC are unavailable", async () => {
+  const runtime: PluginRuntime = {
+    getRpc: async () => {
+      throw new Error("sidecar unavailable");
+    },
+    getKernel: async () => {
+      throw new Error("kernel unavailable");
+    },
+    emitLifecycleHint: async () => {},
+    shutdown: async () => {},
+  };
+  const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
+
+  const result = await engine.compact({ sessionId: "s1", tokenBudget: 1000 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.compacted, false);
+  assert.match(result.reason ?? "", /sidecar unavailable/);
+});
+
 test("context engine uses gRPC kernel on cold assemble without falling back to RPC", async () => {
   let getRpcCalls = 0;
   let assembleParams: Record<string, unknown> | null = null;
