@@ -27,10 +27,13 @@ export interface LifecycleHint {
   nextSessionKey?: string;
 }
 
+export type RuntimeShutdownTask = () => Promise<void> | void;
+
 export interface PluginRuntime {
   getRpc: RpcGetter;
   getKernel(): GrpcKernelClient | null;
   emitLifecycleHint(hint: LifecycleHint): Promise<void>;
+  onShutdown(task: RuntimeShutdownTask): void;
   shutdown(): Promise<void>;
 }
 
@@ -40,7 +43,9 @@ export function createPluginRuntime(
 ): PluginRuntime {
   let started: Promise<{ rpc: RpcClient; sidecar: SidecarHandle; kernel: GrpcKernelClient | null }> | null = null;
   let stopped = false;
+  let shuttingDown = false;
   let resolvedKernel: GrpcKernelClient | null = null;
+  const shutdownTasks: RuntimeShutdownTask[] = [];
 
   const ensureStarted = async () => {
     if (stopped) {
@@ -103,7 +108,26 @@ export function createPluginRuntime(
         logger.warn?.(`LibraVDB lifecycle hint dropped: ${formatError(error)}`);
       }
     },
+    onShutdown(task: RuntimeShutdownTask) {
+      if (stopped || shuttingDown) {
+        return;
+      }
+      shutdownTasks.push(task);
+    },
     async shutdown() {
+      if (stopped || shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
+
+      for (const task of shutdownTasks.splice(0).reverse()) {
+        try {
+          await task();
+        } catch (error) {
+          logger.warn?.(`LibraVDB shutdown task failed: ${formatError(error)}`);
+        }
+      }
+
       stopped = true;
       if (!started) {
         return;

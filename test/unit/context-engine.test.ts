@@ -60,6 +60,7 @@ function fakeRuntime(rpc: FakeRpc): PluginRuntime {
     getRpc: async () => rpc as unknown as RpcClient,
     getKernel: () => null,
     emitLifecycleHint: async () => {},
+    onShutdown: () => {},
     shutdown: async () => {},
   };
 }
@@ -281,6 +282,7 @@ test("context engine assemble keeps daemon result when exact recall RPC acquisit
     },
     getKernel: () => null,
     emitLifecycleHint: async () => {},
+    onShutdown: () => {},
     shutdown: async () => {},
   };
   const warnings: string[] = [];

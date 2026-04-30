@@ -14,6 +14,7 @@ function createRuntimeRecorder() {
     async emitLifecycleHint(hint: LifecycleHint) {
       hints.push(hint);
     },
+    onShutdown() {},
     async shutdown() {},
   };
   return { runtime, hints };
