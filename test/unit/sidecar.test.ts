@@ -27,6 +27,16 @@ test("resolveConfiguredEndpoint rejects executable paths", () => {
   );
 });
 
+test("resolveConfiguredEndpoint rejects malformed daemon endpoints", () => {
+  for (const sidecarPath of ["unix:", "tcp:", "tcp::123", "tcp:127.0.0.1", "tcp:127.0.0.1:notaport", "tcp:127.0.0.1:70000"]) {
+    assert.throws(
+      () => resolveConfiguredEndpoint({ rpcTimeoutMs: 1, sidecarPath }),
+      /must be a daemon endpoint/,
+      sidecarPath,
+    );
+  }
+});
+
 test("defaultEndpoint uses unix sockets on unix and localhost TCP on windows", () => {
   // On machines where /opt/homebrew/var/clawdb/run/libravdb.sock exists (Homebrew install),
   // defaultEndpoint probes the filesystem and returns the Homebrew path. On machines without

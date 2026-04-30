@@ -585,7 +585,21 @@ function describeEndpoint(endpoint: string): string {
 }
 
 function isConfiguredEndpoint(value?: string): boolean {
-  return value?.startsWith("tcp:") === true || value?.startsWith("unix:") === true;
+  if (!value) return false;
+  if (value.startsWith("unix:")) {
+    return value.slice("unix:".length).trim().length > 0;
+  }
+  if (!value.startsWith("tcp:")) {
+    return false;
+  }
+  const address = value.slice("tcp:".length);
+  const separator = address.lastIndexOf(":");
+  if (separator <= 0 || separator === address.length - 1) {
+    return false;
+  }
+  const host = address.slice(0, separator).trim();
+  const port = Number(address.slice(separator + 1));
+  return host.length > 0 && Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
 export { PlaceholderSocket };
