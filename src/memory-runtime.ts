@@ -183,6 +183,9 @@ async function searchResolvedCollections(
   k: number,
 ): Promise<{ results: SearchResult[] }> {
   const collections = resolveSearchCollections(cfg, userId, sessionId);
+  if (collections.length === 0) {
+    return { results: [] };
+  }
   return collections.length === 1
     ? await rpc.call<{ results: SearchResult[] }>("search_text", {
         collection: collections[0],
@@ -198,21 +201,27 @@ async function searchResolvedCollections(
 }
 
 function resolveSearchCollections(cfg: PluginConfig, userId: string, sessionId?: string): string[] {
+  if (cfg.crossSessionRecall === false) {
+    return sessionId ? [resolveSessionSearchCollection(cfg, sessionId)] : [];
+  }
+
   const collections = [`user:${userId}`, "global"];
   if (!sessionId) {
     return collections;
   }
 
+  collections.unshift(resolveSessionSearchCollection(cfg, sessionId));
+  return collections;
+}
+
+function resolveSessionSearchCollection(cfg: PluginConfig, sessionId: string): string {
   if (cfg.useSessionSummarySearchExperiment) {
-    collections.unshift(`session_summary:${sessionId}`);
-    return collections;
+    return `session_summary:${sessionId}`;
   }
   if (cfg.useSessionRecallProjection) {
-    collections.unshift(`session_recall:${sessionId}`);
-    return collections;
+    return `session_recall:${sessionId}`;
   }
-  collections.unshift(`session:${sessionId}`);
-  return collections;
+  return `session:${sessionId}`;
 }
 
 function firstString(...values: Array<string | undefined>): string | undefined {
