@@ -95,8 +95,10 @@ export function register(api: OpenClawPluginApi) {
   const dreamPromotion = createDreamPromotionHandle(cfg, runtime.getRpc, api.logger ?? console);
 
   runtime.onShutdown(async () => {
-    await dreamPromotion.stop();
     await markdownIngestion.stop();
+  });
+  runtime.onShutdown(async () => {
+    await dreamPromotion.stop();
   });
 
   void markdownIngestion.start().catch((error) => {

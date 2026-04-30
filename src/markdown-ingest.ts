@@ -248,7 +248,6 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     this.states.clear();
     this.fileStates.clear();
     this.started = false;
-    this.stopping = false;
   }
 
   private getRootState(root: string): RootState {
@@ -272,7 +271,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 
   private async scanRoot(root: string): Promise<void> {
-    if (this.stopping) {
+    if (!this.started || this.stopping) {
       return;
     }
     const rootState = this.getRootState(root);
@@ -310,7 +309,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 
   private scheduleRootScan(rootState: RootState): void {
-    if (this.stopping) {
+    if (!this.started || this.stopping) {
       return;
     }
     if (rootState.scanState.scanning) {
