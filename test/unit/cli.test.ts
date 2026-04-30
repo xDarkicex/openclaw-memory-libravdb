@@ -76,7 +76,7 @@ function createRuntime(): PluginRuntime {
     async getRpc() {
       throw new Error("not used by registration tests");
     },
-    getKernel() {
+    async getKernel() {
       return null;
     },
     async emitLifecycleHint() {},
@@ -180,7 +180,7 @@ test("status command shuts the plugin runtime down after printing status", async
           },
         } as never;
       },
-      getKernel() {
+      async getKernel() {
         return null;
       },
       async emitLifecycleHint() {},

@@ -29,7 +29,7 @@ export interface LifecycleHint {
 
 export interface PluginRuntime {
   getRpc: RpcGetter;
-  getKernel(): GrpcKernelClient | null;
+  getKernel(): Promise<GrpcKernelClient | null>;
   emitLifecycleHint(hint: LifecycleHint): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -40,7 +40,6 @@ export function createPluginRuntime(
 ): PluginRuntime {
   let started: Promise<{ rpc: RpcClient; sidecar: SidecarHandle; kernel: GrpcKernelClient | null }> | null = null;
   let stopped = false;
-  let resolvedKernel: GrpcKernelClient | null = null;
 
   const ensureStarted = async () => {
     if (stopped) {
@@ -77,7 +76,6 @@ export function createPluginRuntime(
           }
         }
 
-        resolvedKernel = kernel;
         return { rpc, sidecar, kernel };
       })().catch((error) => {
         started = null;
@@ -91,9 +89,8 @@ export function createPluginRuntime(
     async getRpc() {
       return (await ensureStarted()).rpc;
     },
-    getKernel() {
-      if (!started) return null;
-      return resolvedKernel;
+    async getKernel() {
+      return (await ensureStarted()).kernel;
     },
     async emitLifecycleHint(hint: LifecycleHint) {
       try {

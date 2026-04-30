@@ -2,7 +2,6 @@ import type { PluginRuntime } from "./plugin-runtime.js";
 import type {
   LoggerLike,
   PluginConfig,
-  RecallCache,
   SearchResult,
 } from "./types.js";
 import {
@@ -490,7 +489,6 @@ export function normalizeAssembleResult(result: {
 export function buildContextEngineFactory(
   runtime: PluginRuntime,
   cfg: PluginConfig,
-  recallCache: RecallCache<SearchResult>,
   logger: LoggerLike = console,
 ) {
   let cachedIdentity: ResolvedIdentity | null = null;
@@ -679,7 +677,7 @@ export function buildContextEngineFactory(
     currentTokenCount?: number;
   }): Promise<OpenClawCompatibleCompactResult> {
     const request = buildCompactSessionRequest(args);
-    const kernel = runtime.getKernel();
+    const kernel = await runtime.getKernel();
     try {
       if (kernel) {
         return normalizeCompactResult(await kernel.compactSession(request), {
@@ -757,7 +755,7 @@ export function buildContextEngineFactory(
         `LibraVDB bootstrap sessionId=${args.sessionId} userId=${userId} ` +
         `sessionKey=${args.sessionKey ?? "(none)"}`,
       );
-      const kernel = runtime.getKernel();
+      const kernel = await runtime.getKernel();
       if (kernel) {
         try {
           await kernel.initializeSession({
@@ -791,7 +789,7 @@ export function buildContextEngineFactory(
         `contentLen=${message.content.length}`,
       );
       try {
-        const kernel = runtime.getKernel();
+        const kernel = await runtime.getKernel();
         if (kernel) {
           return await kernel.ingestMessage({
             sessionId: args.sessionId,
@@ -875,7 +873,7 @@ export function buildContextEngineFactory(
           return buildBudgetFallbackContext(messages, args.tokenBudget);
         }
       }
-      const kernel = runtime.getKernel();
+      const kernel = await runtime.getKernel();
       if (kernel) {
         try {
           const assembled = normalizeAssembleResult(await kernel.assembleContext({
@@ -966,7 +964,7 @@ export function buildContextEngineFactory(
         `messageCount=${msgCount} heartbeat=${args.isHeartbeat ?? false}`,
       );
       try {
-        const kernel = runtime.getKernel();
+        const kernel = await runtime.getKernel();
         const currentTokenCount = normalizeCurrentTokenCount(
           typeof args.runtimeContext?.currentTokenCount === "number"
             ? args.runtimeContext.currentTokenCount

@@ -170,19 +170,3 @@ export interface SidecarHandle {
 export interface RpcCallOptions {
   timeoutMs: number;
 }
-
-export interface RecallCacheEntry<T = unknown> {
-  userId: string;
-  queryText: string;
-  durableVariantHits: T[];
-  userHits?: T[];
-  globalHits?: T[];
-  authoredVariantHits?: T[];
-}
-
-export interface RecallCache<T = unknown> {
-  put(entry: RecallCacheEntry<T>): void;
-  get(key: Pick<RecallCacheEntry<T>, "userId" | "queryText">): RecallCacheEntry<T> | undefined;
-  take(key: Pick<RecallCacheEntry<T>, "userId" | "queryText">): RecallCacheEntry<T> | undefined;
-  clearUser(userId: string): void;
-}

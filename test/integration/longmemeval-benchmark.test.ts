@@ -4,7 +4,6 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 
 import { buildContextEngineFactory } from "../../src/context-engine.js";
 import { createPluginRuntime } from "../../src/plugin-runtime.js";
-import { createRecallCache } from "../../src/recall-cache.js";
 import { probeSidecarEndpoint } from "../../src/sidecar.js";
 import { acquireTestDaemonHandle } from "./daemon-harness.js";
 import type { TestDaemonHandle } from "./daemon-harness.js";
@@ -220,7 +219,7 @@ async function createBenchmarkStack(cfgBase: Omit<PluginConfig, "sidecarPath">, 
     sidecarPath: daemon.endpoint,
   };
   const runtime = createPluginRuntime(cfg, NOOP_LOGGER);
-  const context = buildContextEngineFactory(runtime, cfg, createRecallCache<SearchResult>(), NOOP_LOGGER);
+  const context = buildContextEngineFactory(runtime, cfg, NOOP_LOGGER);
   return { daemon, runtime, context };
 }
 

@@ -7,9 +7,8 @@ import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
-import { createRecallCache } from "./recall-cache.js";
 import { createPluginRuntime } from "./plugin-runtime.js";
-import type { PluginConfig, SearchResult } from "./types.js";
+import type { PluginConfig } from "./types.js";
 
 export const MEMORY_ID = "libravdb-memory";
 
@@ -66,8 +65,6 @@ export function register(api: OpenClawPluginApi) {
   const runtime = runtimeOrNull;
   if (!runtime) return; // unreachable but satisfies the type checker
 
-  const recallCache = createRecallCache<SearchResult>();
-
   // Exclusive slot check: refuse to register if another plugin owns the memory slot.
   // plugins.slots.memory is the only configurable slot; context engine exclusivity
   // is enforced by the registry at runtime (no config surface for it).
@@ -82,13 +79,13 @@ export function register(api: OpenClawPluginApi) {
 
   // Migrated from three legacy calls to a single registerMemoryCapability.
   api.registerMemoryCapability(MEMORY_ID, {
-    promptBuilder: buildMemoryPromptSection(runtime.getRpc, cfg, recallCache),
+    promptBuilder: buildMemoryPromptSection(runtime.getRpc, cfg),
     runtime: buildMemoryRuntimeBridge(runtime.getRpc, cfg),
   });
 
   api.registerContextEngine(
     MEMORY_ID,
-    () => buildContextEngineFactory(runtime, cfg, recallCache, api.logger ?? console),
+    () => buildContextEngineFactory(runtime, cfg, api.logger ?? console),
   );
 
   const markdownIngestion = createMarkdownIngestionHandle(cfg, runtime.getRpc, api.logger ?? console);
