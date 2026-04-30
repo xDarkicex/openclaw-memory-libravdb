@@ -8,8 +8,8 @@ internal sequencing.
 
 LibraVDB Memory is split into two cooperating pieces:
 
-- a TypeScript OpenClaw plugin that owns the `memory` and `contextEngine`
-  slots
+- a TypeScript OpenClaw plugin that owns the `memory` slot and registers
+  context-engine capability at runtime
 - a Go sidecar daemon that owns storage, retrieval, and compaction
 
 The plugin keeps the host integration light and stable. The daemon keeps the

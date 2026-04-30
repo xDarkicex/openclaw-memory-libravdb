@@ -60,21 +60,20 @@ or run `libravdbd serve` in a terminal for validation.
 
 ## Activation
 
-Assign `libravdb-memory` to both OpenClaw slots:
+Assign `libravdb-memory` to the OpenClaw memory slot:
 
 ```json
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     }
   }
 }
 ```
 
-Treat partial assignment as a misconfiguration. This plugin is designed to own
-memory prompt injection and the context-engine lifecycle together.
+The plugin registers both memory and context-engine capabilities at runtime;
+current OpenClaw config only needs the `memory` slot assignment.
 
 If the daemon uses a non-default endpoint, add `sidecarPath`:
 
@@ -82,12 +81,14 @@ If the daemon uses a non-default endpoint, add `sidecarPath`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     },
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "sidecarPath": "unix:/Users/<you>/.clawdb/run/libravdb.sock"
+        "enabled": true,
+        "config": {
+          "sidecarPath": "unix:/Users/<you>/.clawdb/run/libravdb.sock"
+        }
       }
     }
   }
@@ -177,9 +178,9 @@ setup, or republish the release with corrected checksums.
 
 ### Default memory still appears active
 
-Confirm that `libravdb-memory` is assigned to both `memory` and
-`contextEngine`. Without both slot entries, OpenClaw's default memory path can
-continue to run in parallel.
+Confirm that `libravdb-memory` is assigned to `plugins.slots.memory`.
+Without that slot entry, OpenClaw's default memory path can continue to run in
+parallel.
 
 ### Lifecycle journal looks empty
 

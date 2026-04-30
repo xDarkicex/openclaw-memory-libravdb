@@ -20,7 +20,7 @@ assembly; durable recall; and sidecar-owned compaction.
 
 New install? Start here: [Install guide](./docs/install.md). Preferred setup on
 macOS: install `libravdbd` with Homebrew, install the OpenClaw plugin, then
-assign the plugin to both required slots.
+assign the plugin to the OpenClaw memory slot.
 
 ## Install
 
@@ -31,18 +31,20 @@ brew services start libravdbd
 openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 ```
 
-Then activate both plugin slots in `~/.openclaw/openclaw.json`:
+Then activate the plugin in `~/.openclaw/openclaw.json`:
 
 ```json
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     },
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "sidecarPath": "auto"
+        "enabled": true,
+        "config": {
+          "sidecarPath": "auto"
+        }
       }
     }
   }
@@ -78,9 +80,12 @@ If your daemon runs elsewhere, set `sidecarPath`:
 ```json
 {
   "plugins": {
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "sidecarPath": "tcp:127.0.0.1:37421"
+        "enabled": true,
+        "config": {
+          "sidecarPath": "tcp:127.0.0.1:37421"
+        }
       }
     }
   }
@@ -89,7 +94,8 @@ If your daemon runs elsewhere, set `sidecarPath`:
 
 ## Highlights
 
-- **Dual slot ownership** - owns both OpenClaw `memory` and `contextEngine`.
+- **Memory capability ownership** - owns the OpenClaw `memory` slot and
+  registers the context engine capability at runtime.
 - **Memory runtime bridge** - routes built-in `memory_search` calls to the same
   libraVDB-backed sidecar on hosts that expose the runtime API.
 - **Three memory scopes** - keeps active session, durable user, and global memory

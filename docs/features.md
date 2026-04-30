@@ -27,16 +27,19 @@ Example:
 ```json
 {
   "plugins": {
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "markdownIngestionEnabled": true,
-        "markdownIngestionRoots": [
-          "/Users/<you>/.openclaw/memory"
-        ],
-        "markdownIngestionObsidianEnabled": true,
-        "markdownIngestionObsidianRoots": [
-          "/Users/<you>/Documents/Obsidian/Main"
-        ]
+        "enabled": true,
+        "config": {
+          "markdownIngestionEnabled": true,
+          "markdownIngestionRoots": [
+            "/Users/<you>/.openclaw/memory"
+          ],
+          "markdownIngestionObsidianEnabled": true,
+          "markdownIngestionObsidianRoots": [
+            "/Users/<you>/Documents/Obsidian/Main"
+          ]
+        }
       }
     }
   }
@@ -85,12 +88,15 @@ Automatic diary watching:
 ```json
 {
   "plugins": {
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "dreamPromotionEnabled": true,
-        "dreamPromotionDiaryPath": "/Users/<you>/DREAMS.md",
-        "dreamPromotionUserId": "<userId>",
-        "dreamPromotionDebounceMs": 150
+        "enabled": true,
+        "config": {
+          "dreamPromotionEnabled": true,
+          "dreamPromotionDiaryPath": "/Users/<you>/DREAMS.md",
+          "dreamPromotionUserId": "<userId>",
+          "dreamPromotionDebounceMs": 150
+        }
       }
     }
   }

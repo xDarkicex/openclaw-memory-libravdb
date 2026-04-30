@@ -37,8 +37,7 @@ openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 ```
 
 If you use the OpenClaw.ai plugin UI instead of the CLI, install the same
-package and then assign the plugin id `libravdb-memory` to both the `memory`
-and `contextEngine` slots.
+package and then assign the plugin id `libravdb-memory` to the `memory` slot.
 
 Activate the plugin in `~/.openclaw/openclaw.json`:
 
@@ -46,8 +45,7 @@ Activate the plugin in `~/.openclaw/openclaw.json`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     }
   }
 }
@@ -59,12 +57,14 @@ If you run the daemon on a non-default endpoint, add a plugin config:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     },
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "sidecarPath": "unix:/Users/<you>/.clawdb/run/libravdb.sock"
+        "enabled": true,
+        "config": {
+          "sidecarPath": "unix:/Users/<you>/.clawdb/run/libravdb.sock"
+        }
       }
     }
   }
@@ -158,7 +158,7 @@ you wrap it in `brew services`, `systemd`, or `launchd`.
 ### Plugin Lifecycle
 
 - Install the package with `openclaw plugins install`.
-- Activate it by assigning `libravdb-memory` to both `memory` and `contextEngine`.
+- Activate it by assigning `libravdb-memory` to the `memory` slot.
 - Update it with your normal OpenClaw plugin update flow.
 - Disable it by removing the slot assignment from `~/.openclaw/openclaw.json`.
 
