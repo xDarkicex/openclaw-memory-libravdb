@@ -114,7 +114,7 @@ function createMemorySearchManager(
       const minScore = normalizeNumber(params.minScore);
       const rpc = await getRpc();
 
-      const result = dreamQuery.active
+      const result = dreamQuery.active && cfg.crossSessionRecall !== false
         ? await rpc.call<{ results: SearchResult[] }>("search_text", {
             collection: resolveDreamCollection(userId),
             text: queryText,
