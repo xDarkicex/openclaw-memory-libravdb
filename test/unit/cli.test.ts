@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { registerMemoryCli } from "../../src/cli.js";
 import { registerMemoryCliMetadata } from "../../src/cli-descriptors.js";
+import { register } from "../../src/index.js";
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
 
 type RegisteredCli = {
@@ -234,4 +235,55 @@ test("non-full CLI registration exposes command structure without action handler
     ["status", "index", "search", "flush", "export", "journal", "dream-promote"],
   );
   assert.ok(memory.commands.every((command) => command.handler === null));
+});
+
+test("discovery registration exposes runtime-backed memory commands for lazy CLI loading", () => {
+  let registered: RegisteredCli | null = null;
+  let memoryCapabilityRegistrations = 0;
+  let contextEngineRegistrations = 0;
+
+  register({
+    id: "libravdb-memory",
+    name: "LibraVDB Memory",
+    description: "Persistent vector memory with three-tier hybrid scoring",
+    source: "test",
+    registrationMode: "discovery",
+    config: selectedConfig,
+    pluginConfig: {},
+    logger: {
+      error(_msg: string) {},
+      warn(_msg: string) {},
+      info(_msg: string) {},
+    },
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+    registerMemoryCapability() {
+      memoryCapabilityRegistrations += 1;
+    },
+    registerContextEngine() {
+      contextEngineRegistrations += 1;
+    },
+    on() {
+      assert.fail("discovery mode should not register full runtime hooks");
+    },
+  } as never);
+
+  assert.ok(registered);
+  assert.equal(memoryCapabilityRegistrations, 0);
+  assert.equal(contextEngineRegistrations, 0);
+
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  assert.ok(memory);
+
+  const status = memory.commands.find((command) => command.name() === "status");
+  assert.ok(status?.handler);
+
+  const journal = memory.commands.find((command) => command.name() === "journal");
+  assert.ok(journal);
+  assert.ok(journal.options.includes("--limit <limit>"));
 });

@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { MEMORY_CLI_DESCRIPTOR, isMemorySlotSelected } from "./cli-descriptors.js";
-import { resolveDurableNamespace } from "./durable-namespace.js";
+import { resolveDurableNamespace } from "./memory-scopes.js";
 import { promoteDreamDiaryFile } from "./dream-promotion.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import type { PluginRuntime } from "./plugin-runtime.js";

@@ -396,13 +396,17 @@ test("compact normalizes daemon compact response into SDK CompactResult", async 
   const result = await context.compact({
     sessionId: "test-session",
     tokenBudget: 2048,
+    currentTokenCount: 12345,
   });
 
+  const params = rpc.getLastCall("compact_session");
+  assert.ok(params, "Expected compact_session to be called");
+  assert.equal(params.currentTokenCount, 12345);
   assert.equal(result.ok, true);
   assert.equal(result.compacted, true);
   assert.equal(result.reason, undefined);
   assert.equal(result.result?.summary, "extractive");
-  assert.equal(result.result?.tokensBefore, 0);
+  assert.equal(result.result?.tokensBefore, 12345);
   assert.deepEqual(result.result?.details, {
     clustersFormed: 2,
     clustersDeclined: 1,
@@ -445,7 +449,7 @@ test("compact omits invalid currentTokenCount values from the wire request", asy
   assert.equal("currentTokenCount" in params, false);
 });
 
-test("afterTurn forwards message arrays and pre-prompt counts correctly", async () => {
+test("afterTurn forwards only daemon-relevant fields, strips prePromptMessageCount", async () => {
   const rpc = new StaticContractRpc();
   const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
@@ -461,7 +465,7 @@ test("afterTurn forwards message arrays and pre-prompt counts correctly", async 
     sessionId: "test-session",
     userId: "test-user",
     messages: mockMessages,
-    prePromptMessageCount: 2,
+    prePromptMessageCount: 1,
     isHeartbeat: false,
   });
 
@@ -469,7 +473,7 @@ test("afterTurn forwards message arrays and pre-prompt counts correctly", async 
   assert.ok(params, "Expected after_turn_kernel to be called");
   assert.equal(params.sessionId, "test-session");
   assert.equal(params.userId, "test-user");
-  assert.equal(params.prePromptMessageCount, 2);
+  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon — daemon defaults to 0 and uses content-hash dedup");
   assert.equal(params.isHeartbeat, false);
   assert.deepEqual(params.messages, mockMessages);
 });
@@ -489,7 +493,10 @@ test("afterTurn triggers predictive compaction from runtimeContext currentTokenC
   await context.afterTurn({
     sessionId: "test-session",
     userId: "test-user",
-    messages: [{ role: "assistant", content: "small" }],
+    messages: [
+      { role: "user", content: "remember this" },
+      { role: "assistant", content: "small" },
+    ],
     prePromptMessageCount: 1,
     tokenBudget: 1000,
     runtimeContext: { currentTokenCount: 900 },
@@ -505,8 +512,8 @@ test("afterTurn triggers predictive compaction from runtimeContext currentTokenC
   assert.equal(compactParams.currentTokenCount, 900);
   assert.equal(compactParams.targetSize, 799);
   assert.equal(logger.warns.length, 0);
-  assert.match(logger.infos[0] ?? "", /predictive compaction trigger phase=afterTurn/);
-  assert.match(logger.infos[1] ?? "", /predictive compaction completed phase=afterTurn/);
+  assert.ok(logger.infos.some((message) => /predictive compaction trigger phase=afterTurn/.test(message)));
+  assert.ok(logger.infos.some((message) => /predictive compaction completed phase=afterTurn/.test(message)));
 });
 
 test("afterTurn does not trigger predictive compaction without authoritative currentTokenCount", async () => {
@@ -522,7 +529,10 @@ test("afterTurn does not trigger predictive compaction without authoritative cur
   await context.afterTurn({
     sessionId: "test-session",
     userId: "test-user",
-    messages: [{ role: "assistant", content: "small" }],
+    messages: [
+      { role: "user", content: "remember this" },
+      { role: "assistant", content: "small" },
+    ],
     prePromptMessageCount: 1,
     tokenBudget: 1000,
     runtimeContext: { currentTokenCount: Number.NaN },

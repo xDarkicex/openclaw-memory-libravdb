@@ -2,9 +2,23 @@
 export interface PluginConfig {
   dbPath?: string;
   sidecarPath?: string;
+  /** Stable identity for cross-session durable memory. When set, all sessions
+   *  share memories under user:{userId}. When unset, the plugin auto-derives
+   *  identity from the OS and persists it to the identity file. */
+  userId?: string;
+  /** Custom path to the identity JSON file. When unset the plugin resolves
+   *  $OPENCLAW_STATE_DIR/libravdb-identity.json, falling back to
+   *  ~/.openclaw/libravdb-identity.json. */
+  identityPath?: string;
+  /** When false, only session-scoped memories are retrieved. User-scoped
+   *  durable recall is skipped entirely. Defaults to true. */
+  crossSessionRecall?: boolean;
   useSessionRecallProjection?: boolean;
   useSessionSummarySearchExperiment?: boolean;
   embeddingRuntimePath?: string;
+  /** Optional ONNX execution provider override passed through to libravdbd.
+   *  Use "cpu" to bypass CoreML/MPS on Intel Macs or fragile GPU/NPU providers. */
+  onnxDevice?: "auto" | "cpu" | "cuda" | "coreml" | "directml" | "openvino";
   embeddingBackend?: "bundled" | "onnx-local" | "custom-local";
   embeddingProfile?: string;
   fallbackProfile?: string;

@@ -99,10 +99,13 @@ export class RpcClient {
                 }
                 clearTimeout(timer);
                 this.pending.delete(id);
+                const error = reconnectError instanceof Error
+                  ? reconnectError
+                  : new Error(String(reconnectError));
                 reject(
-                  reconnectError instanceof Error
-                    ? reconnectError
-                    : new Error(String(reconnectError)),
+                  /^Sidecar reconnect timed out/.test(error.message)
+                    ? new Error(`RPC timeout: ${method} (${timeoutMs}ms)`)
+                    : error,
                 );
               });
             return;

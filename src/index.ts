@@ -13,22 +13,54 @@ import type { PluginConfig, SearchResult } from "./types.js";
 
 export const MEMORY_ID = "libravdb-memory";
 
+const LIGHTWEIGHT_MODES = new Set(["cli-metadata", "setup-only"]);
+
 export function register(api: OpenClawPluginApi) {
-  if (api.registrationMode === "cli-metadata") {
+  const registrationMode = api.registrationMode;
+  const logger = api.logger ?? console;
+
+  if (registrationMode === "cli-metadata") {
     registerMemoryCliMetadata(api);
     return;
   }
 
-  const isFullMode = (api.registrationMode as string) === "full";
   const cfg = api.pluginConfig as PluginConfig;
+  const isLightweight = LIGHTWEIGHT_MODES.has(registrationMode);
+  const isDiscovery = registrationMode === "discovery";
 
-  // Null in non-full mode: cli.ts skips action handlers when runtime is null.
-  const runtimeOrNull = isFullMode
-    ? createPluginRuntime(cfg, api.logger ?? console)
-    : null;
-  registerMemoryCli(api, runtimeOrNull, cfg, api.logger ?? console);
+  logger.info?.(
+    `LibraVDB registering mode=${registrationMode} lightweight=${isLightweight} ` +
+    `discovery=${isDiscovery} userId=${cfg.userId ?? "(auto)"} ` +
+    `crossSessionRecall=${cfg.crossSessionRecall !== false}`,
+  );
 
-  if (!isFullMode) return;
+  // Runtime creation:
+  // - Lightweight modes (cli-metadata, setup-only): no runtime, CLI structure only.
+  // - Discovery mode: runtime for lazy CLI loading, but no context engine.
+  // - Every other mode (full, agent, gateway, channels, etc.): full runtime +
+  //   context engine so durable memory ingest/recall works across all entrypoints.
+  const runtimeOrNull = isLightweight
+    ? null
+    : createPluginRuntime(cfg, logger);
+  registerMemoryCli(api, runtimeOrNull, cfg, logger);
+
+  if (isLightweight || isDiscovery) {
+    if (!isLightweight) {
+      // discovery: has runtime for CLI but skips durable memory hooks.
+      // Context engine registration happens later when the framework
+      // reloads the plugin in "full" mode for an actual session.
+      logger.info?.(
+        `LibraVDB: discovery mode — CLI registered, context engine deferred.`,
+      );
+    } else {
+      logger.warn?.(
+        `LibraVDB: registration mode is "${registrationMode}". ` +
+        `Context engine hooks (bootstrap, ingest, afterTurn) are NOT registered. ` +
+        `Memory will not be written automatically — only CLI commands are available.`,
+      );
+    }
+    return;
+  }
 
   // TypeScript can't narrow through the ternary, so re-bind and guard.
   const runtime = runtimeOrNull;

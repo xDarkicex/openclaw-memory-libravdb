@@ -1,7 +1,8 @@
 import type { RpcGetter } from "./plugin-runtime.js";
-import { resolveDurableNamespace } from "./durable-namespace.js";
+import { resolveDurableNamespace } from "./memory-scopes.js";
+import { resolveIdentity } from "./identity.js";
 import { detectDreamQuerySignal, resolveDreamCollection } from "./dream-routing.js";
-import type { PluginConfig, SearchResult } from "./types.js";
+import type { PluginConfig, LoggerLike, SearchResult } from "./types.js";
 
 type RpcLike = {
   call<T>(method: string, params: unknown): Promise<T>;
@@ -65,6 +66,17 @@ function createMemorySearchManager(
   initialStatus: MemoryRuntimeStatus & Record<string, unknown>,
 ) {
   let cachedStatus = initialStatus;
+  let cachedIdentityUserId: string | null = null;
+
+  function getResolvedUserId(sessionKey: string | undefined): string {
+    if (cachedIdentityUserId !== null) return cachedIdentityUserId;
+    cachedIdentityUserId = resolveIdentity({
+      configUserId: cfg.userId,
+      identityPath: cfg.identityPath,
+      sessionKey,
+    }).userId;
+    return cachedIdentityUserId;
+  }
 
   return {
     async search(queryOrParams: string | MemorySearchParams = {}, opts: MemorySearchParams = {}) {
@@ -88,8 +100,12 @@ function createMemorySearchManager(
 
       const dreamQuery = detectDreamQuerySignal(queryText);
       const sessionId = firstString(params.sessionId, params.context?.sessionId);
+      const explicitUserId = firstString(params.userId, params.context?.userId);
+      const resolvedUserId =
+        explicitUserId ??
+        getResolvedUserId(firstString(params.sessionKey, params.context?.sessionKey));
       const userId = resolveDurableNamespace({
-        userId: firstString(params.userId, params.context?.userId),
+        userId: resolvedUserId,
         sessionKey: firstString(params.sessionKey, params.context?.sessionKey),
         agentId: firstString(params.agentId, params.context?.agentId, defaults.agentId),
         fallback: sessionId ? `session:${sessionId}` : undefined,

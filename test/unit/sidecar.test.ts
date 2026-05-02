@@ -78,6 +78,7 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
     rpcTimeoutMs: 1,
     dbPath: "/tmp/libravdb",
     embeddingRuntimePath: "/opt/onnx/libonnxruntime.so",
+    onnxDevice: "cpu",
     embeddingBackend: "custom-local",
     embeddingProfile: "nomic-embed-text-v1.5",
     fallbackProfile: "all-minilm-l6-v2",
@@ -95,6 +96,7 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
   assert.deepEqual(env, {
     LIBRAVDB_DB_PATH: "/tmp/libravdb",
     LIBRAVDB_ONNX_RUNTIME: "/opt/onnx/libonnxruntime.so",
+    LIBRAVDB_ONNX_DEVICE: "cpu",
     LIBRAVDB_EMBEDDING_BACKEND: "custom-local",
     LIBRAVDB_EMBEDDING_PROFILE: "nomic-embed-text-v1.5",
     LIBRAVDB_FALLBACK_PROFILE: "all-minilm-l6-v2",

@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Persistent vector memory with three-tier hybrid scoring",
-  "version": "1.4.18",
+  "version": "1.4.22",
   "kind": [
     "memory",
     "context-engine"
@@ -22,11 +22,58 @@
       "sidecarPath": {
         "type": "string"
       },
+      "userId": {
+        "type": "string",
+        "description": "Stable identity for cross-session durable memory. When set, sessions share memories under user:{userId}."
+      },
+      "identityPath": {
+        "type": "string",
+        "description": "Custom path for the auto-derived identity JSON file."
+      },
+      "crossSessionRecall": {
+        "type": "boolean",
+        "default": true,
+        "description": "When false, only session-scoped memories are retrieved; durable user recall is skipped."
+      },
+      "useSessionRecallProjection": {
+        "type": "boolean"
+      },
+      "grpcEndpoint": {
+        "type": "string",
+        "description": "Optional gRPC kernel endpoint for hosts using the daemon kernel transport."
+      },
+      "authoredHardBudgetFraction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "authoredSoftBudgetFraction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "elevatedGuidanceBudgetFraction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
       "useSessionSummarySearchExperiment": {
         "type": "boolean"
       },
       "embeddingRuntimePath": {
         "type": "string"
+      },
+      "onnxDevice": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "cpu",
+          "cuda",
+          "coreml",
+          "directml",
+          "openvino"
+        ],
+        "description": "Optional ONNX execution provider override passed to libravdbd. Use cpu to bypass CoreML/MPS on Intel Macs."
       },
       "embeddingBackend": {
         "type": "string",

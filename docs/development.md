@@ -89,6 +89,7 @@ The npm package contains:
 - `README.md`
 - `HOOK.md`
 - `index.js`
+- `cli-metadata.js`
 - `openclaw.plugin.json`
 - `package.json`
 - `docs/`
@@ -96,3 +97,21 @@ The npm package contains:
 
 The package is connect-only. It does not compile Go code, download models, or
 manage the daemon process during plugin installation.
+
+## Release Automation
+
+The repository uses three CI workflows in `.github/workflows/`:
+
+| Workflow | Trigger | Purpose |
+|---|---|--|
+| `auto-release.yml` | Merged PR with `release:*` label | Bumps version (patch/minor/major), updates `package.json` and `openclaw.plugin.json`, creates git tag |
+| `github-release.yml` | New `v*` tag | Creates a GitHub release |
+| `publish.yml` (`publish-npm`) | New `v*` tag or manual dispatch | Compiles, verifies versions match, publishes to npm |
+
+To publish: merge a PR with a `release:patch`, `release:minor`, or `release:major`
+label. The workflow auto-bumps, tags, and publishes.
+
+## Auto-Install Script
+
+`scripts/auto-install.sh` automates daemon + plugin installation. Run it when
+setting up a machine that needs the full stack quickly.

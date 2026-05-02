@@ -466,7 +466,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         sourceKind: this.kind,
         fileHash,
         sourceSize,
-        sourceMtimeMs,
+        sourceMtimeMs: Math.trunc(sourceMtimeMs),
         ingestVersion: MARKDOWN_INGEST_VERSION,
         hashBackend: HASH_BACKEND,
       },

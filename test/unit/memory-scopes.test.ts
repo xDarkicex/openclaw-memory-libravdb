@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveDurableNamespace } from "../../src/durable-namespace.js";
+import { resolveDurableNamespace } from "../../src/memory-scopes.js";
 
 test("resolveDurableNamespace trims inputs and prefers sessionKey over agentId", () => {
   assert.equal(

@@ -76,7 +76,11 @@ test("memory runtime bridge searches the resolved durable namespace under the la
 
   assert.equal(rpc.calls[0]?.method, "status");
   assert.equal(rpc.calls[1]?.method, "search_text_collections");
-  assert.deepEqual(rpc.calls[1]?.params.collections, ["user:session-key:fixed-session", "global"]);
+
+  const collections = rpc.calls[1]?.params.collections as string[] | undefined;
+  assert.ok(Array.isArray(collections));
+  assert.equal(collections[0]?.startsWith("user:"), true, "first collection is user-scoped");
+  assert.equal(collections[1], "global");
   assert.equal(rpc.calls[1]?.params.k, 6);
   assert.equal(result.length, 1);
   assert.equal(result[0]?.snippet, "remembered item");
@@ -107,7 +111,11 @@ test("memory runtime bridge falls back to session-scoped namespace when no other
 
   assert.ok(Array.isArray(result));
   assert.equal(rpc.calls[1]?.method, "search_text_collections");
-  assert.deepEqual(rpc.calls[1]?.params.collections, ["session:s-fallback", "user:session:s-fallback", "global"]);
+  const collections = rpc.calls[1]?.params.collections as string[] | undefined;
+  assert.ok(Array.isArray(collections));
+  assert.equal(collections[0], "session:s-fallback");
+  assert.equal(collections[1]?.startsWith("user:"), true);
+  assert.equal(collections[2], "global");
 });
 
 test("memory runtime bridge keeps the legacy string search shape", async () => {
