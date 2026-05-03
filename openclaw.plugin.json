@@ -7,6 +7,10 @@
     "memory",
     "context-engine"
   ],
+  "contracts": {
+    "memory": true,
+    "contextEngine": true
+  },
   "activation": {
     "onCommands": [
       "memory"
