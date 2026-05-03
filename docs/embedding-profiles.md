@@ -4,8 +4,8 @@ The plugin now supports a lightweight `embeddingProfile` setting for named local
 
 Default selection baseline as of `2026-03-28`:
 
-- default embedding profile: `all-minilm-l6-v2`
-- bundled fallback profile: `all-minilm-l6-v2`
+- default embedding profile: `nomic-embed-text-v1.5`
+- bundled fallback profile: `nomic-embed-text-v1.5`
 
 Why:
 
@@ -16,8 +16,8 @@ Why:
 
 Current shipped profile names:
 
-- `all-minilm-l6-v2`
-  - family: `all-minilm-l6-v2`
+- `nomic-embed-text-v1.5`
+  - family: `nomic-embed-text-v1.5`
   - dimensions: `384`
   - normalize: `true`
   - max context tokens: `128`

@@ -38,9 +38,9 @@ test("resolveConfiguredEndpoint rejects malformed daemon endpoints", () => {
 });
 
 test("defaultEndpoint uses unix sockets on unix and localhost TCP on windows", () => {
-  // On machines where /opt/homebrew/var/clawdb/run/libravdb.sock exists (Homebrew install),
+  // On machines where /opt/homebrew/var/libravdbd/run/libravdb.sock exists (Homebrew install),
   // defaultEndpoint probes the filesystem and returns the Homebrew path. On machines without
-  // it, the user-local fallback (~/.clawdb/run/libravdb.sock) is used. Both are valid unix
+  // it, the user-local fallback (~/.libravdbd/run/libravdb.sock) is used. Both are valid unix
   // endpoints — the test verifies the platform dispatch (unix vs win32) and env-var override.
   const darwinResult = defaultEndpoint("darwin", "/Users/demo");
   assert.match(darwinResult, /^unix:.*libravdb\.sock$/);
@@ -66,10 +66,10 @@ test("defaultEndpoint prefers the Homebrew socket when the user-local socket is 
   const endpoint = defaultEndpoint(
     "darwin",
     "/Users/demo",
-    (candidate) => candidate === "/opt/homebrew/var/clawdb/run/libravdb.sock",
+    (candidate) => candidate === "/opt/homebrew/var/libravdbd/run/libravdb.sock",
   );
 
-  assert.equal(endpoint, "unix:/opt/homebrew/var/clawdb/run/libravdb.sock");
+  assert.equal(endpoint, "unix:/opt/homebrew/var/libravdbd/run/libravdb.sock");
 });
 
 test("computeBackoffMs applies capped exponential backoff", () => {

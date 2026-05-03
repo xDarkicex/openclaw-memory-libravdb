@@ -20,7 +20,7 @@ latency and offline operation are part of the product contract.
 
 ## Default And Optional Embedding Profiles
 
-The current safe default profile is `all-minilm-l6-v2`.
+The current safe default profile is `nomic-embed-text-v1.5`.
 
 MiniLM is the default because it keeps local retrieval within the target memory
 envelope on macOS and is less fragile with ONNX Runtime execution than larger
@@ -46,7 +46,7 @@ generative models would increase latency and operational complexity.
 
 | Model/profile | Role |
 |---|---|
-| `all-minilm-l6-v2` | Default lightweight embedding profile. |
+| `nomic-embed-text-v1.5` | Default lightweight embedding profile. |
 | `nomic-embed-text-v1.5` | Opt-in long-context embedding profile. |
 | T5-small | Optional local abstractive compaction summarizer. |
 

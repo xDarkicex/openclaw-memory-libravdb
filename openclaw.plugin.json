@@ -85,11 +85,11 @@
       },
       "embeddingProfile": {
         "type": "string",
-        "default": "all-minilm-l6-v2"
+        "default": "nomic-embed-text-v1.5"
       },
       "fallbackProfile": {
         "type": "string",
-        "default": "all-minilm-l6-v2"
+        "default": "bge-small-en-v1.5"
       },
       "embeddingModelPath": {
         "type": "string"

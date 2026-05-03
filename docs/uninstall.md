@@ -84,8 +84,8 @@ Only do this if you want to permanently remove stored LibraVDB memory.
 
 Common local state:
 
-- socket directory: `~/.clawdb/run/`
-- database file: `~/.clawdb/data.libravdb`
+- socket directory: `~/.libravdbd/run/`
+- database file: `~/.libravdbd/data_nomic-embed-text-v1_5.libravdb`
 
 If you configured a custom Unix socket endpoint in `sidecarPath`, remove that
 socket path or containing directory if applicable. If you configured `dbPath`,

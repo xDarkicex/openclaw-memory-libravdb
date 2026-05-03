@@ -408,11 +408,11 @@ export function defaultEndpoint(
   const sockName = "libravdb.sock";
   const candidateDirs = [
     // User-local (npm plugin convention)
-    homeDir?.trim() ? path.join(homeDir, ".clawdb", "run") : null,
+    homeDir?.trim() ? path.join(homeDir, ".libravdbd", "run") : null,
     // Homebrew (Apple Silicon) — matches the Homebrew formula LaunchAgent
-    "/opt/homebrew/var/clawdb/run",
+    "/opt/homebrew/var/libravdbd/run",
     // Homebrew (Intel Mac) / manual Linux installs
-    "/usr/local/var/clawdb/run",
+    "/usr/local/var/libravdbd/run",
   ].filter((d): d is string => d !== null);
 
   for (const dir of candidateDirs) {
@@ -428,8 +428,8 @@ export function defaultEndpoint(
 
   // Fallback to the original user-local path so error messages stay familiar.
   const baseDir = homeDir?.trim()
-    ? path.join(homeDir, ".clawdb", "run")
-    : path.join(".", ".clawdb", "run");
+    ? path.join(homeDir, ".libravdbd", "run")
+    : path.join(".", ".libravdbd", "run");
   return `unix:${path.join(baseDir, sockName)}`;
 }
 
