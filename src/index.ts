@@ -119,11 +119,13 @@ export function register(api: OpenClawPluginApi) {
     await dreamPromotion.stop();
   });
 
-  void markdownIngestion.start().catch((error) => {
-    api.logger?.warn?.(`LibraVDB markdown ingestion failed to start: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  void dreamPromotion.start().catch((error) => {
-    api.logger?.warn?.(`LibraVDB dream promotion failed to start: ${error instanceof Error ? error.message : String(error)}`);
+  api.on("gateway_start", async () => {
+    await markdownIngestion.start().catch((error) => {
+      api.logger?.warn?.(`LibraVDB markdown ingestion failed to start: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    await dreamPromotion.start().catch((error) => {
+      api.logger?.warn?.(`LibraVDB dream promotion failed to start: ${error instanceof Error ? error.message : String(error)}`);
+    });
   });
 
   api.on("before_reset", createBeforeResetHook(runtime, api.logger ?? console));
