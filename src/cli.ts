@@ -41,7 +41,6 @@ type CliOptionBag = {
   yes?: boolean;
   json?: boolean;
   deep?: boolean;
-  index?: boolean;
   fix?: boolean;
   force?: boolean;
   verbose?: boolean;
@@ -106,7 +105,6 @@ export function registerMemoryCli(
         .option("--agent <id>", "Agent id")
         .option("--json", "Print JSON")
         .option("--deep", "Probe daemon readiness")
-        .option("--index", "Refresh delegated index state before printing status")
         .option("--fix", "Accepted for OpenClaw memory CLI compatibility")
         .option("--verbose", "Verbose logging")
         .action(async (opts) => {
@@ -241,9 +239,6 @@ async function runStatus(
   logger: LoggerLike,
   opts: CliOptionBag = {},
 ): Promise<void> {
-  if (opts.index) {
-    await runIndex(runtime, cfg, { ...opts, force: true, verbose: false }, logger, { quiet: true });
-  }
   try {
     const rpc = await runtime.getRpc();
     const status = await rpc.call<StatusResult>("status", {});
