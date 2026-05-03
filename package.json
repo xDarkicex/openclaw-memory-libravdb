@@ -33,12 +33,15 @@
     "extensions": [
       "./dist/index.js"
     ],
+    "compat": {
+      "pluginApi": ">=2026.3.22"
+    },
     "install": {
       "minHostVersion": ">=2026.3.22"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && mkdir -p dist/proto && cp -rf api/proto/. dist/proto/",
+    "build": "tsc -p tsconfig.build.json && node scripts/bundle-entrypoint.mjs && mkdir -p dist/proto && cp -rf api/proto/. dist/proto/",
     "check": "tsc --noEmit && pnpm run test:ts",
     "test:ts": "tsc -p tsconfig.tests.json && node --test .ts-build/test/unit/*.test.js",
     "test:integration": "tsc -p tsconfig.tests.json && node --test .ts-build/test/integration/checklist-validation.test.js .ts-build/test/integration/dream-promotion.test.js .ts-build/test/integration/host-flow.test.js .ts-build/test/integration/markdown-ingest.test.js .ts-build/test/integration/sidecar-lifecycle.test.js",
@@ -49,18 +52,22 @@
     "benchmark:longmemeval": "tsc -p tsconfig.tests.json && node --test .ts-build/test/integration/longmemeval-benchmark.test.js",
     "benchmark:longmemeval:score": "node scripts/longmemeval-score.mjs",
     "benchmark:longmemeval:diagnose": "node scripts/longmemeval-diagnose.mjs",
+    "plugin:check": "plugin-inspector inspect --no-openclaw",
+    "plugin:ci": "plugin-inspector ci --no-openclaw --runtime --mock-sdk --allow-execute",
     "prepack": "npm run build",
     "build:daemon": "bash scripts/build-daemon.sh"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "1.7.2",
-    "@grpc/grpc-js": "^1.14.3",
-    "@grpc/proto-loader": "^0.8.0",
-    "@xdarkicex/libravdb-contracts": "^0.0.1",
     "openclaw": "*"
   },
   "devDependencies": {
+    "@bufbuild/protobuf": "1.7.2",
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0",
+    "@openclaw/plugin-inspector": "0.3.7",
     "@types/node": "^20.11.0",
+    "@xdarkicex/libravdb-contracts": "^0.0.1",
+    "esbuild": "^0.27.0",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {

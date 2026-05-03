@@ -27,6 +27,7 @@ port_plan.md
 back_up_src_plugin
 .perl5.bak
 scratch/
+reports/
 bootstrap-perl.sh
 cpanfile
 pnpm-lock.yaml
