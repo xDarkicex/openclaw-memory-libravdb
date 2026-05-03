@@ -41,10 +41,10 @@ type CliOptionBag = {
   yes?: boolean;
   json?: boolean;
   deep?: boolean;
-  index?: boolean;
   fix?: boolean;
   force?: boolean;
   verbose?: boolean;
+  collections?: string;
 };
 
 type JournalResult = {
@@ -91,7 +91,7 @@ export function registerMemoryCli(
         // Non-full modes register structure only so `openclaw memory --help` works.
         // No runtime available — do not attach action handlers.
         ensureCommand(root, "status").description("Show sidecar health, record counts, and active thresholds");
-        ensureCommand(root, "index").description("Refresh delegated LibraVDB memory index state");
+        ensureCommand(root, "index").description("Rebuild LibraVDB memory vector index (requires --force)");
         ensureCommand(root, "search").description("Search LibraVDB memory");
         ensureCommand(root, "flush").description("Wipe a durable memory namespace after confirmation");
         ensureCommand(root, "export").description("Stream stored memories as newline-delimited JSON");
@@ -105,7 +105,6 @@ export function registerMemoryCli(
         .option("--agent <id>", "Agent id")
         .option("--json", "Print JSON")
         .option("--deep", "Probe daemon readiness")
-        .option("--index", "Refresh delegated index state before printing status")
         .option("--fix", "Accepted for OpenClaw memory CLI compatibility")
         .option("--verbose", "Verbose logging")
         .action(async (opts) => {
@@ -115,9 +114,12 @@ export function registerMemoryCli(
         });
 
       ensureCommand(root, "index")
-        .description("Refresh delegated LibraVDB memory index state")
+        .description("Rebuild LibraVDB memory vector index (requires --force)")
         .option("--agent <id>", "Agent id")
-        .option("--force", "Force refresh where supported")
+        .option("--user-id <userId>", "User id")
+        .option("--session-key <sessionKey>", "Session key")
+        .option("--collections <list>", "Comma-separated collection names to reindex")
+        .option("--force", "Required: confirm index rebuild")
         .option("--verbose", "Verbose logging")
         .action(async (opts) => {
           await runCliCommand(runtime, logger, async () => {
@@ -237,9 +239,6 @@ async function runStatus(
   logger: LoggerLike,
   opts: CliOptionBag = {},
 ): Promise<void> {
-  if (opts.index) {
-    await runIndex(runtime, cfg, { ...opts, verbose: false }, logger, { quiet: true });
-  }
   try {
     const rpc = await runtime.getRpc();
     const status = await rpc.call<StatusResult>("status", {});
@@ -292,41 +291,53 @@ async function runStatus(
 
 async function runIndex(
   runtime: PluginRuntime,
-  cfg: PluginConfig,
+  _cfg: PluginConfig,
   opts: CliOptionBag | undefined,
   logger: LoggerLike,
   params: { quiet?: boolean } = {},
 ): Promise<void> {
+  if (!opts?.force) {
+    logger.error("LibraVDB index rebuild requires --force. This re-embeds all stored documents with the current model and may be slow.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const namespace = resolveCliNamespace(opts);
+  const collections = opts?.collections
+    ?.split(",")
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+
   try {
-    const bridge = buildMemoryRuntimeBridge(runtime.getRpc, cfg);
-    const { manager } = await bridge.getMemorySearchManager({
-      agentId: opts?.agent,
-      purpose: "status",
+    const rpc = await runtime.getRpc();
+    const result = await rpc.call<{
+      collectionsProcessed: number;
+      recordsReindexed: number;
+      collectionsRecreated: number;
+      errors: string[];
+    }>("rebuild_index", {
+      namespace: namespace ?? "",
+      ...(collections?.length ? { collections } : {}),
     });
-    await manager.sync?.({
-      reason: "cli",
-      force: Boolean(opts?.force),
-    });
-    const status = manager.status();
-    if (status.ok === false) {
-      logger.error(`LibraVDB index refresh unavailable: ${status.message ?? "sidecar unavailable"}`);
-      process.exitCode = 1;
-      return;
-    }
-    if (opts?.verbose && !params.quiet) {
-      console.table({
-        Provider: status.provider ?? "libravdb",
-        Model: status.model ?? status.embeddingProfile ?? "unknown",
-        "Turns stored": status.turnCount ?? 0,
-        "Memories stored": status.memoryCount ?? 0,
-        Message: status.message ?? "ok",
-      });
-    }
+
     if (!params.quiet) {
-      console.log("LibraVDB memory index refresh delegated to the sidecar.");
+      console.log(`Collections processed: ${result.collectionsProcessed ?? 0}`);
+      console.log(`Records reindexed:     ${result.recordsReindexed ?? 0}`);
+      if ((result.collectionsRecreated ?? 0) > 0) {
+        console.log(`Collections recreated: ${result.collectionsRecreated} (embedding dimensions changed)`);
+      }
+    }
+
+    for (const err of result.errors ?? []) {
+      logger.warn?.(`LibraVDB index rebuild: ${err}`);
+    }
+
+    if ((result.errors?.length ?? 0) > 0 && (result.recordsReindexed ?? 0) === 0) {
+      logger.error("LibraVDB index rebuild completed with errors and no records reindexed.");
+      process.exitCode = 1;
     }
   } catch (error) {
-    logger.error(`LibraVDB index refresh failed: ${formatError(error)}`);
+    logger.error(`LibraVDB index rebuild failed: ${formatError(error)}`);
     process.exitCode = 1;
   }
 }
@@ -523,10 +534,11 @@ function normalizeQueryArg(value: unknown): string | undefined {
 function resolveCliNamespace(opts: CliOptionBag | undefined): string | undefined {
   const userId = opts?.userId?.trim();
   const sessionKey = opts?.sessionKey?.trim();
-  if (!userId && !sessionKey) {
+  const agentId = opts?.agent?.trim();
+  if (!userId && !sessionKey && !agentId) {
     return undefined;
   }
-  return resolveDurableNamespace({ userId, sessionKey });
+  return resolveDurableNamespace({ userId, sessionKey, agentId });
 }
 
 type CliRegistrar = {

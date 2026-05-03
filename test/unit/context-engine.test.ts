@@ -50,6 +50,7 @@ function fakeRuntime(rpc: FakeRpc): PluginRuntime {
     getRpc: async () => rpc as unknown as RpcClient,
     getKernel: async () => null,
     emitLifecycleHint: async () => {},
+    onShutdown: () => {},
     shutdown: async () => {},
   };
 }
@@ -74,6 +75,7 @@ test("context engine uses gRPC kernel on cold bootstrap without falling back to 
     },
     getKernel: async () => kernel as never,
     emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
     shutdown: async () => {},
   };
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
@@ -96,6 +98,7 @@ test("context engine falls back to RPC when kernel lookup fails during bootstrap
       throw new Error("kernel unavailable");
     },
     emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
     shutdown: async () => {},
   };
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" }, {
@@ -123,6 +126,7 @@ test("context engine returns compact failure instead of throwing when kernel and
       throw new Error("kernel unavailable");
     },
     emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
     shutdown: async () => {},
   };
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
@@ -150,6 +154,7 @@ test("context engine uses gRPC kernel on cold ingest without falling back to RPC
     },
     getKernel: async () => kernel as never,
     emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
     shutdown: async () => {},
   };
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
@@ -185,6 +190,7 @@ test("context engine uses gRPC kernel on cold afterTurn without falling back to 
     },
     getKernel: async () => kernel as never,
     emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
     shutdown: async () => {},
   };
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
@@ -223,6 +229,7 @@ test("context engine uses gRPC kernel on cold compact without falling back to RP
     },
     getKernel: async () => kernel as never,
     emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
     shutdown: async () => {},
   };
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
@@ -259,6 +266,7 @@ test("context engine uses gRPC kernel on cold assemble without falling back to R
     },
     getKernel: async () => kernel as never,
     emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
     shutdown: async () => {},
   };
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
@@ -497,6 +505,7 @@ test("context engine assemble keeps daemon result when exact recall RPC acquisit
     },
     getKernel: async () => null,
     emitLifecycleHint: async () => {},
+    onShutdown: () => {},
     shutdown: async () => {},
   };
   const warnings: string[] = [];

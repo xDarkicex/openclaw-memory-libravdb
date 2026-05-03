@@ -70,6 +70,7 @@ function buildContextEngineFactory(
     getRpc,
     getKernel: async () => null,
     emitLifecycleHint: async () => {},
+    onShutdown: () => {},
     shutdown: async () => {},
   } as unknown as import("../../src/plugin-runtime.js").PluginRuntime;
   return createContextEngineFactory(runtime, cfg, logger);

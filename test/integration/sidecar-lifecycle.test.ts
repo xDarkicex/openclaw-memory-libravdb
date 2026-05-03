@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { HealthResponse, RpcRequest, RpcResponse } from "../../src/generated/libravdb/ipc/v1/rpc_pb.js";
+import { HealthResponse, RpcRequest, RpcResponse } from "@xdarkicex/libravdb-contracts";
 import { RpcClient } from "../../src/rpc.js";
 import { computeStartupConnectRetryDelay, resolveEndpoint, startSidecar, type SidecarRuntime } from "../../src/sidecar.js";
 import type { PluginConfig, SidecarSocket } from "../../src/types.js";

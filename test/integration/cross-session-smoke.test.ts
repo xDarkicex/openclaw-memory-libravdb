@@ -83,6 +83,7 @@ function buildRuntime(rpc: RpcClient): PluginRuntime {
     getRpc: async () => rpc,
     getKernel: async () => null,
     emitLifecycleHint: async () => {},
+    onShutdown: () => {},
     shutdown: async () => {},
   };
 }

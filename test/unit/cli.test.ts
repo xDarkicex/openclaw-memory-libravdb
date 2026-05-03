@@ -80,6 +80,7 @@ function createRuntime(): PluginRuntime {
       return null;
     },
     async emitLifecycleHint() {},
+    onShutdown() {},
     async shutdown() {},
   };
 }
@@ -184,6 +185,7 @@ test("status command shuts the plugin runtime down after printing status", async
         return null;
       },
       async emitLifecycleHint() {},
+      onShutdown() {},
       async shutdown() {
         shutdownCalls += 1;
       },

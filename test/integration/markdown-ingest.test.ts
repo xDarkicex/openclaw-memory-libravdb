@@ -300,3 +300,56 @@ test("obsidian markdown ingestion accepts inline tags like #project", async () =
 
   await handle.stop();
 });
+
+test("markdown ingestion stop waits for an in-flight startup scan", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-stop-"));
+  const notePath = path.join(tempRoot, "slow.md");
+  await fsp.writeFile(notePath, "# Slow note\n\nThis scan is intentionally held open.");
+
+  let callStarted!: () => void;
+  const callStartedPromise = new Promise<void>((resolve) => {
+    callStarted = resolve;
+  });
+  let releaseCall!: () => void;
+  const releaseCallPromise = new Promise<void>((resolve) => {
+    releaseCall = resolve;
+  });
+  let rpcCompleted = false;
+
+  const rpc = {
+    async call<T>(method: string): Promise<T> {
+      assert.equal(method, "ingest_markdown_document");
+      callStarted();
+      await releaseCallPromise;
+      rpcCompleted = true;
+      return { ok: true } as T;
+    },
+  };
+
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+    },
+    async () => rpc,
+    { error() {}, warn() {} },
+  );
+
+  const startPromise = handle.start();
+  await callStartedPromise;
+
+  let stopResolved = false;
+  const stopPromise = handle.stop().then(() => {
+    stopResolved = true;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopResolved, false, "stop must wait for the in-flight scan before resolving");
+  assert.equal(rpcCompleted, false, "the held RPC should still be in flight");
+
+  releaseCall();
+  await stopPromise;
+  await startPromise;
+  assert.equal(rpcCompleted, true);
+});
