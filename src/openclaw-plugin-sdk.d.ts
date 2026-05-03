@@ -1,9 +1,34 @@
+/**
+ * Minimal structural types for OpenClaw plugin SDK surfaces used by this plugin.
+ *
+ * Derivation: tracked against openclaw SDK as of 2026.5.x (2026.4.11 installed).
+ * The SDK ships full types internally (dist/plugin-sdk/src/plugins/types.d.ts) but
+ * only a subset are re-exported from public subpaths. This file bridges the gap.
+ *
+ * Types that COULD be replaced with direct SDK imports if they become public:
+ *   - MemoryPromptSectionBuilder (not re-exported from plugin-entry; lives in
+ *     memory-state which has no public subpath export)
+ *   - OpenClawCliCommand (SDK uses Commander.js Command directly; we type a
+ *     structural subset that Commander satisfies at runtime)
+ *
+ * Types that DO come from SDK public exports but we shadow locally:
+ *   - definePluginEntry (available at openclaw/plugin-sdk/plugin-entry)
+ *   - OpenClawPluginApi (available at openclaw/plugin-sdk/plugin-entry)
+ *     ^ We shadow these because our registerCli shape differs from the SDK's
+ *       Commander.js Command type. Revisit when we align CLI typing.
+ *
+ * Re-validation: run `npx tsc --noEmit` after openclaw version bumps.
+ */
+
 declare module "openclaw/plugin-sdk/plugin-entry" {
   export type MemoryPromptSectionBuilder = (params: {
     availableTools: Set<string>;
     citationsMode?: string;
   }) => string[];
 
+  // Minimal structural types for Commander.js program surface.
+  // The SDK types program: Command directly from Commander; we use a
+  // structural subset that Commander satisfies at runtime.
   interface OpenClawCliCommand {
     commands?: OpenClawCliCommand[];
     command(name: string): OpenClawCliCommand;
@@ -15,7 +40,6 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     name?(): string;
   }
 
-  // Minimal structural types for the fields we use
   interface PluginsSlots {
     memory?: string;
   }
