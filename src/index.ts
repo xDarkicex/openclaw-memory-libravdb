@@ -83,6 +83,27 @@ export function register(api: OpenClawPluginApi) {
     runtime: buildMemoryRuntimeBridge(runtime.getRpc, cfg),
   });
 
+  // Register embedding adapter IDs so OpenClaw can discover available
+  // embedding backends for config resolution. Actual embeddings run inside
+  // the vector service — these are declarative discovery entries only.
+  const embeddingAdapters = [
+    { id: "libravdb-bundled", transport: "local" as const, profile: cfg.embeddingProfile ?? "nomic-embed-text-v1.5" },
+    { id: "libravdb-onnx", transport: "local" as const, profile: cfg.fallbackProfile ?? "bge-small-en-v1.5" },
+  ];
+  for (const entry of embeddingAdapters) {
+    api.registerMemoryEmbeddingProvider?.({
+      id: entry.id,
+      defaultModel: entry.profile,
+      transport: entry.transport,
+      async create(_options: Record<string, unknown>) {
+        return {
+          ok: false,
+          error: `LibraVDB embedding is managed by the vector service. Use config embeddingBackend="${entry.id}" to select this backend.`,
+        };
+      },
+    });
+  }
+
   api.registerContextEngine(
     MEMORY_ID,
     () => buildContextEngineFactory(runtime, cfg, api.logger ?? console),
