@@ -430,7 +430,7 @@ start_manual_daemon() {
     return 0
   fi
 
-  mkdir -p "$HOME/.libravdbd"
+  mkdir -p "$HOME/.libravdbd" "$HOME/.libravdbd/run"
   nohup "$HOME/.local/bin/libravdbd" serve > "$HOME/.libravdbd/libravdbd.log" 2>&1 &
   echo $! > "$HOME/.libravdbd/libravdbd.pid"
   warn "Started manual background daemon (no system service)."

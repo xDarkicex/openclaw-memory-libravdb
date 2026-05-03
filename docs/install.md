@@ -85,13 +85,15 @@ The daemon owns the local database, embeddings, and JSON-RPC endpoint.
 
 Default endpoints:
 
-- Homebrew on macOS: `unix:/opt/homebrew/var/libravdbd/run/libravdb.sock`
+- Homebrew on macOS (Apple Silicon): `unix:/opt/homebrew/var/libravdbd/run/libravdb.sock`
+- Homebrew on macOS (Intel): `unix:/usr/local/var/libravdbd/run/libravdb.sock`
 - macOS/Linux user-local installs: `unix:$HOME/.libravdbd/run/libravdb.sock`
 - Windows: `tcp:127.0.0.1:37421`
 
 Default data path:
 
-- macOS/Linux/Windows user installs: `$HOME/.libravdbd/data_nomic-embed-text-v1_5.libravdb`
+- macOS/Linux user installs: `$HOME/.libravdbd/data_nomic-embed-text-v1_5.libravdb`
+- Windows user installs: `%USERPROFILE%\.libravdbd\data_nomic-embed-text-v1_5.libravdb`
 
 ### Homebrew
 
