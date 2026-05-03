@@ -206,12 +206,14 @@ CPU when a provider is unavailable.
 
 ### Ingestion gating
 
+Gating thresholds and scoring weights are owned by the vector service and configured via
+service environment variables. See the service documentation for tuning details.
+
+The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `ingestionGateThreshold` | number | `0.35` | Minimum semantic relevance score to store a memory |
-| `gatingWeights` | object | `{w1c:0.35, w2c:0.4, w3c:0.25, w1t:0.4, w2t:0.35, w3t:0.25}` | Hybrid scoring weights |
-| `gatingTechNorm` | number | `1.5` | Technical content normalization factor |
-| `gatingCentroidK` | number | `10` | K for centroid-based similarity gating |
+| `ingestionGateThreshold` | number | `0.35` | Minimum semantic relevance score used by the plugin host for ingestion gating |
 
 ### Compaction
 

@@ -53,16 +53,6 @@ export interface PluginConfig {
   dreamPromotionDiaryPath?: string;
   dreamPromotionUserId?: string;
   dreamPromotionDebounceMs?: number;
-  gatingWeights?: {
-    w1c?: number;
-    w2c?: number;
-    w3c?: number;
-    w1t?: number;
-    w2t?: number;
-    w3t?: number;
-  };
-  gatingTechNorm?: number;
-  gatingCentroidK?: number;
   lifecycleJournalMaxEntries?: number;
   compactionQualityWeight?: number;
   recencyLambdaSession?: number;

@@ -493,33 +493,6 @@ export function buildSidecarEnv(cfg: PluginConfig): Record<string, string> {
   if (cfg.compactModel && !env.LIBRAVDB_SUMMARIZER_MODEL) {
     env.LIBRAVDB_SUMMARIZER_MODEL = cfg.compactModel;
   }
-  if (cfg.gatingWeights?.w1c != null) {
-    env.LIBRAVDB_GATING_W1C = String(cfg.gatingWeights.w1c);
-  }
-  if (cfg.gatingWeights?.w2c != null) {
-    env.LIBRAVDB_GATING_W2C = String(cfg.gatingWeights.w2c);
-  }
-  if (cfg.gatingWeights?.w3c != null) {
-    env.LIBRAVDB_GATING_W3C = String(cfg.gatingWeights.w3c);
-  }
-  if (cfg.gatingWeights?.w1t != null) {
-    env.LIBRAVDB_GATING_W1T = String(cfg.gatingWeights.w1t);
-  }
-  if (cfg.gatingWeights?.w2t != null) {
-    env.LIBRAVDB_GATING_W2T = String(cfg.gatingWeights.w2t);
-  }
-  if (cfg.gatingWeights?.w3t != null) {
-    env.LIBRAVDB_GATING_W3T = String(cfg.gatingWeights.w3t);
-  }
-  if (typeof cfg.gatingTechNorm === "number" && cfg.gatingTechNorm > 0) {
-    env.LIBRAVDB_GATING_TECH_NORM = String(cfg.gatingTechNorm);
-  }
-  if (typeof cfg.ingestionGateThreshold === "number" && cfg.ingestionGateThreshold >= 0) {
-    env.LIBRAVDB_GATING_THRESHOLD = String(cfg.ingestionGateThreshold);
-  }
-  if (typeof cfg.gatingCentroidK === "number" && cfg.gatingCentroidK > 0) {
-    env.LIBRAVDB_GATING_CENTROID_K = String(cfg.gatingCentroidK);
-  }
   if (typeof cfg.lifecycleJournalMaxEntries === "number" && cfg.lifecycleJournalMaxEntries > 0) {
     env.LIBRAVDB_LIFECYCLE_JOURNAL_MAX_ENTRIES = String(cfg.lifecycleJournalMaxEntries);
   }

@@ -96,10 +96,6 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
     embeddingTokenizerPath: "/models/tokenizer.json",
     embeddingDimensions: 768,
     embeddingNormalize: false,
-    gatingWeights: { w1c: 0.35, w2c: 0.4, w3c: 0.25, w1t: 0.4, w2t: 0.35, w3t: 0.25 },
-    gatingTechNorm: 1.5,
-    ingestionGateThreshold: 0.35,
-    gatingCentroidK: 10,
     lifecycleJournalMaxEntries: 250,
   });
 
@@ -114,15 +110,6 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
     LIBRAVDB_EMBEDDING_TOKENIZER: "/models/tokenizer.json",
     LIBRAVDB_EMBEDDING_DIMENSIONS: "768",
     LIBRAVDB_EMBEDDING_NORMALIZE: "false",
-    LIBRAVDB_GATING_W1C: "0.35",
-    LIBRAVDB_GATING_W2C: "0.4",
-    LIBRAVDB_GATING_W3C: "0.25",
-    LIBRAVDB_GATING_W1T: "0.4",
-    LIBRAVDB_GATING_W2T: "0.35",
-    LIBRAVDB_GATING_W3T: "0.25",
-    LIBRAVDB_GATING_TECH_NORM: "1.5",
-    LIBRAVDB_GATING_THRESHOLD: "0.35",
-    LIBRAVDB_GATING_CENTROID_K: "10",
     LIBRAVDB_LIFECYCLE_JOURNAL_MAX_ENTRIES: "250",
   });
 });

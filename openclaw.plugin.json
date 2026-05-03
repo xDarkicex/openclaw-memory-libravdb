@@ -215,52 +215,6 @@
         "type": "number",
         "default": 150
       },
-      "gatingWeights": {
-        "type": "object",
-        "additionalProperties": false,
-        "default": {
-          "w1c": 0.35,
-          "w2c": 0.4,
-          "w3c": 0.25,
-          "w1t": 0.4,
-          "w2t": 0.35,
-          "w3t": 0.25
-        },
-        "properties": {
-          "w1c": {
-            "type": "number",
-            "default": 0.35
-          },
-          "w2c": {
-            "type": "number",
-            "default": 0.4
-          },
-          "w3c": {
-            "type": "number",
-            "default": 0.25
-          },
-          "w1t": {
-            "type": "number",
-            "default": 0.4
-          },
-          "w2t": {
-            "type": "number",
-            "default": 0.35
-          },
-          "w3t": {
-            "type": "number",
-            "default": 0.25
-          }
-        }
-      },
-      "gatingTechNorm": {
-        "type": "number",
-        "default": 1.5
-      },
-      "gatingCentroidK": {
-        "type": "number",
-        "default": 10
-      },
       "lifecycleJournalMaxEntries": {
         "type": "number",
         "default": 500
