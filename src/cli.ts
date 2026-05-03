@@ -104,7 +104,8 @@ export function registerMemoryCli(
         .description("Show sidecar health, record counts, and active thresholds")
         .option("--agent <id>", "Agent id")
         .option("--json", "Print JSON")
-        .option("--deep", "Probe daemon readiness")
+        .option("--deep", "Probe authored collection search health")
+        .option("--index", "Refresh delegated index state before printing status")
         .option("--fix", "Accepted for OpenClaw memory CLI compatibility")
         .option("--verbose", "Verbose logging")
         .action(async (opts) => {
