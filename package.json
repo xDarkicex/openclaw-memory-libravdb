@@ -31,7 +31,8 @@
   },
   "openclaw": {
     "extensions": [
-      "./dist/index.js"
+      "./dist/index.js",
+      "./dist/cli-metadata.js"
     ],
     "compat": {
       "pluginApi": ">=2026.3.22"
