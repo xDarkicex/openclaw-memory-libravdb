@@ -259,10 +259,9 @@ test("status --deep probes authored collection search health", async () => {
           },
         } as never;
       },
-      getKernel() {
-        return null;
-      },
+      getKernel: async () => null,
       async emitLifecycleHint() {},
+      onShutdown: async () => {},
       async shutdown() {
         shutdownCalls += 1;
       },
@@ -330,10 +329,9 @@ test("status --deep includes authored probe rows in table output", async () => {
           },
         } as never;
       },
-      getKernel() {
-        return null;
-      },
+      getKernel: async () => null,
       async emitLifecycleHint() {},
+      onShutdown: async () => {},
       async shutdown() {},
     },
     {},

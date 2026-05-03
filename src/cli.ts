@@ -19,6 +19,18 @@ type StatusResult = {
   embeddingProfile?: string;
 };
 
+type DeepStatusProbe = {
+  ok: boolean;
+  collection: string;
+  resultCount?: number;
+  error?: string;
+};
+
+type DeepStatusResult = {
+  ok: boolean;
+  probes: DeepStatusProbe[];
+};
+
 type ExportResult = {
   records?: Array<{
     collection: string;
@@ -239,8 +251,12 @@ async function runStatus(
   try {
     const rpc = await runtime.getRpc();
     const status = await rpc.call<StatusResult>("status", {});
+    const deep = opts.deep ? await runDeepStatusProbe(rpc) : undefined;
     if (opts.json) {
-      console.log(JSON.stringify({ status }, null, 2));
+      console.log(JSON.stringify({ status, ...(deep ? { deep } : {}) }, null, 2));
+      if (deep && !deep.ok) {
+        process.exitCode = 1;
+      }
       return;
     }
     console.table({
@@ -251,8 +267,12 @@ async function runStatus(
       "Gate threshold": status.gatingThreshold ?? cfg.ingestionGateThreshold ?? 0.35,
       "Abstractive model": status.abstractiveReady ? "ready" : "not provisioned",
       "Embedding profile": status.embeddingProfile ?? "unknown",
+      ...(deep ? formatDeepStatusTableRows(deep) : {}),
       Message: status.message ?? (status.ok ? "ok" : "unavailable"),
     });
+    if (deep && !deep.ok) {
+      process.exitCode = 1;
+    }
   } catch (error) {
     logger.error(`LibraVDB status unavailable: ${formatError(error)}`);
     if (opts.json) {
@@ -284,6 +304,48 @@ async function runStatus(
     });
     process.exitCode = 1;
   }
+}
+
+const DEEP_STATUS_COLLECTIONS = ["authored:hard", "authored:soft", "authored:variant"] as const;
+
+async function runDeepStatusProbe(rpc: { call<T>(method: string, params: unknown): Promise<T> }): Promise<DeepStatusResult> {
+  const probes: DeepStatusProbe[] = [];
+  for (const collection of DEEP_STATUS_COLLECTIONS) {
+    try {
+      const result = await rpc.call<{ results?: unknown[] }>("search_text", {
+        collection,
+        text: "memory",
+        k: 1,
+      });
+      probes.push({
+        ok: true,
+        collection,
+        resultCount: Array.isArray(result.results) ? result.results.length : 0,
+      });
+    } catch (error) {
+      probes.push({
+        ok: false,
+        collection,
+        error: formatError(error),
+      });
+    }
+  }
+  return {
+    ok: probes.every((probe) => probe.ok),
+    probes,
+  };
+}
+
+function formatDeepStatusTableRows(deep: DeepStatusResult): Record<string, string> {
+  const rows: Record<string, string> = {
+    "Deep probe": deep.ok ? "ok" : "failed",
+  };
+  for (const probe of deep.probes) {
+    rows[`Probe ${probe.collection}`] = probe.ok
+      ? `ok (${probe.resultCount ?? 0} hits)`
+      : `failed: ${probe.error ?? "unknown error"}`;
+  }
+  return rows;
 }
 
 async function runIndex(
