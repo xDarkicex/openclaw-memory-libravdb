@@ -55,8 +55,22 @@ function fakeRuntime(rpc: FakeRpc): PluginRuntime {
   };
 }
 
-test("context engine uses gRPC kernel on cold bootstrap without falling back to RPC", async () => {
+function makeKernelFirstRuntime(kernel: object) {
   let getRpcCalls = 0;
+  const runtime: PluginRuntime = {
+    getRpc: async () => {
+      getRpcCalls += 1;
+      throw new Error("RPC should not be used when kernel is available");
+    },
+    getKernel: async () => kernel as never,
+    emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
+    shutdown: async () => {},
+  };
+  return { runtime, getRpcCalls: () => getRpcCalls };
+}
+
+test("context engine uses gRPC kernel on cold bootstrap without falling back to RPC", async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const kernel = {
     initializeSession: async (params: Record<string, unknown>) => {
@@ -68,21 +82,12 @@ test("context engine uses gRPC kernel on cold bootstrap without falling back to 
       return { ok: true };
     },
   };
-  const runtime: PluginRuntime = {
-    getRpc: async () => {
-      getRpcCalls += 1;
-      throw new Error("RPC should not be used when kernel is available");
-    },
-    getKernel: async () => kernel as never,
-    emitLifecycleHint: async () => {},
-    onShutdown: async () => {},
-    shutdown: async () => {},
-  };
+  const { runtime, getRpcCalls } = makeKernelFirstRuntime(kernel);
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
 
   await engine.bootstrap({ sessionId: "s1", sessionKey: "sk1" });
 
-  assert.equal(getRpcCalls, 0);
+  assert.equal(getRpcCalls(), 0);
   assert.deepEqual(calls.map((call) => call.method), ["initializeSession", "bootstrapSession"]);
   assert.equal(calls[1]?.params.sessionId, "s1");
   assert.equal(calls[1]?.params.sessionKey, "sk1");
@@ -139,7 +144,6 @@ test("context engine returns compact failure instead of throwing when kernel and
 });
 
 test("context engine uses gRPC kernel on cold ingest without falling back to RPC", async () => {
-  let getRpcCalls = 0;
   let ingestParams: Record<string, unknown> | null = null;
   const kernel = {
     ingestMessage: async (params: Record<string, unknown>) => {
@@ -147,16 +151,7 @@ test("context engine uses gRPC kernel on cold ingest without falling back to RPC
       return { ingested: true };
     },
   };
-  const runtime: PluginRuntime = {
-    getRpc: async () => {
-      getRpcCalls += 1;
-      throw new Error("RPC should not be used when kernel is available");
-    },
-    getKernel: async () => kernel as never,
-    emitLifecycleHint: async () => {},
-    onShutdown: async () => {},
-    shutdown: async () => {},
-  };
+  const { runtime, getRpcCalls } = makeKernelFirstRuntime(kernel);
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
 
   await engine.ingest({
@@ -165,7 +160,7 @@ test("context engine uses gRPC kernel on cold ingest without falling back to RPC
     message: makeMessage("user", "remember this"),
   });
 
-  assert.equal(getRpcCalls, 0);
+  assert.equal(getRpcCalls(), 0);
   assert.ok(ingestParams);
   const params = ingestParams as Record<string, unknown>;
   assert.equal(params.sessionId, "s1");
@@ -175,7 +170,6 @@ test("context engine uses gRPC kernel on cold ingest without falling back to RPC
 });
 
 test("context engine uses gRPC kernel on cold afterTurn without falling back to RPC", async () => {
-  let getRpcCalls = 0;
   let afterTurnParams: Record<string, unknown> | null = null;
   const kernel = {
     afterTurn: async (params: Record<string, unknown>) => {
@@ -183,16 +177,7 @@ test("context engine uses gRPC kernel on cold afterTurn without falling back to 
       return { ok: true, turnCount: 1 };
     },
   };
-  const runtime: PluginRuntime = {
-    getRpc: async () => {
-      getRpcCalls += 1;
-      throw new Error("RPC should not be used when kernel is available");
-    },
-    getKernel: async () => kernel as never,
-    emitLifecycleHint: async () => {},
-    onShutdown: async () => {},
-    shutdown: async () => {},
-  };
+  const { runtime, getRpcCalls } = makeKernelFirstRuntime(kernel);
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
 
   await engine.afterTurn({
@@ -201,7 +186,7 @@ test("context engine uses gRPC kernel on cold afterTurn without falling back to 
     messages: [makeMessage("user", "hello"), makeMessage("assistant", "hi")],
   });
 
-  assert.equal(getRpcCalls, 0);
+  assert.equal(getRpcCalls(), 0);
   assert.ok(afterTurnParams);
   const params = afterTurnParams as Record<string, unknown>;
   assert.equal(params.sessionId, "s1");
@@ -214,7 +199,6 @@ test("context engine uses gRPC kernel on cold afterTurn without falling back to 
 });
 
 test("context engine uses gRPC kernel on cold compact without falling back to RPC", async () => {
-  let getRpcCalls = 0;
   let compactParams: Record<string, unknown> | null = null;
   const kernel = {
     compactSession: async (params: Record<string, unknown>) => {
@@ -222,21 +206,12 @@ test("context engine uses gRPC kernel on cold compact without falling back to RP
       return { ok: true, didCompact: true, tokensAfter: 256 };
     },
   };
-  const runtime: PluginRuntime = {
-    getRpc: async () => {
-      getRpcCalls += 1;
-      throw new Error("RPC should not be used when kernel is available");
-    },
-    getKernel: async () => kernel as never,
-    emitLifecycleHint: async () => {},
-    onShutdown: async () => {},
-    shutdown: async () => {},
-  };
+  const { runtime, getRpcCalls } = makeKernelFirstRuntime(kernel);
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
 
   const result = await engine.compact({ sessionId: "s1", tokenBudget: 1000, currentTokenCount: 1200 });
 
-  assert.equal(getRpcCalls, 0);
+  assert.equal(getRpcCalls(), 0);
   assert.ok(compactParams);
   const params = compactParams as Record<string, unknown>;
   assert.equal(params.sessionId, "s1");
@@ -247,7 +222,6 @@ test("context engine uses gRPC kernel on cold compact without falling back to RP
 });
 
 test("context engine uses gRPC kernel on cold assemble without falling back to RPC", async () => {
-  let getRpcCalls = 0;
   let assembleParams: Record<string, unknown> | null = null;
   const kernel = {
     assembleContext: async (params: Record<string, unknown>) => {
@@ -259,16 +233,7 @@ test("context engine uses gRPC kernel on cold assemble without falling back to R
       };
     },
   };
-  const runtime: PluginRuntime = {
-    getRpc: async () => {
-      getRpcCalls += 1;
-      throw new Error("RPC should not be used when kernel is available");
-    },
-    getKernel: async () => kernel as never,
-    emitLifecycleHint: async () => {},
-    onShutdown: async () => {},
-    shutdown: async () => {},
-  };
+  const { runtime, getRpcCalls } = makeKernelFirstRuntime(kernel);
   const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
 
   const assembled = await engine.assemble({
@@ -279,7 +244,7 @@ test("context engine uses gRPC kernel on cold assemble without falling back to R
     tokenBudget: 4000,
   });
 
-  assert.equal(getRpcCalls, 0);
+  assert.equal(getRpcCalls(), 0);
   assert.ok(assembleParams);
   const params = assembleParams as Record<string, unknown>;
   assert.equal(params.sessionId, "s1");
