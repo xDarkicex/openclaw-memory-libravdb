@@ -12,7 +12,7 @@ import {
   IngestMessageKernelRequest,
   CompactSessionRequest,
   CompactSessionResponse,
-} from "./generated/libravdb/ipc/v1/rpc_pb.js";
+} from "@xdarkicex/libravdb-contracts";
 import { resolveIdentity, type ResolvedIdentity } from "./identity.js";
 
 type KernelCompatibleMessage = {

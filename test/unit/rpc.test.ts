@@ -10,7 +10,7 @@ import {
   RpcRequest,
   RpcResponse,
   SearchTextResponse,
-} from "../../src/generated/libravdb/ipc/v1/rpc_pb.js";
+} from "@xdarkicex/libravdb-contracts";
 import {
   normalizeAssembleResult,
   normalizeKernelMessage,

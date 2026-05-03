@@ -242,7 +242,7 @@ async function runStatus(
   opts: CliOptionBag = {},
 ): Promise<void> {
   if (opts.index) {
-    await runIndex(runtime, cfg, { ...opts, verbose: false }, logger, { quiet: true });
+    await runIndex(runtime, cfg, { ...opts, force: true, verbose: false }, logger, { quiet: true });
   }
   try {
     const rpc = await runtime.getRpc();
@@ -539,10 +539,11 @@ function normalizeQueryArg(value: unknown): string | undefined {
 function resolveCliNamespace(opts: CliOptionBag | undefined): string | undefined {
   const userId = opts?.userId?.trim();
   const sessionKey = opts?.sessionKey?.trim();
-  if (!userId && !sessionKey) {
+  const agentId = opts?.agent?.trim();
+  if (!userId && !sessionKey && !agentId) {
     return undefined;
   }
-  return resolveDurableNamespace({ userId, sessionKey });
+  return resolveDurableNamespace({ userId, sessionKey, agentId });
 }
 
 type CliRegistrar = {

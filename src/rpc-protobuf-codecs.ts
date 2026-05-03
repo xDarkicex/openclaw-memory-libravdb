@@ -26,13 +26,15 @@ import {
   PromoteDreamEntriesRequest,
   RankCandidatesRequest,
   RankCandidatesResponse,
+  RebuildIndexRequest,
+  RebuildIndexResponse,
   SearchTextCollectionsRequest,
   SearchTextRequest,
   SearchTextResponse,
   SessionLifecycleHintRequest,
   SessionLifecycleHintResponse,
   StringList,
-} from "./generated/libravdb/ipc/v1/rpc_pb.js";
+} from "@xdarkicex/libravdb-contracts";
 
 import type { LifecycleHint } from "./plugin-runtime.js";
 
@@ -270,6 +272,10 @@ export const rpcProtobufCodecs = {
   rank_candidates: codec<RankCandidatesRequest, RankCandidatesResponse>(
     (params) => encodeMessage(RankCandidatesRequest, params),
     (bytes) => decodeProtobufResult<RankCandidatesResponse>(RankCandidatesResponse, bytes),
+  ),
+  rebuild_index: codec<RebuildIndexRequest, RebuildIndexResponse>(
+    (params) => encodeMessage(RebuildIndexRequest, params),
+    (bytes) => decodeProtobufResult<RebuildIndexResponse>(RebuildIndexResponse, bytes),
   ),
 } satisfies Record<string, RpcMethodCodec<any, any>>;
 

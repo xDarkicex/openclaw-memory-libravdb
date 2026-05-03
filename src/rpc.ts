@@ -1,4 +1,4 @@
-import { RpcRequest, RpcResponse } from "./generated/libravdb/ipc/v1/rpc_pb.js";
+import { RpcRequest, RpcResponse } from "@xdarkicex/libravdb-contracts";
 import { getRpcMethodCodec } from "./rpc-protobuf-codecs.js";
 import type { RpcCallOptions, SidecarSocket } from "./types.js";
 
