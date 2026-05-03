@@ -112,18 +112,24 @@ export function register(api: OpenClawPluginApi) {
   const markdownIngestion = createMarkdownIngestionHandle(cfg, runtime.getRpc, api.logger ?? console);
   const dreamPromotion = createDreamPromotionHandle(cfg, runtime.getRpc, api.logger ?? console);
 
-  runtime.onShutdown(async () => {
-    await markdownIngestion.stop();
-  });
-  runtime.onShutdown(async () => {
-    await dreamPromotion.stop();
+  api.registerService?.({
+    id: "libravdb-markdown-ingestion",
+    async start(_ctx: unknown) {
+      await markdownIngestion.start();
+    },
+    async stop(_ctx: unknown) {
+      await markdownIngestion.stop();
+    },
   });
 
-  void markdownIngestion.start().catch((error) => {
-    api.logger?.warn?.(`LibraVDB markdown ingestion failed to start: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  void dreamPromotion.start().catch((error) => {
-    api.logger?.warn?.(`LibraVDB dream promotion failed to start: ${error instanceof Error ? error.message : String(error)}`);
+  api.registerService?.({
+    id: "libravdb-dream-promotion",
+    async start(_ctx: unknown) {
+      await dreamPromotion.start();
+    },
+    async stop(_ctx: unknown) {
+      await dreamPromotion.stop();
+    },
   });
 
   api.on("before_reset", createBeforeResetHook(runtime, api.logger ?? console));

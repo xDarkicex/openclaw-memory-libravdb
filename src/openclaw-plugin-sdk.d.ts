@@ -66,6 +66,11 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
         }>;
       },
     ): void;
+    registerService?(service: {
+      id: string;
+      start(ctx: unknown): void | Promise<void>;
+      stop?(ctx: unknown): void | Promise<void>;
+    }): void;
     on(event: string, handler: (...args: unknown[]) => void | Promise<void>, opts?: { priority?: number }): void;
   }
 
