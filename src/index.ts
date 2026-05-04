@@ -131,7 +131,7 @@ export function register(api: OpenClawPluginApi) {
   api.on("agent_end", async (event: unknown) => {
     const e = asRecord(event) ?? {};
     logger.info?.(
-      `LibraVDB agent_end success=${e.success ?? false} ` +
+      `LibraVDB agent_end success=${e.success ?? 'unknown'} ` +
       `durationMs=${e.durationMs ?? "?"} ` +
       `error=${typeof e.error === "string" ? e.error : "none"}`,
     );
