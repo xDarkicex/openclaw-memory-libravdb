@@ -22,44 +22,37 @@ New install? Start here: [Install guide](./docs/install.md).
 
 ## Install
 
-Install `libravdbd` with your system package manager, then install
-the OpenClaw plugin.
-
-**macOS (Homebrew)**
+Run the automated installer:
 
 ```bash
-brew tap xDarkicex/homebrew-openclaw-libravdb-memory
-brew install libravdbd
-brew services start libravdbd
+npx --yes @xdarkicex/openclaw-memory-libravdb --yes
 ```
 
-**Linux (APT)**
+The installer downloads or starts `libravdbd`, provisions ONNX Runtime and local
+model assets when needed, installs the OpenClaw plugin package, writes the
+current OpenClaw memory/context-engine slot config, and verifies the setup with
+`openclaw memory status`.
+
+From a source checkout, use the same installer script directly:
 
 ```bash
-sudo apt install libravdbd
-systemctl --user enable --now libravdbd
+bash scripts/auto-install.sh --yes
 ```
 
-**Linux (AUR)**
-
-```bash
-yay -S libravdbd-bin
-systemctl --user enable --now libravdbd
-```
-
-**Plugin (all platforms)**
+Operator-managed installs can still install the plugin package directly:
 
 ```bash
 openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 ```
 
-Then activate the plugin in `~/.openclaw/openclaw.json`:
+The installer writes this OpenClaw config shape:
 
 ```json
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     },
     "entries": {
       "libravdb-memory": {
@@ -88,7 +81,7 @@ Runtime requirements:
 
 - OpenClaw `>= 2026.3.22`
 - Node.js `>= 22`
-- a separately installed `libravdbd` service
+- `curl`, `jq`, and `tar` for the automated installer
 
 Compatibility note:
 
@@ -119,8 +112,8 @@ If your service runs elsewhere, set `sidecarPath`:
 
 ## Highlights
 
-- **Memory capability ownership** - owns the OpenClaw `memory` slot and
-  registers the context engine capability at runtime.
+- **Memory and context-engine ownership** - owns the OpenClaw `memory` and
+  `contextEngine` slots.
 - **Memory runtime bridge** - routes built-in `memory_search` calls to the same
   libraVDB-backed sidecar on hosts that expose the runtime API.
 - **Three memory scopes** - keeps active session, durable user, and global memory
@@ -133,15 +126,15 @@ If your service runs elsewhere, set `sidecarPath`:
   newest working context.
 - **Local-first inference** - uses local embedding and compaction paths by
   default, with optional external summarizer configuration.
-- **Explicit service lifecycle** - the npm/OpenClaw package stays connect-only;
-  `libravdbd` is installed and supervised separately.
+- **Automated service lifecycle** - the installer handles daemon setup, model
+  assets, OpenClaw plugin activation, and verification.
 
 ## Security Defaults
 
 Stored memory is treated as untrusted historical context. Retrieved memory is
 framed before it reaches the downstream model, memory collections are scoped by
-session/user/global namespace, and service installation is outside the npm plugin
-package.
+session/user/global namespace, and service installation is performed only by the
+explicit installer command.
 
 Before exposing OpenClaw over remote channels, read [Security](./docs/security.md).
 

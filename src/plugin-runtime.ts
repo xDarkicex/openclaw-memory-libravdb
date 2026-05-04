@@ -166,7 +166,7 @@ function formatError(error: unknown): string {
 export function enrichStartupError(error: unknown, healthMessage?: string): Error {
   const rawMessage = error instanceof Error ? error.message : String(error);
   const message = rawMessage.trim() || "LibraVDB daemon startup failed";
-  if (message.includes("install and start libravdbd separately") || message.includes("package does not provision the daemon binary")) {
+  if (message.includes("@xdarkicex/openclaw-memory-libravdb") || message.includes("install and start libravdbd separately")) {
     return error instanceof Error ? error : new Error(message);
   }
   const shouldHint = /health check|daemon unavailable|connection refused|ECONNREFUSED|ENOENT|fallback mode|ONNX Runtime|embedder/i.test(

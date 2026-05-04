@@ -1,14 +1,20 @@
 # Uninstall Guide
 
 This guide covers safe removal of the OpenClaw / OpenClaw.ai plugin and the
-separately managed `libravdbd` daemon.
+`libravdbd` daemon.
 
-If you only want to disable the memory replacement temporarily, remove the
-plugin slot assignment first and leave the daemon plus data in place.
+For installer-managed setups, start with:
+
+```bash
+npx --yes @xdarkicex/openclaw-memory-libravdb --uninstall
+```
+
+If you only want to disable the memory/context-engine replacement temporarily,
+remove the plugin slot assignments first and leave the daemon plus data in place.
 
 ## 1. Disable the Plugin
 
-Remove the plugin from the active OpenClaw slot in `~/.openclaw/openclaw.json`:
+Remove the plugin from the active OpenClaw slots in `~/.openclaw/openclaw.json`:
 
 ```json
 {
@@ -19,8 +25,8 @@ Remove the plugin from the active OpenClaw slot in `~/.openclaw/openclaw.json`:
 ```
 
 Treat that JSON as a minimal example only. If you assigned
-`libravdb-memory` under `memory`, remove that slot entry and leave any other
-plugin slots intact.
+`libravdb-memory` under `memory` and `contextEngine`, remove those slot entries
+and leave any other plugin slots intact.
 
 If you installed the package through the OpenClaw.ai plugin UI, remove or
 disable the same package there as well. If you use the CLI, remove it through

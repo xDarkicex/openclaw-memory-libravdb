@@ -188,7 +188,7 @@ test("status command shuts the plugin runtime down after printing status", async
               lifecycleHintCount: 1,
               gatingThreshold: 0.35,
               abstractiveReady: true,
-              embeddingProfile: "all-minilm-l6-v2",
+              embeddingProfile: "bge-small-en-v1.5",
               message: "ok",
             };
           },
@@ -247,7 +247,7 @@ test("status --deep probes authored collection search health", async () => {
           async call(method: string, params: Record<string, unknown>) {
             rpcCalls.push({ method, params });
             if (method === "status") {
-              return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+              return { ok: true, message: "ok", embeddingProfile: "bge-small-en-v1.5" };
             }
             if (method === "search_text") {
               if (params.collection === "authored:soft") {
@@ -320,7 +320,7 @@ test("status --deep includes authored probe rows in table output", async () => {
         return {
           async call(method: string, params: Record<string, unknown>) {
             if (method === "status") {
-              return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+              return { ok: true, message: "ok", embeddingProfile: "bge-small-en-v1.5" };
             }
             if (method === "search_text") {
               return { results: params.collection === "authored:variant" ? [{ id: "v1" }] : [] };

@@ -238,7 +238,7 @@ test("missing daemon errors point users at libravdbd instead of spawn internals"
 
   await assert.rejects(
     () => startSidecar({ rpcTimeoutMs: 50 }, createMemoryLogger(), runtime.runtime),
-    /install and start libravdbd separately/i,
+    /npx --yes @xdarkicex\/openclaw-memory-libravdb --yes/i,
   );
 });
 

@@ -14,19 +14,19 @@ Measured local asset sizes:
 
 - daemon binary: `7.7M`
 - bundled Nomic model directory: `523M`
-- bundled MiniLM fallback model directory: `87M`
+- bundled BGE fallback model directory: about `128M`
 - optional T5 summarizer directory: `371M`
 - unpacked ONNX Runtime directory on macOS arm64: `44M`
 - ONNX Runtime archive download on macOS arm64: `9.5M`
 
 Vector payload lower bounds:
 
-- MiniLM `384d`: `384 * 4 = 1536 bytes` per vector
+- BGE `384d`: `384 * 4 = 1536 bytes` per vector
 - Nomic `768d`: `768 * 4 = 3072 bytes` per vector
 
 Estimated lower-bound vector payload for `10,000` stored turns:
 
-- MiniLM: about `15.4 MB`
+- BGE: about `15.4 MB`
 - Nomic: about `30.7 MB`
 
 Actual on-disk LibraVDB usage is higher because text, metadata, collection
@@ -48,8 +48,7 @@ Not yet bench-measured in this repo:
 
 Measured from the current Go benchmark harness on Apple M2:
 
-- MiniLM bundled query embedding: about `22.6 ms/op`
-- MiniLM onnx-local query embedding: about `16.3 ms/op`
+- BGE fallback query embedding: not yet bench-measured in this repo
 - Nomic onnx-local query embedding: about `43.7 ms/op`
 
 Measured from a one-off 40-query timing sample on Apple M2:

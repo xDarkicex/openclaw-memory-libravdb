@@ -30,9 +30,9 @@ rmSync(outModelsDir, { recursive: true, force: true });
 rmSync(outRuntimeDir, { recursive: true, force: true });
 mkdirSync(outModelsDir, { recursive: true });
 
-const bundledMiniLM = path.join(modelsDir, "all-minilm-l6-v2");
-if (existsSync(bundledMiniLM)) {
-  cpSync(bundledMiniLM, path.join(outModelsDir, "all-minilm-l6-v2"), { recursive: true });
+const bundledBge = path.join(modelsDir, "bge-small-en-v1.5");
+if (existsSync(bundledBge)) {
+  cpSync(bundledBge, path.join(outModelsDir, "bge-small-en-v1.5"), { recursive: true });
 }
 
 const bundledNomic = path.join(modelsDir, "nomic-embed-text-v1.5");

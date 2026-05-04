@@ -91,7 +91,7 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
     onnxDevice: "cpu",
     embeddingBackend: "custom-local",
     embeddingProfile: "nomic-embed-text-v1.5",
-    fallbackProfile: "all-minilm-l6-v2",
+    fallbackProfile: "bge-small-en-v1.5",
     embeddingModelPath: "/models/custom.onnx",
     embeddingTokenizerPath: "/models/tokenizer.json",
     embeddingDimensions: 768,
@@ -105,7 +105,7 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
     LIBRAVDB_ONNX_DEVICE: "cpu",
     LIBRAVDB_EMBEDDING_BACKEND: "custom-local",
     LIBRAVDB_EMBEDDING_PROFILE: "nomic-embed-text-v1.5",
-    LIBRAVDB_FALLBACK_PROFILE: "all-minilm-l6-v2",
+    LIBRAVDB_FALLBACK_PROFILE: "bge-small-en-v1.5",
     LIBRAVDB_EMBEDDING_MODEL: "/models/custom.onnx",
     LIBRAVDB_EMBEDDING_TOKENIZER: "/models/tokenizer.json",
     LIBRAVDB_EMBEDDING_DIMENSIONS: "768",
@@ -114,7 +114,7 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
   });
 });
 
-test("daemonProvisioningHint explains the npm vs Homebrew split", () => {
-  assert.match(daemonProvisioningHint(), /npm package/);
-  assert.match(daemonProvisioningHint(), /install and start libravdbd separately/);
+test("daemonProvisioningHint points to the automated installer", () => {
+  assert.match(daemonProvisioningHint(), /npx --yes @xdarkicex\/openclaw-memory-libravdb --yes/);
+  assert.match(daemonProvisioningHint(), /memory\/context-engine slot config/);
 });

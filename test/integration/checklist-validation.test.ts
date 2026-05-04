@@ -14,17 +14,21 @@ test("manifest and package metadata satisfy checklist structure", async () => {
   assert.equal(manifest.configSchema.additionalProperties, false);
   assert.deepEqual(
     Object.keys(manifest).sort(),
-    ["activation", "configSchema", "description", "id", "kind", "name", "version"],
+    ["activation", "configSchema", "contracts", "description", "id", "kind", "name", "version"],
   );
   assert.deepEqual(manifest.activation, { onCommands: ["memory"] });
   assert.equal(manifest.version, pkg.version);
+  assert.equal(manifest.configSchema.properties.fallbackProfile.default, "bge-small-en-v1.5");
 
   assert.equal(pkg.main, "./dist/index.js");
   assert.equal(pkg.types, "./dist/index.d.ts");
   assert.ok(Array.isArray(pkg.openclaw?.extensions));
   assert.ok(pkg.openclaw.extensions.includes("./dist/index.js"));
   assert.equal(pkg.exports["."].import, "./dist/index.js");
+  assert.equal(pkg.bin["openclaw-memory-libravdb"], "./scripts/auto-install.sh");
+  assert.equal(pkg.bin["openclaw-memory-libravdb-install"], "./scripts/auto-install.sh");
   assert.ok(pkg.files.includes("cli-metadata.js"));
+  assert.ok(pkg.files.includes("scripts/auto-install.sh"));
   assert.match(hookMd, /name:\s*libravdb-memory/);
 });
 
@@ -49,4 +53,27 @@ test("source checklist invariants are present in host code", async () => {
   assert.doesNotMatch(indexTs, /async register\s*\(/);
   assert.match(memoryProviderTs, /availableTools/);
   assert.match(memoryProviderTs, /context-engine assembler/);
+});
+
+test("auto installer owns daemon assets and current OpenClaw config shape", async () => {
+  const installer = await readFile(path.join(repoRoot, "scripts", "auto-install.sh"), "utf8");
+
+  assert.match(installer, /provision_manual_assets/);
+  assert.match(installer, /LIBRAVDB_EMBEDDING_MODEL/);
+  assert.match(installer, /LIBRAVDB_SUMMARIZER_MODEL_PATH/);
+  assert.match(installer, /bge-small-en-v1\.5/);
+  assert.doesNotMatch(installer, /all-minilm-l6-v2/);
+  assert.match(installer, /falling back to installer-managed daemon assets/);
+  assert.match(installer, /brew install libravdbd \|\| return 1/);
+  assert.match(installer, /plugin already exists/);
+  assert.match(installer, /openclaw plugins update "\$PLUGIN_ID"/);
+  assert.match(installer, /start_background_daemon/);
+  assert.match(installer, /LaunchAgent startup failed; falling back/);
+  assert.match(installer, /rm -f "\$HOME\/\.libravdbd\/run\/libravdb\.sock"/);
+  assert.match(installer, /for i in \{1\.\.120\}/);
+  assert.match(installer, /\.plugins\.entries\[\$plugin\]/);
+  assert.match(installer, /\.plugins\.slots\.memory = \$plugin/);
+  assert.match(installer, /\.plugins\.slots\.contextEngine = \$plugin/);
+  assert.doesNotMatch(installer, /\.plugins\.configs/);
+  assert.doesNotMatch(installer, /libravdbd --version/);
 });

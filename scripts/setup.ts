@@ -52,20 +52,20 @@ const nomicAssets: AssetSpec[] = [
   },
 ];
 
-const miniLMAssets: AssetSpec[] = [
+const bgeAssets: AssetSpec[] = [
   {
-    name: "all-minilm-l6-v2 model",
-    dest: path.join(modelsDir, "all-minilm-l6-v2", "model.onnx"),
-    localSource: path.join(rootDir, ".models", "all-minilm-l6-v2", "model.onnx"),
-    url: "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
-    sha256: "759c3cd2b7fe7e93933ad23c4c9181b7396442a2ed746ec7c1d46192c469c46e",
+    name: "bge-small-en-v1.5 model",
+    dest: path.join(modelsDir, "bge-small-en-v1.5", "model.onnx"),
+    localSource: path.join(rootDir, ".models", "bge-small-en-v1.5", "model.onnx"),
+    url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx",
+    sha256: "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
   },
   {
-    name: "all-minilm-l6-v2 tokenizer",
-    dest: path.join(modelsDir, "all-minilm-l6-v2", "tokenizer.json"),
-    localSource: path.join(rootDir, ".models", "all-minilm-l6-v2", "tokenizer.json"),
-    url: "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
-    sha256: "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0",
+    name: "bge-small-en-v1.5 tokenizer",
+    dest: path.join(modelsDir, "bge-small-en-v1.5", "tokenizer.json"),
+    localSource: path.join(rootDir, ".models", "bge-small-en-v1.5", "tokenizer.json"),
+    url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json",
+    sha256: "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
   },
 ];
 
@@ -163,10 +163,10 @@ async function main(): Promise<void> {
     await ensureAsset(asset);
   }
   writeEmbeddingManifest();
-  for (const asset of miniLMAssets) {
+  for (const asset of bgeAssets) {
     await ensureAsset(asset);
   }
-  writeMiniLMManifest();
+  writeBgeManifest();
 
   console.log("[openclaw-memory-libravdb] Provisioning ONNX runtime...");
   await ensureRuntime();
@@ -247,13 +247,13 @@ function writeEmbeddingManifest(): void {
   }, null, 2)}\n`);
 }
 
-function writeMiniLMManifest(): void {
-  const dir = path.join(modelsDir, "all-minilm-l6-v2");
+function writeBgeManifest(): void {
+  const dir = path.join(modelsDir, "bge-small-en-v1.5");
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "embedding.json"), `${JSON.stringify({
     backend: "onnx-local",
-    profile: "all-minilm-l6-v2",
-    family: "all-minilm-l6-v2",
+    profile: "bge-small-en-v1.5",
+    family: "bge-small-en-v1.5",
     model: "model.onnx",
     tokenizer: "tokenizer.json",
     dimensions: 384,

@@ -95,8 +95,8 @@ The npm package contains:
 - `docs/`
 - `dist/`
 
-The package is connect-only. It does not compile Go code, download models, or
-manage the daemon process during plugin installation.
+The plugin package has no implicit `postinstall`. Full-stack machine setup is
+handled by the explicit package bin and `scripts/auto-install.sh`.
 
 ## Release Automation
 
@@ -113,5 +113,6 @@ label. The workflow auto-bumps, tags, and publishes.
 
 ## Auto-Install Script
 
-`scripts/auto-install.sh` automates daemon + plugin installation. Run it when
-setting up a machine that needs the full stack quickly.
+`scripts/auto-install.sh` automates daemon + plugin installation, local asset
+provisioning, OpenClaw config activation, and verification. Run it when setting
+up a machine that needs the full stack quickly.

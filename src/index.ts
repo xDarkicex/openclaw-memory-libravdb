@@ -65,9 +65,9 @@ export function register(api: OpenClawPluginApi) {
   const runtime = runtimeOrNull;
   if (!runtime) return; // unreachable but satisfies the type checker
 
-  // Exclusive slot check: refuse to register if another plugin owns the memory slot.
-  // plugins.slots.memory is the only configurable slot; context engine exclusivity
-  // is enforced by the registry at runtime (no config surface for it).
+  // Exclusive slot check: refuse to register memory if another plugin owns the memory slot.
+  // Context-engine selection is handled by plugins.slots.contextEngine and the
+  // registry at runtime.
   // "none" means memory is disabled, not a conflict, allow registration.
   const memSlot = api.config?.plugins?.slots?.memory;
   if (memSlot && memSlot !== MEMORY_ID && memSlot !== "none") {

@@ -387,7 +387,7 @@ export function resolveConfiguredEndpoint(cfg: PluginConfig): string {
 }
 
 export function daemonProvisioningHint(): string {
-  return "If you installed the npm package, install and start libravdbd separately; the package does not provision the daemon binary, ONNX Runtime, or model assets.";
+  return "Run `npx --yes @xdarkicex/openclaw-memory-libravdb --yes` to install libravdbd, ONNX Runtime, model assets, the OpenClaw plugin package, and the memory/context-engine slot config.";
 }
 
 export function defaultEndpoint(

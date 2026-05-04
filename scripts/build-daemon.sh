@@ -16,9 +16,9 @@ fi
 
 copy_assets() {
   local asset_root="$1"
-  if [[ -d "$asset_root/all-minilm-l6-v2" ]]; then
-    rm -rf "$OUT_MODELS_DIR/all-minilm-l6-v2"
-    cp -R "$asset_root/all-minilm-l6-v2" "$OUT_MODELS_DIR/all-minilm-l6-v2"
+  if [[ -d "$asset_root/bge-small-en-v1.5" ]]; then
+    rm -rf "$OUT_MODELS_DIR/bge-small-en-v1.5"
+    cp -R "$asset_root/bge-small-en-v1.5" "$OUT_MODELS_DIR/bge-small-en-v1.5"
   fi
   if [[ -d "$asset_root/nomic-embed-text-v1.5" ]]; then
     rm -rf "$OUT_MODELS_DIR/nomic-embed-text-v1.5"

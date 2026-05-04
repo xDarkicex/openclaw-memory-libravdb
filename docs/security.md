@@ -16,10 +16,11 @@ The system is designed so a failure in one layer does not automatically collapse
 
 ## Supply Chain and Installer Trust Boundary
 
-The published plugin package intentionally avoids install-time process execution.
-That is a deliberate trust and distribution choice: the OpenClaw plugin is a
-thin client, and the local `libravdbd` daemon is a separate operator-managed
-component.
+The published plugin package intentionally avoids implicit install-time process
+execution. That is a deliberate trust and distribution choice: the OpenClaw
+plugin is a thin client, and the local `libravdbd` daemon is installed by the
+explicit `npx --yes @xdarkicex/openclaw-memory-libravdb --yes` command or by an
+operator-managed package channel.
 
 Current implementation facts:
 
@@ -28,7 +29,8 @@ Current implementation facts:
 - the published plugin source contains no direct `child_process` usage
 - the plugin connects only to a configured local endpoint such as
   `unix:/Users/<you>/.libravdbd/run/libravdb.sock` or `tcp:127.0.0.1:37421`
-- daemon installation and lifecycle are explicit user or operator actions
+- daemon installation and lifecycle happen through the explicit installer or
+  operator-managed service tooling
 
 The daemon distribution surface should be evaluated separately from the plugin
 package. If you install `libravdbd` from release assets or another package

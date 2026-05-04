@@ -1,8 +1,8 @@
 # Install Guide
 
-LibraVDB Memory is a connect-only OpenClaw plugin. Install the plugin as a
-normal package, install `libravdbd` separately, and point the plugin at the
-daemon endpoint when you need a non-default location.
+LibraVDB Memory ships an explicit automated installer for the full local stack:
+daemon, ONNX Runtime, model assets, OpenClaw plugin package, plugin activation,
+and verification.
 
 OpenClaw compatibility note:
 
@@ -11,24 +11,33 @@ OpenClaw compatibility note:
 For deeper operational detail, use the full
 [installation reference](./installation.md).
 
-## Recommended Path: Homebrew + OpenClaw Plugin
+## Recommended Path: Automated Installer
 
-On macOS, the shortest supported path is:
+Run:
 
 ```bash
-brew tap xDarkicex/homebrew-openclaw-libravdb-memory
-brew install libravdbd
-brew services start libravdbd
-openclaw plugins install @xdarkicex/openclaw-memory-libravdb
+npx --yes @xdarkicex/openclaw-memory-libravdb --yes
 ```
 
 This gives you:
 
-- a managed `libravdbd` service
-- a scanner-clean plugin install
-- a clean separation between plugin lifecycle and daemon lifecycle
+- a running `libravdbd` service
+- provisioned ONNX Runtime and local model assets for installer-managed daemon installs
+- an installed OpenClaw plugin package
+- `~/.openclaw/openclaw.json` updated with the current `plugins.entries` config shape
+- a final `openclaw memory status` verification
 
-## Plugin Install
+From a source checkout, run the same installer script:
+
+```bash
+bash scripts/auto-install.sh --yes
+```
+
+On macOS, the installer tries Homebrew first when accepted. If Homebrew fails,
+it falls back to the published daemon binary plus installer-managed launchd,
+ONNX Runtime, and model assets.
+
+## Plugin-Only Install
 
 Install the plugin package with the OpenClaw CLI:
 
@@ -36,16 +45,27 @@ Install the plugin package with the OpenClaw CLI:
 openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 ```
 
-If you use the OpenClaw.ai plugin UI instead of the CLI, install the same
-package and then assign the plugin id `libravdb-memory` to the `memory` slot.
+Use this path only when an operator already manages `libravdbd` and assets.
+If you use the OpenClaw.ai plugin UI instead of the CLI, install the same package
+and then assign the plugin id `libravdb-memory` to both the `memory` and
+`contextEngine` slots.
 
-Activate the plugin in `~/.openclaw/openclaw.json`:
+The current config shape is:
 
 ```json
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
+    },
+    "entries": {
+      "libravdb-memory": {
+        "enabled": true,
+        "config": {
+          "sidecarPath": "auto"
+        }
+      }
     }
   }
 }
@@ -57,7 +77,8 @@ If you run the daemon on a non-default endpoint, add a plugin config:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     },
     "entries": {
       "libravdb-memory": {
@@ -115,26 +136,24 @@ brew info libravdbd
 
 ### Manual Service Management
 
-If you are not using Homebrew, manage the daemon explicitly.
-
-Linux user service from the repo template:
+If you are not using Homebrew, prefer the installer-managed manual service path.
+It writes the launchd/systemd wiring directly instead of relying on external
+service-template files:
 
 ```bash
-# Replace vX.Y.Z with the published libravdbd release you want to install.
-mkdir -p ~/.local/bin ~/.config/systemd/user
-# Download the matching published libravdbd binary and service template.
-curl -L -o ~/.local/bin/libravdbd <published-libravdbd-binary-url>
-chmod +x ~/.local/bin/libravdbd
-curl -L -o ~/.config/systemd/user/libravdbd.service <published-libravdbd-service-template-url>
-systemctl --user enable --now libravdbd.service
+bash scripts/auto-install.sh --yes
 ```
 
-macOS LaunchAgent from the repo template:
+For a completely manual foreground run, download the matching published
+`libravdbd` binary for your OS/architecture, make it executable, and run:
 
-1. Download the published `com.xdarkicex.libravdbd.plist` template for your release.
-2. Replace `__HOME__` with your home directory.
-3. Save it to `~/Library/LaunchAgents/com.xdarkicex.libravdbd.plist`.
-4. Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.xdarkicex.libravdbd.plist`.
+```bash
+chmod +x ~/.local/bin/libravdbd
+libravdbd serve
+```
+
+Foreground mode is useful for release validation, but normal local use should
+use the automated installer or an operator-managed service.
 
 ### Windows
 
@@ -159,13 +178,10 @@ you wrap it in `brew services`, `systemd`, or `launchd`.
 
 ### Plugin Lifecycle
 
-- Install the package with `openclaw plugins install`.
-- Activate it by assigning `libravdb-memory` to the `memory` slot.
-- Update it with your normal OpenClaw plugin update flow.
+- Install the full stack with `npx --yes @xdarkicex/openclaw-memory-libravdb --yes`.
+- Update the plugin package with your normal OpenClaw plugin update flow.
+- Rerun the installer when daemon assets or local service wiring need repair.
 - Disable it by removing the slot assignment from `~/.openclaw/openclaw.json`.
-
-The plugin does not manage the daemon process. Treat plugin activation and
-daemon supervision as separate lifecycle decisions.
 
 ### Daemon Lifecycle
 
@@ -185,7 +201,7 @@ openclaw memory status
 Healthy output should show that:
 
 - the daemon answered the local health check
-- the memory slot is active
+- the memory and context-engine slots are active
 - the plugin can read stored counts and runtime settings
 
 If OpenClaw cannot reach the daemon, verify the endpoint first:

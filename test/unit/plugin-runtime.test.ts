@@ -7,7 +7,7 @@ test("enrichStartupError adds provisioning guidance for daemon startup failures"
   const err = enrichStartupError("LibraVDB daemon failed health check", "embedder running in deterministic fallback mode");
   assert.match(err.message, /daemon failed health check/);
   assert.match(err.message, /deterministic fallback mode/);
-  assert.match(err.message, /install and start libravdbd separately/);
+  assert.match(err.message, /npx --yes @xdarkicex\/openclaw-memory-libravdb --yes/);
 });
 
 test("enrichStartupError leaves unrelated errors alone", () => {

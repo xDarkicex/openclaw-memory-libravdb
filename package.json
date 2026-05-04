@@ -4,6 +4,10 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "openclaw-memory-libravdb": "./scripts/auto-install.sh",
+    "openclaw-memory-libravdb-install": "./scripts/auto-install.sh"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,6 +25,7 @@
     "HOOK.md",
     "index.js",
     "cli-metadata.js",
+    "scripts/auto-install.sh",
     "openclaw.plugin.json",
     "package.json",
     "docs/",

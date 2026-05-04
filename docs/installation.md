@@ -24,11 +24,28 @@ OpenClaw compatibility note:
 
 ## Install Flow
 
-The published plugin package is connect-only. It installs TypeScript plugin code
-and docs; it does not compile Go code, download model assets, or supervise the
-daemon.
+Use the automated installer for normal setup:
 
-Recommended macOS path:
+```bash
+npx --yes @xdarkicex/openclaw-memory-libravdb --yes
+```
+
+From a source checkout:
+
+```bash
+bash scripts/auto-install.sh --yes
+```
+
+The installer:
+
+- installs or starts `libravdbd`
+- falls back from Homebrew to published daemon assets on macOS when Homebrew fails
+- provisions ONNX Runtime and local model assets for installer-managed daemon installs
+- installs the OpenClaw plugin package
+- updates `~/.openclaw/openclaw.json`
+- verifies the result with `openclaw memory status`
+
+Operator-managed macOS path:
 
 ```bash
 brew tap xDarkicex/homebrew-openclaw-libravdb-memory
@@ -37,16 +54,18 @@ brew services start libravdbd
 openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 ```
 
-Manual Linux sketch:
+Manual Linux foreground sketch for operators who do not use the automated installer:
 
 ```bash
-mkdir -p ~/.local/bin ~/.config/systemd/user
+mkdir -p ~/.local/bin
 curl -L -o ~/.local/bin/libravdbd <published-libravdbd-binary-url>
 chmod +x ~/.local/bin/libravdbd
-curl -L -o ~/.config/systemd/user/libravdbd.service <published-libravdbd-service-template-url>
-systemctl --user enable --now libravdbd.service
-openclaw plugins install @xdarkicex/openclaw-memory-libravdb
+~/.local/bin/libravdbd serve
 ```
+
+The automated installer writes systemd user services and macOS LaunchAgents
+directly; this repository no longer documents nonexistent service-template
+downloads as a manual requirement.
 
 Windows uses a loopback TCP endpoint by default:
 
@@ -60,20 +79,30 @@ or run `libravdbd serve` in a terminal for validation.
 
 ## Activation
 
-Assign `libravdb-memory` to the OpenClaw memory slot:
+Assign `libravdb-memory` to the OpenClaw memory and context-engine slots:
 
 ```json
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
+    },
+    "entries": {
+      "libravdb-memory": {
+        "enabled": true,
+        "config": {
+          "sidecarPath": "auto"
+        }
+      }
     }
   }
 }
 ```
 
-The plugin registers both memory and context-engine capabilities at runtime;
-current OpenClaw config only needs the `memory` slot assignment.
+The plugin registers both memory and context-engine capabilities at runtime.
+Both exclusive slots should point at the plugin so retrieval and context
+assembly use the same LibraVDB sidecar.
 
 If the daemon uses a non-default endpoint, add `sidecarPath`:
 
@@ -81,7 +110,8 @@ If the daemon uses a non-default endpoint, add `sidecarPath`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     },
     "entries": {
       "libravdb-memory": {
@@ -144,8 +174,9 @@ Interpretation:
 
 - `Sidecar=running` means the daemon answered the health check.
 - `Gate threshold=0.35` confirms the default durable-memory gate.
-- `Abstractive model=not provisioned` is acceptable; compaction falls back to
-  the extractive path.
+- `Abstractive model=ready` confirms local T5-small assets were provisioned.
+  `not provisioned` is still usable because compaction falls back to the
+  extractive path.
 
 ## Troubleshooting
 
@@ -171,6 +202,14 @@ For foreground debugging:
 libravdbd serve
 ```
 
+### Homebrew stops on Command Line Tools
+
+On macOS, Homebrew can refuse to install even prebuilt formula assets when the
+local Command Line Tools are too old. The automated installer falls back to the
+published daemon binary and installer-managed launchd/model assets when the
+Homebrew step fails. If you require the Homebrew-managed service specifically,
+update Command Line Tools and rerun the Homebrew commands.
+
 ### Hash mismatch
 
 Do not bypass a checksum mismatch. Delete the corrupt or stale asset and rerun
@@ -178,9 +217,9 @@ setup, or republish the release with corrected checksums.
 
 ### Default memory still appears active
 
-Confirm that `libravdb-memory` is assigned to `plugins.slots.memory`.
-Without that slot entry, OpenClaw's default memory path can continue to run in
-parallel.
+Confirm that `libravdb-memory` is assigned to both `plugins.slots.memory` and
+`plugins.slots.contextEngine`. Without those slot entries, OpenClaw's default
+memory path or legacy context engine can continue to run in parallel.
 
 ### Lifecycle journal looks empty
 

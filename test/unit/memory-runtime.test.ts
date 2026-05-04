@@ -44,7 +44,7 @@ class FakeRpc {
           memoryCount: 4,
           gatingThreshold: 0.35,
           abstractiveReady: false,
-          embeddingProfile: "all-minilm-l6-v2",
+          embeddingProfile: "bge-small-en-v1.5",
           sessionTurnCount: 7,
         } as T;
       case "list_collection":
@@ -219,7 +219,7 @@ test("memory runtime bridge exposes cached status and keeps legacy helpers deleg
   assert.equal(status.backend, "builtin");
   assert.equal(status.provider, "libravdb");
   assert.equal(status.turnCount, 12);
-  assert.equal(status.embeddingProfile, "all-minilm-l6-v2");
+  assert.equal(status.embeddingProfile, "bge-small-en-v1.5");
   assert.equal(status.sessionTurnCount, 7);
   assert.deepEqual(ingest, { ingested: false, delegatedToContextEngine: true });
   assert.deepEqual(sync, { synced: true, delegatedToContextEngine: true });
