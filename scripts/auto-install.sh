@@ -519,6 +519,8 @@ install_daemon_manual() {
     current_norm="${current#v}"
     if [[ -n "$current_norm" && "$current_norm" == "$tag_norm" ]]; then
       info "libravdbd ${tag} already installed at ${bin_path}; skipping manual daemon download."
+      append_path_once
+      export PATH="$bin_dir:$PATH"
       provision_manual_assets "$os" "$arch"
       return 0
     fi
@@ -972,12 +974,16 @@ stop_daemon_services() {
     return 0
   fi
 
-  if command -v systemctl >/dev/null 2>&1 && [[ -f "$systemd_service" ]]; then
+  if [[ -f "$systemd_service" ]]; then
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      info "[dry-run] systemctl --user disable --now libravdbd.service"
+      if command -v systemctl >/dev/null 2>&1; then
+        info "[dry-run] systemctl --user disable --now libravdbd.service"
+      fi
       info "[dry-run] rm -f ${systemd_service}"
     else
-      systemctl --user disable --now libravdbd.service || warn "Failed to disable user systemd service."
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable --now libravdbd.service || warn "Failed to disable user systemd service."
+      fi
       rm -f "$systemd_service"
     fi
   fi
@@ -1012,6 +1018,23 @@ remove_manual_daemon_binary() {
   info "Removed manual daemon binary at ${bin_path}."
 }
 
+remove_manual_assets() {
+  local asset_root
+  asset_root="$(manual_asset_root)"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    info "[dry-run] rm -rf ${asset_root}/onnxruntime ${asset_root}/models"
+    return 0
+  fi
+
+  if [[ ! -d "${asset_root}/onnxruntime" && ! -d "${asset_root}/models" ]]; then
+    return 0
+  fi
+
+  rm -rf "${asset_root}/onnxruntime" "${asset_root}/models"
+  info "Removed installer-managed assets under ${asset_root}."
+}
+
 run_uninstall_mode() {
   local os
   os="$(detect_os)"
@@ -1030,6 +1053,7 @@ run_uninstall_mode() {
   uninstall_openclaw_config
   uninstall_plugin_package
   remove_manual_daemon_binary
+  remove_manual_assets
 
   echo
   if [[ "$DRY_RUN" -eq 1 ]]; then

@@ -9,6 +9,10 @@ For installer-managed setups, start with:
 npx --yes @xdarkicex/openclaw-memory-libravdb --uninstall
 ```
 
+This removes installer-managed service wiring, the manual daemon binary, and
+runtime/model assets under `~/.local/share/libravdb` while preserving memory
+data under `~/.libravdbd`.
+
 If you only want to disable the memory/context-engine replacement temporarily,
 remove the plugin slot assignments first and leave the daemon plus data in place.
 
@@ -83,6 +87,8 @@ Common locations:
 - `~/.config/systemd/user/libravdbd.service`
 - `~/Library/LaunchAgents/com.xdarkicex.libravdbd.plist`
 - `~/.local/bin/libravdbd`
+- `~/.local/share/libravdb/onnxruntime/`
+- `~/.local/share/libravdb/models/`
 
 ## 4. Optional Full Data Cleanup
 

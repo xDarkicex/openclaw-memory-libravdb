@@ -149,7 +149,7 @@ For a completely manual foreground run, download the matching published
 
 ```bash
 chmod +x ~/.local/bin/libravdbd
-libravdbd serve
+~/.local/bin/libravdbd serve
 ```
 
 Foreground mode is useful for release validation, but normal local use should

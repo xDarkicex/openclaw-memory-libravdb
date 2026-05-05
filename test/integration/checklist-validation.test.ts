@@ -70,10 +70,22 @@ test("auto installer owns daemon assets and current OpenClaw config shape", asyn
   assert.match(installer, /start_background_daemon/);
   assert.match(installer, /LaunchAgent startup failed; falling back/);
   assert.match(installer, /rm -f "\$HOME\/\.libravdbd\/run\/libravdb\.sock"/);
+  assert.match(
+    installer,
+    /libravdbd \$\{tag\} already installed[^\n]*\n\s+append_path_once\n\s+export PATH="\$bin_dir:\$PATH"\n\s+provision_manual_assets/,
+  );
+  assert.match(installer, /remove_manual_assets/);
+  assert.match(installer, /rm -rf "\$\{asset_root\}\/onnxruntime" "\$\{asset_root\}\/models"/);
   assert.match(installer, /for i in \{1\.\.120\}/);
   assert.match(installer, /\.plugins\.entries\[\$plugin\]/);
   assert.match(installer, /\.plugins\.slots\.memory = \$plugin/);
   assert.match(installer, /\.plugins\.slots\.contextEngine = \$plugin/);
   assert.doesNotMatch(installer, /\.plugins\.configs/);
   assert.doesNotMatch(installer, /libravdbd --version/);
+});
+
+test("install docs foreground daemon command works without PATH setup", async () => {
+  const installMd = await readFile(path.join(repoRoot, "docs", "install.md"), "utf8");
+
+  assert.match(installMd, /chmod \+x ~\/\.local\/bin\/libravdbd\n~\/\.local\/bin\/libravdbd serve/);
 });
