@@ -486,10 +486,17 @@ async function runFlush(runtime: PluginRuntime, opts: CliOptionBag | undefined, 
 }
 
 async function runExport(runtime: PluginRuntime, opts: CliOptionBag | undefined, logger: LoggerLike): Promise<void> {
+  const namespace = resolveCliNamespace(opts);
+  if (!namespace) {
+    logger.error("LibraVDB export requires a namespace. Please provide --user-id <userId> or --session-key <sessionKey>.");
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     const rpc = await runtime.getRpc();
     const result = await rpc.call<ExportResult>("export_memory", {
-      namespace: resolveCliNamespace(opts),
+      namespace,
     });
     for (const record of result.records ?? []) {
       stdout.write(`${JSON.stringify(record)}\n`);
