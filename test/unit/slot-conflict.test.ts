@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 // Import the real register function from src/index.ts so tests actually
 // exercise the production code path.
-import { register, MEMORY_ID } from "../../src/index.js";
+import { register, MEMORY_ID, shouldShutdownRuntimeForLifecycleReason } from "../../src/index.js";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
 /** Builds a fake OpenClawPluginApi for register(). */
@@ -101,4 +101,11 @@ test("combined — cli-metadata with conflicting slot: mode gate blocks before s
     threw = true;
   }
   assert.ok(!threw, "no error in cli-metadata even with conflicting slot — mode guard exits first");
+});
+
+test("runtime lifecycle disable cleanup preserves active runtime", () => {
+  assert.equal(shouldShutdownRuntimeForLifecycleReason("disable"), false);
+  assert.equal(shouldShutdownRuntimeForLifecycleReason("reset"), true);
+  assert.equal(shouldShutdownRuntimeForLifecycleReason("delete"), true);
+  assert.equal(shouldShutdownRuntimeForLifecycleReason("restart"), true);
 });

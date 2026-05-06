@@ -13,6 +13,11 @@ import type { PluginConfig } from "./types.js";
 export const MEMORY_ID = "libravdb-memory";
 
 const LIGHTWEIGHT_MODES = new Set(["cli-metadata", "setup-only"]);
+type RuntimeLifecycleCleanupReason = "disable" | "reset" | "delete" | "restart";
+
+export function shouldShutdownRuntimeForLifecycleReason(reason: RuntimeLifecycleCleanupReason): boolean {
+  return reason !== "disable";
+}
 
 export function register(api: OpenClawPluginApi) {
   const registrationMode = api.registrationMode;
@@ -142,12 +147,14 @@ export function register(api: OpenClawPluginApi) {
 
   api.registerRuntimeLifecycle?.({
     id: "libravdb-shutdown",
-    description: "Shut down the vector service runtime on plugin disable",
+    description: "Shut down the vector service runtime for destructive lifecycle cleanup",
     async cleanup(ctx) {
-      if (ctx.reason === "disable") {
-        logger.info?.("LibraVDB disable — shutting down runtime");
+      if (shouldShutdownRuntimeForLifecycleReason(ctx.reason)) {
+        logger.info?.(`LibraVDB ${ctx.reason} — shutting down runtime`);
         await runtime.shutdown();
+        return;
       }
+      logger.info?.("LibraVDB disable — preserving runtime until gateway_stop");
     },
   });
 
