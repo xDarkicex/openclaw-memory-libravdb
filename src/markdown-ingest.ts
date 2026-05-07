@@ -595,16 +595,17 @@ function matchesGlob(value: string, pattern: string): boolean {
 }
 
 function looksLikeObsidianNote(filePath: string, text: string): boolean {
-  if (!text.startsWith("---\n")) {
+  const frontmatterStart = parseFrontmatterStart(text);
+  if (frontmatterStart == null) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatterEnd = findFrontmatterEnd(text, 4);
+  const frontmatterEnd = findFrontmatterEnd(text, frontmatterStart);
   if (frontmatterEnd < 0) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatter = text.slice(4, frontmatterEnd);
+  const frontmatter = text.slice(frontmatterStart, frontmatterEnd);
   const lines = frontmatter.split("\n");
   for (const line of lines) {
     const trimmed = line.trimStart();
@@ -619,6 +620,16 @@ function looksLikeObsidianNote(filePath: string, text: string): boolean {
   }
 
   return hasInlineObsidianTag(text.slice(frontmatterEnd + 4));
+}
+
+function parseFrontmatterStart(text: string): number | null {
+  if (text.startsWith("---\n")) {
+    return 4;
+  }
+  if (text.startsWith("---\r\n")) {
+    return 5;
+  }
+  return null;
 }
 
 function findFrontmatterEnd(text: string, offset: number): number {
@@ -649,10 +660,8 @@ function hasInlineObsidianTag(text: string): boolean {
     if (inFence) {
       continue;
     }
-    if (trimmed.startsWith("#")) {
-      continue;
-    }
-    if (/(^|[^A-Za-z0-9_])#([A-Za-z][A-Za-z0-9/_-]*)\b/.test(line)) {
+    const searchable = trimmed.replace(/^#{1,6}\s+/, "");
+    if (/(^|[^A-Za-z0-9_])#([A-Za-z][A-Za-z0-9/_-]*)\b/.test(searchable)) {
       return true;
     }
   }

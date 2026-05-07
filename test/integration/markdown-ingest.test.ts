@@ -301,6 +301,76 @@ test("obsidian markdown ingestion accepts inline tags like #project", async () =
   await handle.stop();
 });
 
+test("obsidian markdown ingestion accepts CRLF frontmatter tags", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-obsidian-crlf-"));
+  const filePath = path.join(tempRoot, "windows-note.md");
+  await fsp.writeFile(
+    filePath,
+    [
+      "---",
+      "tags: [openclaw]",
+      "---",
+      "",
+      "# Vault",
+      "This note uses CRLF frontmatter.",
+    ].join("\r\n"),
+  );
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: false,
+      markdownIngestionObsidianEnabled: true,
+      markdownIngestionObsidianRoots: [tempRoot],
+      markdownIngestionObsidianDebounceMs: 0,
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 1);
+  assert.equal(rpc.documents.get(filePath)?.sourceMeta.sourceKind, "obsidian");
+
+  await handle.stop();
+});
+
+test("obsidian markdown ingestion accepts tags in headings", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-obsidian-heading-tag-"));
+  const filePath = path.join(tempRoot, "heading-tag.md");
+  await fsp.writeFile(
+    filePath,
+    [
+      "# Project #openclaw",
+      "This note only has an Obsidian tag in the heading.",
+    ].join("\n"),
+  );
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: false,
+      markdownIngestionObsidianEnabled: true,
+      markdownIngestionObsidianRoots: [tempRoot],
+      markdownIngestionObsidianDebounceMs: 0,
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 1);
+  assert.equal(rpc.documents.get(filePath)?.sourceMeta.sourceKind, "obsidian");
+
+  await handle.stop();
+});
+
 test("markdown ingestion stop waits for an in-flight startup scan", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-stop-"));
   const notePath = path.join(tempRoot, "slow.md");
