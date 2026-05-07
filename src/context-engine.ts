@@ -341,18 +341,35 @@ function enforceTokenBudgetInvariant(
   const hardBudget = Math.max(1, Math.floor(tokenBudget));
   const effectiveBudget = resolveEffectiveAssembleBudget(hardBudget);
   const estimated = typeof result.estimatedTokens === "number" ? result.estimatedTokens : 0;
+  const systemPromptTokens = approximateTokenCount(result.systemPromptAddition);
   const approxFromMessages = approximateMessagesTokens(result.messages);
+  const approxTotal = systemPromptTokens + approxFromMessages;
 
-  if (estimated <= effectiveBudget && approxFromMessages <= effectiveBudget) {
+  if (estimated <= effectiveBudget && approxTotal <= effectiveBudget) {
     return result;
   }
 
-  const trimmedMessages = trimMessagesToBudget(result.messages, effectiveBudget);
+  if (systemPromptTokens >= effectiveBudget) {
+    const trimmedSystemPromptAddition = truncateContentToTokenBudget(
+      result.systemPromptAddition,
+      effectiveBudget,
+    );
+    const trimmedSystemPromptTokens = approximateTokenCount(trimmedSystemPromptAddition);
+    return {
+      ...result,
+      systemPromptAddition: trimmedSystemPromptAddition,
+      messages: [],
+      estimatedTokens: Math.min(effectiveBudget, trimmedSystemPromptTokens),
+    };
+  }
+
+  const messageBudget = Math.max(1, effectiveBudget - systemPromptTokens);
+  const trimmedMessages = trimMessagesToBudget(result.messages, messageBudget);
   const trimmedEstimate = approximateMessagesTokens(trimmedMessages);
   return {
     ...result,
     messages: trimmedMessages,
-    estimatedTokens: Math.min(effectiveBudget, trimmedEstimate),
+    estimatedTokens: Math.min(effectiveBudget, systemPromptTokens + trimmedEstimate),
   };
 }
 

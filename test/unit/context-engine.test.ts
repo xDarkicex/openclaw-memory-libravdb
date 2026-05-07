@@ -418,6 +418,34 @@ test("context engine exact recall checks existing facts per block", async () => 
   assert.ok(assembled.systemPromptAddition.includes(`${secondMarker} means Jay prefers the second path.`));
 });
 
+test("context engine assemble clamps system prompt additions within token budget", async () => {
+  const rpc = new FakeRpc();
+  rpc.assembleResponse = {
+    messages: [
+      { role: "assistant", content: "this message should be dropped because the system addition consumes the budget" },
+    ],
+    estimatedTokens: 0,
+    systemPromptAddition: "x".repeat(2000),
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn() {},
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "assemble with large system addition")],
+    prompt: "assemble with large system addition",
+    tokenBudget: 300,
+  });
+
+  assert.equal(assembled.messages.length, 0);
+  assert.ok(assembled.systemPromptAddition.length < 2000);
+  assert.ok(assembled.estimatedTokens <= 44);
+});
+
 test("context engine exact recall skips additions that would exceed the token budget", async () => {
   const rpc = new FakeRpc();
   const marker = "BUDGET_SESSION_MEMORY_MARKER_1234567890";
