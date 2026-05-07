@@ -89,14 +89,25 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
     userId: string;
     sourceDoc: string;
     sourceKind: string;
-    entries: Array<{ text: string; score: number; recallCount: number; uniqueQueries: number }>;
+    entries: Array<{
+      text: string;
+      score: number;
+      recallCount: number;
+      uniqueQueries: number;
+      line: number;
+      sourceLine: number;
+    }>;
   };
   assert.equal(params.userId, "u1");
   assert.equal(params.sourceDoc, diaryPath);
   assert.equal(params.sourceKind, "dream");
   assert.equal(params.entries.length, 2);
   assert.equal(params.entries[0]?.text, "Preserve the recent tail buffer");
+  assert.equal(params.entries[0]?.line, 4);
+  assert.equal(params.entries[0]?.sourceLine, 4);
   assert.equal(params.entries[1]?.score, 0.2);
+  assert.equal(params.entries[1]?.line, 5);
+  assert.equal(params.entries[1]?.sourceLine, 5);
 
   await fsp.writeFile(
     diaryPath,
