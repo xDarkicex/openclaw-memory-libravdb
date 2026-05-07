@@ -204,10 +204,9 @@ export function createDreamPromotionHandle(
       sourceMtimeMs: stat.mtimeMs,
       ingestVersion: DREAM_PROMOTION_VERSION,
       hashBackend: getHashBackendName(),
-      entries: candidates.map((candidate, index) => ({
+      entries: candidates.map((candidate) => ({
         ...candidate,
         sourceLine: candidate.line,
-        line: index + 1,
       })),
     };
     await rpc.call<DreamPromotionResult>("promote_dream_entries", params);
@@ -308,10 +307,9 @@ export async function promoteDreamDiaryFile(
     sourceMtimeMs: sourceMtimeMs ?? 0,
     ingestVersion: DREAM_PROMOTION_VERSION,
     hashBackend: getHashBackendName(),
-    entries: candidates.map((candidate, index) => ({
+    entries: candidates.map((candidate) => ({
       ...candidate,
       sourceLine: candidate.line,
-      line: index + 1,
     })),
   });
 }
