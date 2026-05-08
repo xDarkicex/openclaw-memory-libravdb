@@ -606,7 +606,7 @@ function looksLikeObsidianNote(filePath: string, text: string): boolean {
   }
 
   const frontmatter = text.slice(frontmatterStart, frontmatterEnd);
-  const lines = frontmatter.split("\n");
+  const lines = frontmatter.split(/\r?\n/);
   for (const line of lines) {
     const trimmed = line.trimStart();
     if (
