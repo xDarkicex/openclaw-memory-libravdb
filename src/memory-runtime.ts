@@ -229,13 +229,16 @@ function firstString(...values: Array<string | undefined>): string | undefined {
 }
 
 function toMemorySearchResult(item: SearchResult) {
-  const collection = typeof item.metadata.collection === "string" ? item.metadata.collection : "memory";
+  const metadata = item.metadata ?? {};
+  const collection = typeof metadata.collection === "string" ? metadata.collection : "memory";
+  const text = typeof item.text === "string" ? item.text : "";
+  const score = typeof item.score === "number" && Number.isFinite(item.score) ? item.score : 0;
   return {
     path: encodeSearchResultPath(collection, item.id),
     startLine: 1,
-    endLine: Math.max(1, item.text.split("\n").length),
-    score: item.score,
-    snippet: item.text,
+    endLine: Math.max(1, text.split("\n").length),
+    score,
+    snippet: text,
     source: collection.startsWith("session:") || collection.startsWith("session_") ? "sessions" : "memory",
     citation: `${collection}:${item.id}`,
   };
@@ -245,7 +248,8 @@ async function loadSearchResultText(getRpc: RpcGetter, relPath: string): Promise
   const { collection, id } = decodeSearchResultPath(relPath);
   const rpc = await getRpc();
   const result = await rpc.call<{ results: SearchResult[] }>("list_collection", { collection });
-  const item = result.results.find((entry) => entry.id === id);
+  const results = Array.isArray(result.results) ? result.results : [];
+  const item = results.find((entry) => entry.id === id);
   if (!item) {
     throw new Error(`LibraVDB memory path not found: ${relPath}`);
   }
