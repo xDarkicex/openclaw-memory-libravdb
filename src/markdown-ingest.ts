@@ -586,12 +586,98 @@ function isMarkdownFile(fileName: string): boolean {
   return lower.endsWith(".md") || lower.endsWith(".markdown");
 }
 
-function matchesGlob(value: string, pattern: string): boolean {
-  const escaped = pattern
-    .split("*")
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*");
-  return new RegExp(`^${escaped}$`).test(value);
+export function matchesGlob(value: string, pattern: string): boolean {
+  // Convert a glob pattern to a RegExp, supporting:
+  //   **/  — match zero or more path segments
+  //   **   — match any path (including /)
+  //   *   — match within a single segment (no slashes)
+  //   ?   — match a single character (no slashes)
+  //   [...] — character classes
+  //   {a,b} — brace expansion (comma-separated alternatives)
+  // Anything else is matched literally.
+  const len = pattern.length;
+  let re = "";
+  let i = 0;
+  while (i < len) {
+    const ch = pattern[i];
+    if (ch === "*" && pattern[i + 1] === "*") {
+      i += 2;
+      if (pattern[i] === "/") {
+        // **/ — zero or more complete path segments ending in /
+        i++; // consume the /
+        re += "(?:.+/)?";
+      } else {
+        // standalone ** — match any path including /
+        re += ".*?";
+      }
+    } else if (ch === "*") {
+      // * matches anything except /
+      re += "[^/]*";
+      i++;
+    } else if (ch === "?") {
+      // ? matches a single character except /
+      re += "[^/]";
+      i++;
+    } else if (ch === "[") {
+      // Character class — find the closing ]
+      const end = pattern.indexOf("]", i + 1);
+      if (end === -1) {
+        // No closing bracket, treat literally
+        re += "\\[";
+        i++;
+      } else {
+        re += pattern.slice(i, end + 1);
+        i = end + 1;
+      }
+    } else if (ch === "{") {
+      // Brace expansion {a,b} → (?:a|b)
+      const end = pattern.indexOf("}", i + 1);
+      if (end === -1) {
+        re += "\\{";
+        i++;
+      } else {
+        const inner = pattern.slice(i + 1, end);
+        const alternatives = inner.split(",").map((s) => globToRegexFragment(s)).join("|");
+        re += "(?:" + alternatives + ")";
+        i = end + 1;
+      }
+    } else {
+      // Literal character — escape regex metacharacters
+      re += ch.replace(/[.+^${}()|\\]/g, "\\$&");
+      i++;
+    }
+  }
+  return new RegExp(`^${re}$`).test(value);
+}
+
+function globToRegexFragment(pattern: string): string {
+  // Minimal version of matchesGlob for use inside brace expansions.
+  // Supports *, **, ?, and literal characters (no nested braces/classes).
+  const len = pattern.length;
+  let re = "";
+  let i = 0;
+  while (i < len) {
+    const ch = pattern[i];
+    if (ch === "*" && pattern[i + 1] === "*") {
+      i += 2;
+      if (pattern[i] === "/") {
+        i++;
+        re += "(?:.+/)?";
+      } else {
+        re += ".*?";
+      }
+    } else if (ch === "*") {
+      re += "[^/]*";
+      i++;
+    } else if (ch === "?") {
+      re += "[^/]";
+      i++;
+    } else {
+      re += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+      i++;
+    }
+  }
+  return re;
 }
 
 function looksLikeObsidianNote(filePath: string, text: string): boolean {
