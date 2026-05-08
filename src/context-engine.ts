@@ -297,6 +297,14 @@ function truncateContentToTokenBudget(content: unknown, tokenBudget: number): st
   return normalized.slice(normalized.length - maxChars);
 }
 
+function truncateSystemPromptAdditionToTokenBudget(value: string, tokenBudget: number): string {
+  if (tokenBudget <= 0) return "";
+  const maxChars = Math.max(1, tokenBudget * APPROX_CHARS_PER_TOKEN);
+  if (value.length <= maxChars) return value;
+  // System additions are head-structured: preserve XML/preamble/instructions.
+  return value.slice(0, maxChars);
+}
+
 function trimMessagesToBudget(
   messages: OpenClawCompatibleMessage[],
   tokenBudget: number,
@@ -350,7 +358,7 @@ function enforceTokenBudgetInvariant(
   }
 
   if (systemPromptTokens >= effectiveBudget) {
-    const trimmedSystemPromptAddition = truncateContentToTokenBudget(
+    const trimmedSystemPromptAddition = truncateSystemPromptAdditionToTokenBudget(
       result.systemPromptAddition,
       effectiveBudget,
     );

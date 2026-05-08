@@ -442,7 +442,7 @@ test("context engine assemble clamps system prompt additions within token budget
   });
 
   assert.equal(assembled.messages.length, 0);
-  assert.ok(assembled.systemPromptAddition.length < 2000);
+  assert.equal(assembled.systemPromptAddition, "x".repeat(176));
   assert.ok(assembled.estimatedTokens <= 44);
 });
 
