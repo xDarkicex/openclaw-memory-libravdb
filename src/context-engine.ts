@@ -445,7 +445,7 @@ function isQuestionShapedRecallCandidate(text: string): boolean {
 
 function rankExactRecallCandidate(result: SearchResult, token: string): number {
   if (typeof result.text !== "string" || !result.text.includes(token)) return Number.NEGATIVE_INFINITY;
-  let rank = result.score;
+  let rank = typeof result.score === "number" && Number.isFinite(result.score) ? result.score : 0;
   if (/\bmeans\b/i.test(result.text)) rank += 100;
   if (/\b(remember|durable|fact)\b/i.test(result.text)) rank += 10;
   if (/\bwhat does\b/i.test(result.text) || result.text.includes("?")) rank -= 25;
