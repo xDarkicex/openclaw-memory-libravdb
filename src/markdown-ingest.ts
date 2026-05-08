@@ -592,7 +592,7 @@ export function matchesGlob(value: string, pattern: string): boolean {
   //   **   — match any path (including /)
   //   *   — match within a single segment (no slashes)
   //   ?   — match a single character (no slashes)
-  //   [...] — character classes
+  //   [...] — character classes (including [!...] negation → [^...])
   //   {a,b} — brace expansion (comma-separated alternatives)
   // Anything else is matched literally.
   const len = pattern.length;
@@ -605,7 +605,7 @@ export function matchesGlob(value: string, pattern: string): boolean {
       if (pattern[i] === "/") {
         // **/ — zero or more complete path segments ending in /
         i++; // consume the /
-        re += "(?:.+/)?";
+        re += "(?:[^/]+/)*";
       } else {
         // standalone ** — match any path including /
         re += ".*?";
@@ -626,7 +626,9 @@ export function matchesGlob(value: string, pattern: string): boolean {
         re += "\\[";
         i++;
       } else {
-        re += pattern.slice(i, end + 1);
+        // Translate glob [!...] negation to regex [^...] notation
+        const cls = pattern.slice(i + 1, end).replace(/^!/, "^");
+        re += "[" + cls + "]";
         i = end + 1;
       }
     } else if (ch === "{") {
@@ -662,7 +664,7 @@ function globToRegexFragment(pattern: string): string {
       i += 2;
       if (pattern[i] === "/") {
         i++;
-        re += "(?:.+/)?";
+        re += "(?:[^/]+/)*";
       } else {
         re += ".*?";
       }

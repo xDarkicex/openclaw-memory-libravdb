@@ -42,6 +42,13 @@ test("matchesGlob: character classes match single characters", () => {
   assert.equal(matchesGlob("akefile", "[a-c]kefile"), true);
 });
 
+test("matchesGlob: negated character classes with !", () => {
+  // [!abc] is glob syntax for "not a, b, or c" — should translate to [^abc]
+  assert.equal(matchesGlob("draft.md", "[!.]*"), true);
+  assert.equal(matchesGlob(".hidden", "[!.]*"), false);
+  assert.equal(matchesGlob("readme.md", "[!.]*"), true);
+});
+
 test("matchesGlob: brace expansion matches alternatives", () => {
   assert.equal(matchesGlob("notes/draft.md", "notes/{draft,final}.md"), true);
   assert.equal(matchesGlob("notes/final.md", "notes/{draft,final}.md"), true);
