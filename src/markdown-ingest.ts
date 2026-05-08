@@ -595,17 +595,20 @@ function matchesGlob(value: string, pattern: string): boolean {
 }
 
 function looksLikeObsidianNote(filePath: string, text: string): boolean {
-  if (!text.startsWith("---\n")) {
+  const isCrlf = text.startsWith("---\r\n");
+  const hasFrontmatterOpen = isCrlf || text.startsWith("---\n");
+  if (!hasFrontmatterOpen) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatterEnd = findFrontmatterEnd(text, 4);
+  const openLen = isCrlf ? 5 : 4; // "---\r\n" vs "---\n"
+  const frontmatterEnd = findFrontmatterEnd(text, openLen);
   if (frontmatterEnd < 0) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatter = text.slice(4, frontmatterEnd);
-  const lines = frontmatter.split("\n");
+  const frontmatter = text.slice(openLen, frontmatterEnd);
+  const lines = frontmatter.split(/\r?\n/);
   for (const line of lines) {
     const trimmed = line.trimStart();
     if (
@@ -618,7 +621,11 @@ function looksLikeObsidianNote(filePath: string, text: string): boolean {
     }
   }
 
-  return hasInlineObsidianTag(text.slice(frontmatterEnd + 4));
+  // The closing delimiter length matches the opening: "---\r\n" (5) or "---\n" (4).
+  // findFrontmatterEnd returns the position of the opening "-" of the closing "---",
+  // so we skip past the entire closing delimiter.
+  const closeLen = text.charCodeAt(frontmatterEnd + 3) === 13 ? 5 : 4;
+  return hasInlineObsidianTag(text.slice(frontmatterEnd + closeLen));
 }
 
 function findFrontmatterEnd(text: string, offset: number): number {
