@@ -52,8 +52,12 @@ export class GrpcKernelClient {
       if (!this.nonceHex) {
         throw new Error("call initializeSession before authenticated RPCs");
       }
-      const hmac = createHmac("sha256", Buffer.from(this.nonceHex, "hex"));
-      hmac.update(this.secret);
+      // Challenge-response: HMAC(secret, nonce) — the secret is the HMAC key,
+      // the server-issued nonce is the message. The previous implementation
+      // swapped these, computing HMAC(nonce, secret), which is cryptographically
+      // incorrect: the nonce is sent in the clear and must not be used as the key.
+      const hmac = createHmac("sha256", this.secret);
+      hmac.update(this.nonceHex);
       const signature = hmac.digest("hex");
       md.add("x-libravdb-auth", signature);
     }
