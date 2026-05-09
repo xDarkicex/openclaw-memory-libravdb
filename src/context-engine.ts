@@ -444,8 +444,8 @@ function isQuestionShapedRecallCandidate(text: string): boolean {
 }
 
 function rankExactRecallCandidate(result: SearchResult, token: string): number {
-  if (typeof result.text !== "string" || !result.text.includes(token)) return Number.NEGATIVE_INFINITY;
-  let rank = typeof result.score === "number" && Number.isFinite(result.score) ? result.score : 0;
+  if (!result.text.includes(token)) return Number.NEGATIVE_INFINITY;
+  let rank = result.score;
   if (/\bmeans\b/i.test(result.text)) rank += 100;
   if (/\b(remember|durable|fact)\b/i.test(result.text)) rank += 10;
   if (/\bwhat does\b/i.test(result.text) || result.text.includes("?")) rank -= 25;
@@ -638,7 +638,7 @@ export function buildContextEngineFactory(
           excludeByCollection: {},
         });
         const hit = (result.results ?? [])
-          .filter((candidate) => typeof candidate?.text === "string" && isExactRecallFact(candidate.text, token))
+          .filter((candidate) => isExactRecallFact(candidate.text, token))
           .sort((a, b) => rankExactRecallCandidate(b, token) - rankExactRecallCandidate(a, token))[0];
         if (hit) {
           injectedFacts.push(buildExactRecallFact(hit, token));
