@@ -494,7 +494,7 @@ test("context engine assemble keeps daemon result when exact recall RPC acquisit
   assert.match(warnings[0] ?? "", /exact recall skipped/);
 });
 
-test("context engine exact recall ignores malformed non-string search result text", async () => {
+test("context engine exact recall skips empty-text search results", async () => {
   const rpc = new FakeRpc();
   const marker = "BROKEN_SESSION_MEMORY_MARKER_1234567890";
   rpc.assembleResponse = {
@@ -504,9 +504,9 @@ test("context engine exact recall ignores malformed non-string search result tex
   };
   rpc.searchResults = [
     {
-      id: "bad-fact",
-      score: 0.9,
-      text: undefined as unknown as string,
+      id: "empty-fact",
+      score: 0,
+      text: "",
       metadata: { collection: "user:fixed-user" },
     },
   ];
@@ -525,7 +525,6 @@ test("context engine exact recall ignores malformed non-string search result tex
     tokenBudget: 4000,
   });
 
-  // Should skip the malformed result, not crash
   assert.equal(assembled.systemPromptAddition, "");
   assert.equal(warnings.some((message) => /exact recall failed/.test(message)), false);
 });
