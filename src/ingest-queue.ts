@@ -56,6 +56,10 @@ export class IngestQueue {
     this.rpcCall = rpcCall;
     this.logger = logger;
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    if (this.options.chunkTokens !== Infinity && this.options.chunkTokens <= 0) {
+      this.logger.warn?.(`[libravdb] chunkTokens ${this.options.chunkTokens} is invalid; using default ${DEFAULT_OPTIONS.chunkTokens}`);
+      this.options.chunkTokens = DEFAULT_OPTIONS.chunkTokens;
+    }
   }
 
   async enqueueIngest(
