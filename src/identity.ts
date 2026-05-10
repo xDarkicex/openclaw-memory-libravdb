@@ -105,6 +105,9 @@ export function resolveIdentity(params: {
   identityPath?: string;
   sessionKey?: string;
   logger?: LoggerLike;
+  /** When true, skip writing the auto-derived identity file. Useful for
+   *  read-only commands (e.g. status --deep) that should not mutate disk. */
+  noAutoPersist?: boolean;
 }): ResolvedIdentity {
   // 1. Plugin config override (highest priority)
   const configUserId = params.configUserId?.trim();
@@ -148,6 +151,9 @@ export function resolveIdentity(params: {
   }
 
   const autoId = deriveAutoId(parts);
+  if (params.noAutoPersist) {
+    return { userId: autoId, source: "auto" };
+  }
   try {
     writeIdentityFile(filePath, autoId, parts);
     params.logger?.info?.(

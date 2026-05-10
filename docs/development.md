@@ -24,7 +24,7 @@ pnpm check
 
 ```bash
 tsc --noEmit
-tsc -p tsconfig.tests.json && node --test .ts-build/test/unit/*.test.js
+pnpm run test:ts
 ```
 
 ## Local Daemon Build

@@ -60,21 +60,20 @@ or run `libravdbd serve` in a terminal for validation.
 
 ## Activation
 
-Assign `libravdb-memory` to both OpenClaw slots:
+Assign `libravdb-memory` to the OpenClaw memory slot:
 
 ```json
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     }
   }
 }
 ```
 
-Treat partial assignment as a misconfiguration. This plugin is designed to own
-memory prompt injection and the context-engine lifecycle together.
+The plugin registers both memory and context-engine capabilities at runtime;
+current OpenClaw config only needs the `memory` slot assignment.
 
 If the daemon uses a non-default endpoint, add `sidecarPath`:
 
@@ -82,12 +81,14 @@ If the daemon uses a non-default endpoint, add `sidecarPath`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     },
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "sidecarPath": "unix:/Users/<you>/.clawdb/run/libravdb.sock"
+        "enabled": true,
+        "config": {
+          "sidecarPath": "unix:/Users/<you>/.libravdbd/run/libravdb.sock"
+        }
       }
     }
   }
@@ -97,23 +98,23 @@ If the daemon uses a non-default endpoint, add `sidecarPath`:
 When `sidecarPath` is `"auto"`, macOS/Linux endpoint resolution checks:
 
 1. `LIBRAVDB_RPC_ENDPOINT`
-2. `$HOME/.clawdb/run/libravdb.sock`
-3. `/opt/homebrew/var/clawdb/run/libravdb.sock`
-4. `/usr/local/var/clawdb/run/libravdb.sock`
-5. fallback to `$HOME/.clawdb/run/libravdb.sock`
+2. `$HOME/.libravdbd/run/libravdb.sock`
+3. `/opt/homebrew/var/libravdbd/run/libravdb.sock`
+4. `/usr/local/var/libravdbd/run/libravdb.sock`
+5. fallback to `$HOME/.libravdbd/run/libravdb.sock`
 
 ## Default Paths
 
 | Platform | Default endpoint |
 |---|---|
-| macOS/Linux user-local | `unix:$HOME/.clawdb/run/libravdb.sock` |
-| macOS Homebrew Apple Silicon | `unix:/opt/homebrew/var/clawdb/run/libravdb.sock` |
+| macOS/Linux user-local | `unix:$HOME/.libravdbd/run/libravdb.sock` |
+| macOS Homebrew Apple Silicon | `unix:/opt/homebrew/var/libravdbd/run/libravdb.sock` |
 | Windows | `tcp:127.0.0.1:37421` |
 
 Default data path:
 
 ```text
-$HOME/.clawdb/data.libravdb
+$HOME/.libravdbd/data_nomic-embed-text-v1_5.libravdb
 ```
 
 ## Verification
@@ -134,7 +135,7 @@ Expected output shape:
 │ Lifecycle hints    │ 0                            │
 │ Gate threshold     │ 0.35                         │
 │ Abstractive model  │ ready | not provisioned      │
-│ Embedding profile  │ all-minilm-l6-v2             │
+│ Embedding profile  │ nomic-embed-text-v1.5             │
 │ Message            │ ok                           │
 └────────────────────┴──────────────────────────────┘
 ```
@@ -177,9 +178,9 @@ setup, or republish the release with corrected checksums.
 
 ### Default memory still appears active
 
-Confirm that `libravdb-memory` is assigned to both `memory` and
-`contextEngine`. Without both slot entries, OpenClaw's default memory path can
-continue to run in parallel.
+Confirm that `libravdb-memory` is assigned to `plugins.slots.memory`.
+Without that slot entry, OpenClaw's default memory path can continue to run in
+parallel.
 
 ### Lifecycle journal looks empty
 

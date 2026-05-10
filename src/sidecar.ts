@@ -245,6 +245,7 @@ class SidecarSupervisor implements SidecarHandle {
   async start(): Promise<SidecarSocket> {
     const endpoint = await this.runtime.resolveEndpoint(this.cfg);
     const socket = await this.connectEndpointWithRetry(endpoint);
+    this.retries = 0;
     this.reconnectScheduled = false;
     if (this.socket instanceof SupervisorSocket) {
       this.socket.bind(socket);
@@ -408,11 +409,11 @@ export function defaultEndpoint(
   const sockName = "libravdb.sock";
   const candidateDirs = [
     // User-local (npm plugin convention)
-    homeDir?.trim() ? path.join(homeDir, ".clawdb", "run") : null,
+    homeDir?.trim() ? path.join(homeDir, ".libravdbd", "run") : null,
     // Homebrew (Apple Silicon) — matches the Homebrew formula LaunchAgent
-    "/opt/homebrew/var/clawdb/run",
+    "/opt/homebrew/var/libravdbd/run",
     // Homebrew (Intel Mac) / manual Linux installs
-    "/usr/local/var/clawdb/run",
+    "/usr/local/var/libravdbd/run",
   ].filter((d): d is string => d !== null);
 
   for (const dir of candidateDirs) {
@@ -428,8 +429,8 @@ export function defaultEndpoint(
 
   // Fallback to the original user-local path so error messages stay familiar.
   const baseDir = homeDir?.trim()
-    ? path.join(homeDir, ".clawdb", "run")
-    : path.join(".", ".clawdb", "run");
+    ? path.join(homeDir, ".libravdbd", "run")
+    : path.join(".", ".libravdbd", "run");
   return `unix:${path.join(baseDir, sockName)}`;
 }
 
@@ -442,9 +443,7 @@ export function buildSidecarEnv(cfg: PluginConfig): Record<string, string> {
   if (cfg.embeddingRuntimePath) {
     env.LIBRAVDB_ONNX_RUNTIME = cfg.embeddingRuntimePath;
   }
-  if (cfg.onnxDevice) {
-    env.LIBRAVDB_ONNX_DEVICE = cfg.onnxDevice;
-  }
+  env.LIBRAVDB_ONNX_DEVICE = cfg.onnxDevice ?? "cpu";
   if (cfg.embeddingBackend) {
     env.LIBRAVDB_EMBEDDING_BACKEND = cfg.embeddingBackend;
   }
@@ -492,33 +491,6 @@ export function buildSidecarEnv(cfg: PluginConfig): Record<string, string> {
   }
   if (cfg.compactModel && !env.LIBRAVDB_SUMMARIZER_MODEL) {
     env.LIBRAVDB_SUMMARIZER_MODEL = cfg.compactModel;
-  }
-  if (cfg.gatingWeights?.w1c != null) {
-    env.LIBRAVDB_GATING_W1C = String(cfg.gatingWeights.w1c);
-  }
-  if (cfg.gatingWeights?.w2c != null) {
-    env.LIBRAVDB_GATING_W2C = String(cfg.gatingWeights.w2c);
-  }
-  if (cfg.gatingWeights?.w3c != null) {
-    env.LIBRAVDB_GATING_W3C = String(cfg.gatingWeights.w3c);
-  }
-  if (cfg.gatingWeights?.w1t != null) {
-    env.LIBRAVDB_GATING_W1T = String(cfg.gatingWeights.w1t);
-  }
-  if (cfg.gatingWeights?.w2t != null) {
-    env.LIBRAVDB_GATING_W2T = String(cfg.gatingWeights.w2t);
-  }
-  if (cfg.gatingWeights?.w3t != null) {
-    env.LIBRAVDB_GATING_W3T = String(cfg.gatingWeights.w3t);
-  }
-  if (typeof cfg.gatingTechNorm === "number" && cfg.gatingTechNorm > 0) {
-    env.LIBRAVDB_GATING_TECH_NORM = String(cfg.gatingTechNorm);
-  }
-  if (typeof cfg.ingestionGateThreshold === "number" && cfg.ingestionGateThreshold >= 0) {
-    env.LIBRAVDB_GATING_THRESHOLD = String(cfg.ingestionGateThreshold);
-  }
-  if (typeof cfg.gatingCentroidK === "number" && cfg.gatingCentroidK > 0) {
-    env.LIBRAVDB_GATING_CENTROID_K = String(cfg.gatingCentroidK);
   }
   if (typeof cfg.lifecycleJournalMaxEntries === "number" && cfg.lifecycleJournalMaxEntries > 0) {
     env.LIBRAVDB_LIFECYCLE_JOURNAL_MAX_ENTRIES = String(cfg.lifecycleJournalMaxEntries);
@@ -585,7 +557,21 @@ function describeEndpoint(endpoint: string): string {
 }
 
 function isConfiguredEndpoint(value?: string): boolean {
-  return value?.startsWith("tcp:") === true || value?.startsWith("unix:") === true;
+  if (!value) return false;
+  if (value.startsWith("unix:")) {
+    return value.slice("unix:".length).trim().length > 0;
+  }
+  if (!value.startsWith("tcp:")) {
+    return false;
+  }
+  const address = value.slice("tcp:".length);
+  const separator = address.lastIndexOf(":");
+  if (separator <= 0 || separator === address.length - 1) {
+    return false;
+  }
+  const host = address.slice(0, separator).trim();
+  const port = Number(address.slice(separator + 1));
+  return host.length > 0 && Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
 export { PlaceholderSocket };

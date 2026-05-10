@@ -37,8 +37,7 @@ openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 ```
 
 If you use the OpenClaw.ai plugin UI instead of the CLI, install the same
-package and then assign the plugin id `libravdb-memory` to both the `memory`
-and `contextEngine` slots.
+package and then assign the plugin id `libravdb-memory` to the `memory` slot.
 
 Activate the plugin in `~/.openclaw/openclaw.json`:
 
@@ -46,8 +45,7 @@ Activate the plugin in `~/.openclaw/openclaw.json`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     }
   }
 }
@@ -59,12 +57,14 @@ If you run the daemon on a non-default endpoint, add a plugin config:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     },
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "sidecarPath": "unix:/Users/<you>/.clawdb/run/libravdb.sock"
+        "enabled": true,
+        "config": {
+          "sidecarPath": "unix:/Users/<you>/.libravdbd/run/libravdb.sock"
+        }
       }
     }
   }
@@ -74,10 +74,10 @@ If you run the daemon on a non-default endpoint, add a plugin config:
 When `sidecarPath` is set to `"auto"`, the plugin resolves endpoints in this order on macOS/Linux:
 
 1. `LIBRAVDB_RPC_ENDPOINT` if it is set to a valid daemon endpoint
-2. `$HOME/.clawdb/run/libravdb.sock` if it exists
-3. `/opt/homebrew/var/clawdb/run/libravdb.sock` if it exists
-4. `/usr/local/var/clawdb/run/libravdb.sock` if it exists
-5. fallback to `$HOME/.clawdb/run/libravdb.sock`
+2. `$HOME/.libravdbd/run/libravdb.sock` if it exists
+3. `/opt/homebrew/var/libravdbd/run/libravdb.sock` if it exists
+4. `/usr/local/var/libravdbd/run/libravdb.sock` if it exists
+5. fallback to `$HOME/.libravdbd/run/libravdb.sock`
 
 ## Sidecar Daemon Install
 
@@ -85,13 +85,15 @@ The daemon owns the local database, embeddings, and JSON-RPC endpoint.
 
 Default endpoints:
 
-- Homebrew on macOS: `unix:/opt/homebrew/var/clawdb/run/libravdb.sock`
-- macOS/Linux user-local installs: `unix:$HOME/.clawdb/run/libravdb.sock`
+- Homebrew on macOS (Apple Silicon): `unix:/opt/homebrew/var/libravdbd/run/libravdb.sock`
+- Homebrew on macOS (Intel): `unix:/usr/local/var/libravdbd/run/libravdb.sock`
+- macOS/Linux user-local installs: `unix:$HOME/.libravdbd/run/libravdb.sock`
 - Windows: `tcp:127.0.0.1:37421`
 
 Default data path:
 
-- macOS/Linux/Windows user installs: `$HOME/.clawdb/data.libravdb`
+- macOS/Linux user installs: `$HOME/.libravdbd/data_nomic-embed-text-v1_5.libravdb`
+- Windows user installs: `%USERPROFILE%\.libravdbd\data_nomic-embed-text-v1_5.libravdb`
 
 ### Homebrew
 
@@ -158,7 +160,7 @@ you wrap it in `brew services`, `systemd`, or `launchd`.
 ### Plugin Lifecycle
 
 - Install the package with `openclaw plugins install`.
-- Activate it by assigning `libravdb-memory` to both `memory` and `contextEngine`.
+- Activate it by assigning `libravdb-memory` to the `memory` slot.
 - Update it with your normal OpenClaw plugin update flow.
 - Disable it by removing the slot assignment from `~/.openclaw/openclaw.json`.
 
@@ -188,5 +190,5 @@ Healthy output should show that:
 
 If OpenClaw cannot reach the daemon, verify the endpoint first:
 
-- macOS/Linux default: `unix:$HOME/.clawdb/run/libravdb.sock`
+- macOS/Linux default: `unix:$HOME/.libravdbd/run/libravdb.sock`
 - Windows default: `tcp:127.0.0.1:37421`

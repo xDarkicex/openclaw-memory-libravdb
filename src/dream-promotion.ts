@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { getHashBackendName, hashBytes } from "./markdown-hash.js";
+import { formatError } from "./format-error.js";
 import type { LoggerLike, PluginConfig } from "./types.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
@@ -480,13 +481,6 @@ function createRealFsApi(): FsApi {
     },
     watch: (dir: string, onChange: (event: string, filename: string | Buffer | null) => void) => fs.watch(dir, onChange),
   };
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 const textDecoder = new TextDecoder();

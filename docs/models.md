@@ -20,16 +20,15 @@ latency and offline operation are part of the product contract.
 
 ## Default And Optional Embedding Profiles
 
-The current safe default profile is `all-minilm-l6-v2`.
+The default profile is `nomic-embed-text-v1.5`. Nomic was chosen as the default
+because its Matryoshka-trained embeddings deliver significantly higher retrieval
+accuracy than MiniLM, with principled dimensionality tiering (`64d → 256d →
+768d`) that lets the daemon trade memory for precision without re-embedding.
 
-MiniLM is the default because it keeps local retrieval within the target memory
-envelope on macOS and is less fragile with ONNX Runtime execution than larger
-profiles.
-
-`nomic-embed-text-v1.5` remains available as an explicit opt-in profile for
-long-context retrieval experiments. Nomic's Matryoshka training makes
-`64d -> 256d -> 768d` tiering principled rather than arbitrary truncation, but
-its larger footprint makes it a less conservative default.
+`bge-small-en-v1.5` is the fallback profile. It has a smaller disk and memory
+footprint than Nomic and is automatically selected when the primary model's
+dimensions do not match the active collection. Operators on resource-constrained
+systems can also set it as the primary profile for lighter local inference.
 
 For exact profile metadata, read [Embedding profiles](./embedding-profiles.md).
 
@@ -46,8 +45,8 @@ generative models would increase latency and operational complexity.
 
 | Model/profile | Role |
 |---|---|
-| `all-minilm-l6-v2` | Default lightweight embedding profile. |
-| `nomic-embed-text-v1.5` | Opt-in long-context embedding profile. |
+| `nomic-embed-text-v1.5` | Default embedding profile — high-accuracy Matryoshka embeddings. |
+| `bge-small-en-v1.5` | Fallback embedding profile — lighter footprint for constrained systems. |
 | T5-small | Optional local abstractive compaction summarizer. |
 
 External summarizer endpoints, such as Ollama, are optional. They are not part

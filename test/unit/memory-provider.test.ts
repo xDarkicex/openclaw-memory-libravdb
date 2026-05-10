@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { buildMemoryPromptSection } from "../../src/memory-provider.js";
-import { createRecallCache } from "../../src/recall-cache.js";
 import type { PluginConfig, SearchResult } from "../../src/types.js";
 
 class FakeRpc {
@@ -29,11 +28,10 @@ class FakeRpc {
 
 test("memory prompt section returns string array with static header when no messages", async () => {
   const rpc = new FakeRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { topK: 8 };
   const getRpc = async () => rpc as never;
 
-  const memorySection = buildMemoryPromptSection(getRpc, cfg, recallCache);
+  const memorySection = buildMemoryPromptSection(getRpc, cfg);
   const result = memorySection({
     availableTools: new Set(["read", "exec"]),
   });
@@ -48,11 +46,10 @@ test("memory prompt section returns string array with static header when no mess
 
 test("memory prompt section stays synchronous and does not perform rpc lookups", () => {
   const rpc = new FakeRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { topK: 8 };
   const getRpc = async () => rpc as never;
 
-  const memorySection = buildMemoryPromptSection(getRpc, cfg, recallCache);
+  const memorySection = buildMemoryPromptSection(getRpc, cfg);
   const result = memorySection({
     availableTools: new Set(["memory_search"]),
   });
@@ -61,18 +58,14 @@ test("memory prompt section stays synchronous and does not perform rpc lookups",
   assert.ok(Array.isArray(result), "result should be an array");
   assert.ok(result.length > 0, "result should not be empty");
   assert.equal(rpc.calls.get("search_text") ?? 0, 0, "should not perform search_text calls");
-
-  const cached = recallCache.get({ userId: "u1", queryText: "what is the capital of france?" });
-  assert.equal(cached, undefined, "prompt section should not seed recall cache");
 });
 
 test("memory prompt section returns the static header even when messages exist", async () => {
   const rpc = new FakeRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { topK: 8, alpha: 0.7, beta: 0.2, gamma: 0.1 };
   const getRpc = async () => rpc as never;
 
-  const memorySection = buildMemoryPromptSection(getRpc, cfg, recallCache);
+  const memorySection = buildMemoryPromptSection(getRpc, cfg);
   const result = memorySection({
     availableTools: new Set(["memory_search"]),
   });
@@ -86,11 +79,10 @@ test("memory prompt section returns the static header even when messages exist",
 
 test("memory prompt section works with citationsMode", async () => {
   const rpc = new FakeRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { topK: 8 };
   const getRpc = async () => rpc as never;
 
-  const memorySection = buildMemoryPromptSection(getRpc, cfg, recallCache);
+  const memorySection = buildMemoryPromptSection(getRpc, cfg);
   const result = memorySection({
     availableTools: new Set(),
     citationsMode: "inline",

@@ -48,22 +48,11 @@ export interface PluginConfig {
   markdownIngestionObsidianDebounceMs?: number;
   markdownIngestionInclude?: string[];
   markdownIngestionExclude?: string[];
-  markdownIngestionCollection?: string;
   markdownIngestionDebounceMs?: number;
   dreamPromotionEnabled?: boolean;
   dreamPromotionDiaryPath?: string;
   dreamPromotionUserId?: string;
   dreamPromotionDebounceMs?: number;
-  gatingWeights?: {
-    w1c?: number;
-    w2c?: number;
-    w3c?: number;
-    w1t?: number;
-    w2t?: number;
-    w3t?: number;
-  };
-  gatingTechNorm?: number;
-  gatingCentroidK?: number;
   lifecycleJournalMaxEntries?: number;
   compactionQualityWeight?: number;
   recencyLambdaSession?: number;
@@ -169,20 +158,4 @@ export interface SidecarHandle {
 
 export interface RpcCallOptions {
   timeoutMs: number;
-}
-
-export interface RecallCacheEntry<T = unknown> {
-  userId: string;
-  queryText: string;
-  durableVariantHits: T[];
-  userHits?: T[];
-  globalHits?: T[];
-  authoredVariantHits?: T[];
-}
-
-export interface RecallCache<T = unknown> {
-  put(entry: RecallCacheEntry<T>): void;
-  get(key: Pick<RecallCacheEntry<T>, "userId" | "queryText">): RecallCacheEntry<T> | undefined;
-  take(key: Pick<RecallCacheEntry<T>, "userId" | "queryText">): RecallCacheEntry<T> | undefined;
-  clearUser(userId: string): void;
 }

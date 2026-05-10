@@ -2,6 +2,7 @@ import { RpcClient } from "./rpc.js";
 import { GrpcKernelClient } from "./grpc-client.js";
 import { daemonProvisioningHint, startSidecar } from "./sidecar.js";
 import type { LoggerLike, PluginConfig, SidecarHandle } from "./types.js";
+import { formatError } from "./format-error.js";
 import { readFileSync } from "node:fs";
 
 export type RpcGetter = () => Promise<RpcClient>;
@@ -27,10 +28,13 @@ export interface LifecycleHint {
   nextSessionKey?: string;
 }
 
+export type RuntimeShutdownTask = () => Promise<void> | void;
+
 export interface PluginRuntime {
   getRpc: RpcGetter;
-  getKernel(): GrpcKernelClient | null;
+  getKernel(): Promise<GrpcKernelClient | null>;
   emitLifecycleHint(hint: LifecycleHint): Promise<void>;
+  onShutdown(task: RuntimeShutdownTask): void;
   shutdown(): Promise<void>;
 }
 
@@ -40,7 +44,8 @@ export function createPluginRuntime(
 ): PluginRuntime {
   let started: Promise<{ rpc: RpcClient; sidecar: SidecarHandle; kernel: GrpcKernelClient | null }> | null = null;
   let stopped = false;
-  let resolvedKernel: GrpcKernelClient | null = null;
+  let shuttingDown = false;
+  const shutdownTasks: RuntimeShutdownTask[] = [];
 
   const ensureStarted = async () => {
     if (stopped) {
@@ -77,7 +82,6 @@ export function createPluginRuntime(
           }
         }
 
-        resolvedKernel = kernel;
         return { rpc, sidecar, kernel };
       })().catch((error) => {
         started = null;
@@ -91,9 +95,8 @@ export function createPluginRuntime(
     async getRpc() {
       return (await ensureStarted()).rpc;
     },
-    getKernel() {
-      if (!started) return null;
-      return resolvedKernel;
+    async getKernel() {
+      return (await ensureStarted()).kernel;
     },
     async emitLifecycleHint(hint: LifecycleHint) {
       try {
@@ -103,7 +106,26 @@ export function createPluginRuntime(
         logger.warn?.(`LibraVDB lifecycle hint dropped: ${formatError(error)}`);
       }
     },
+    onShutdown(task: RuntimeShutdownTask) {
+      if (stopped || shuttingDown) {
+        return;
+      }
+      shutdownTasks.push(task);
+    },
     async shutdown() {
+      if (stopped || shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
+
+      for (const task of shutdownTasks.splice(0).reverse()) {
+        try {
+          await task();
+        } catch (error) {
+          logger.warn?.(`LibraVDB shutdown task failed: ${formatError(error)}`);
+        }
+      }
+
       stopped = true;
       if (!started) {
         return;
@@ -135,17 +157,10 @@ function loadSecretFromEnv(): string | undefined {
   return undefined;
 }
 
-function formatError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
-  }
-  return String(error);
-}
-
 export function enrichStartupError(error: unknown, healthMessage?: string): Error {
   const rawMessage = error instanceof Error ? error.message : String(error);
   const message = rawMessage.trim() || "LibraVDB daemon startup failed";
-  if (message.includes("install and start libravdbd separately") || message.includes("package does not provision the daemon binary")) {
+  if (message.includes("package does not provision the daemon binary")) {
     return error instanceof Error ? error : new Error(message);
   }
   const shouldHint = /health check|daemon unavailable|connection refused|ECONNREFUSED|ENOENT|fallback mode|ONNX Runtime|embedder/i.test(

@@ -3,6 +3,8 @@ import { stdin, stdout } from "node:process";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { MEMORY_CLI_DESCRIPTOR, isMemorySlotSelected } from "./cli-descriptors.js";
 import { resolveDurableNamespace } from "./memory-scopes.js";
+import { resolveIdentity } from "./identity.js";
+import { formatError } from "./format-error.js";
 import { promoteDreamDiaryFile } from "./dream-promotion.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import type { PluginRuntime } from "./plugin-runtime.js";
@@ -17,6 +19,18 @@ type StatusResult = {
   gatingThreshold?: number;
   abstractiveReady?: boolean;
   embeddingProfile?: string;
+};
+
+type DeepStatusProbe = {
+  ok: boolean;
+  collection: string;
+  resultCount?: number;
+  error?: string;
+};
+
+type DeepStatusResult = {
+  ok: boolean;
+  probes: DeepStatusProbe[];
 };
 
 type ExportResult = {
@@ -41,10 +55,10 @@ type CliOptionBag = {
   yes?: boolean;
   json?: boolean;
   deep?: boolean;
-  index?: boolean;
   fix?: boolean;
   force?: boolean;
   verbose?: boolean;
+  collections?: string;
 };
 
 type JournalResult = {
@@ -91,7 +105,7 @@ export function registerMemoryCli(
         // Non-full modes register structure only so `openclaw memory --help` works.
         // No runtime available — do not attach action handlers.
         ensureCommand(root, "status").description("Show sidecar health, record counts, and active thresholds");
-        ensureCommand(root, "index").description("Refresh delegated LibraVDB memory index state");
+        ensureCommand(root, "index").description("Rebuild LibraVDB memory vector index (requires --force)");
         ensureCommand(root, "search").description("Search LibraVDB memory");
         ensureCommand(root, "flush").description("Wipe a durable memory namespace after confirmation");
         ensureCommand(root, "export").description("Stream stored memories as newline-delimited JSON");
@@ -104,7 +118,7 @@ export function registerMemoryCli(
         .description("Show sidecar health, record counts, and active thresholds")
         .option("--agent <id>", "Agent id")
         .option("--json", "Print JSON")
-        .option("--deep", "Probe daemon readiness")
+        .option("--deep", "Probe authored collection search health")
         .option("--index", "Refresh delegated index state before printing status")
         .option("--fix", "Accepted for OpenClaw memory CLI compatibility")
         .option("--verbose", "Verbose logging")
@@ -115,9 +129,12 @@ export function registerMemoryCli(
         });
 
       ensureCommand(root, "index")
-        .description("Refresh delegated LibraVDB memory index state")
+        .description("Rebuild LibraVDB memory vector index (requires --force)")
         .option("--agent <id>", "Agent id")
-        .option("--force", "Force refresh where supported")
+        .option("--user-id <userId>", "User id")
+        .option("--session-key <sessionKey>", "Session key")
+        .option("--collections <list>", "Comma-separated collection names to reindex")
+        .option("--force", "Required: confirm index rebuild")
         .option("--verbose", "Verbose logging")
         .action(async (opts) => {
           await runCliCommand(runtime, logger, async () => {
@@ -147,11 +164,7 @@ export function registerMemoryCli(
 
       const flush = ensureCommand(root, "flush")
         .description("Wipe a durable memory namespace after confirmation");
-      if (flush.requiredOption) {
-        flush.requiredOption("--user-id <userId>", "User id whose durable memory should be deleted");
-      } else {
-        flush.option("--user-id <userId>", "User id whose durable memory should be deleted");
-      }
+      flush.option("--user-id <userId>", "User id whose durable memory should be deleted");
       flush.option("--session-key <sessionKey>", "Session key whose derived durable namespace should be deleted");
       flush
         .option("--yes", "Skip the confirmation prompt")
@@ -237,14 +250,15 @@ async function runStatus(
   logger: LoggerLike,
   opts: CliOptionBag = {},
 ): Promise<void> {
-  if (opts.index) {
-    await runIndex(runtime, cfg, { ...opts, verbose: false }, logger, { quiet: true });
-  }
   try {
     const rpc = await runtime.getRpc();
     const status = await rpc.call<StatusResult>("status", {});
+    const deep = opts.deep ? await runDeepStatusProbe(rpc, cfg) : undefined;
     if (opts.json) {
-      console.log(JSON.stringify({ status }, null, 2));
+      console.log(JSON.stringify({ status, ...(deep ? { deep } : {}) }, null, 2));
+      if (deep && !deep.ok) {
+        process.exitCode = 1;
+      }
       return;
     }
     console.table({
@@ -255,8 +269,12 @@ async function runStatus(
       "Gate threshold": status.gatingThreshold ?? cfg.ingestionGateThreshold ?? 0.35,
       "Abstractive model": status.abstractiveReady ? "ready" : "not provisioned",
       "Embedding profile": status.embeddingProfile ?? "unknown",
+      ...(deep ? formatDeepStatusTableRows(deep) : {}),
       Message: status.message ?? (status.ok ? "ok" : "unavailable"),
     });
+    if (deep && !deep.ok) {
+      process.exitCode = 1;
+    }
   } catch (error) {
     logger.error(`LibraVDB status unavailable: ${formatError(error)}`);
     if (opts.json) {
@@ -290,43 +308,112 @@ async function runStatus(
   }
 }
 
+const AUTHORED_STATUS_COLLECTIONS = ["authored:hard", "authored:soft", "authored:variant"] as const;
+
+async function runDeepStatusProbe(
+  rpc: { call<T>(method: string, params: unknown): Promise<T> },
+  cfg: PluginConfig,
+): Promise<DeepStatusResult> {
+  // Resolve userId without triggering auto-derive file writes.
+  // status --deep should be read-only; if no userId is configured and no
+  // identity file exists, fall back to "default" rather than creating one.
+  const { userId } = resolveIdentity({
+    configUserId: cfg.userId,
+    identityPath: cfg.identityPath,
+    noAutoPersist: true,
+  });
+  const durableCollections = [`user:${userId}`, "global"] as const;
+
+  const allCollections = [...AUTHORED_STATUS_COLLECTIONS, ...durableCollections] as const;
+
+  const probes: DeepStatusProbe[] = [];
+  for (const collection of allCollections) {
+    try {
+      const result = await rpc.call<{ results?: unknown[] }>("search_text", {
+        collection,
+        text: "memory",
+        k: 1,
+      });
+      probes.push({
+        ok: true,
+        collection,
+        resultCount: Array.isArray(result.results) ? result.results.length : 0,
+      });
+    } catch (error) {
+      probes.push({
+        ok: false,
+        collection,
+        error: formatError(error),
+      });
+    }
+  }
+  return {
+    ok: probes.every((probe) => probe.ok),
+    probes,
+  };
+}
+
+function formatDeepStatusTableRows(deep: DeepStatusResult): Record<string, string> {
+  const rows: Record<string, string> = {
+    "Deep probe": deep.ok ? "ok" : "failed",
+  };
+  for (const probe of deep.probes) {
+    rows[`Probe ${probe.collection}`] = probe.ok
+      ? `ok (${probe.resultCount ?? 0} hits)`
+      : `failed: ${probe.error ?? "unknown error"}`;
+  }
+  return rows;
+}
+
 async function runIndex(
   runtime: PluginRuntime,
-  cfg: PluginConfig,
+  _cfg: PluginConfig,
   opts: CliOptionBag | undefined,
   logger: LoggerLike,
   params: { quiet?: boolean } = {},
 ): Promise<void> {
+  if (!opts?.force) {
+    logger.error("LibraVDB index rebuild requires --force. This re-embeds all stored documents with the current model and may be slow.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const namespace = resolveCliNamespace(opts);
+  const collections = opts?.collections
+    ?.split(",")
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+
   try {
-    const bridge = buildMemoryRuntimeBridge(runtime.getRpc, cfg);
-    const { manager } = await bridge.getMemorySearchManager({
-      agentId: opts?.agent,
-      purpose: "status",
+    const rpc = await runtime.getRpc();
+    const result = await rpc.call<{
+      collectionsProcessed: number;
+      recordsReindexed: number;
+      collectionsRecreated: number;
+      errors: string[];
+    }>("rebuild_index", {
+      namespace: namespace ?? "",
+      ...(collections?.length ? { collections } : {}),
     });
-    await manager.sync?.({
-      reason: "cli",
-      force: Boolean(opts?.force),
-    });
-    const status = manager.status();
-    if (status.ok === false) {
-      logger.error(`LibraVDB index refresh unavailable: ${status.message ?? "sidecar unavailable"}`);
-      process.exitCode = 1;
-      return;
-    }
-    if (opts?.verbose && !params.quiet) {
-      console.table({
-        Provider: status.provider ?? "libravdb",
-        Model: status.model ?? status.embeddingProfile ?? "unknown",
-        "Turns stored": status.turnCount ?? 0,
-        "Memories stored": status.memoryCount ?? 0,
-        Message: status.message ?? "ok",
-      });
-    }
+
     if (!params.quiet) {
-      console.log("LibraVDB memory index refresh delegated to the sidecar.");
+      console.log(`Collections processed: ${result.collectionsProcessed ?? 0}`);
+      console.log(`Records reindexed:     ${result.recordsReindexed ?? 0}`);
+      if ((result.collectionsRecreated ?? 0) > 0) {
+        console.log(`Collections recreated: ${result.collectionsRecreated} (embedding dimensions changed)`);
+      }
+    }
+
+    for (const err of result.errors ?? []) {
+      logger.warn?.(`LibraVDB index rebuild: ${err}`);
+    }
+
+    if ((result.errors?.length ?? 0) > 0 && (result.recordsReindexed ?? 0) === 0) {
+      logger.error("LibraVDB index rebuild completed with errors and no records reindexed.");
+      process.exitCode = 1;
     }
   } catch (error) {
-    logger.error(`LibraVDB index refresh failed: ${formatError(error)}`);
+    logger.error(`LibraVDB index rebuild failed: ${formatError(error)}`);
     process.exitCode = 1;
   }
 }
@@ -345,18 +432,28 @@ async function runSearch(
     return;
   }
 
+  let maxResults: number | undefined;
+  let explicitMinScore: number | undefined;
+  try {
+    maxResults = normalizeCliLimit(opts?.maxResults ?? opts?.limit, "--max-results");
+    explicitMinScore = normalizeCliScore(opts?.minScore, "--min-score");
+  } catch (validationError) {
+    logger.error(formatError(validationError));
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     const bridge = buildMemoryRuntimeBridge(runtime.getRpc, cfg);
     const { manager } = await bridge.getMemorySearchManager({
       agentId: opts?.agent,
     });
-    const maxResults = normalizeLimit(opts?.maxResults ?? opts?.limit);
-    const minScore = normalizeNumber(opts?.minScore);
+    const minScore = explicitMinScore ?? resolveDefaultSearchMinScore(manager.status(), cfg);
     const results = (await manager.search(
       {
         query,
         ...(maxResults ? { maxResults } : {}),
-        ...(minScore !== undefined ? { minScore } : {}),
+        minScore,
       },
     )) as Array<{
       path: string;
@@ -382,6 +479,10 @@ async function runSearch(
     logger.error(`LibraVDB search failed: ${formatError(error)}`);
     process.exitCode = 1;
   }
+}
+
+function resolveDefaultSearchMinScore(status: { gatingThreshold?: number } | undefined, cfg: PluginConfig): number {
+  return normalizeNumber(status?.gatingThreshold) ?? normalizeNumber(cfg.ingestionGateThreshold) ?? 0.35;
 }
 
 async function runFlush(runtime: PluginRuntime, opts: CliOptionBag | undefined, logger: LoggerLike): Promise<void> {
@@ -411,10 +512,17 @@ async function runFlush(runtime: PluginRuntime, opts: CliOptionBag | undefined, 
 }
 
 async function runExport(runtime: PluginRuntime, opts: CliOptionBag | undefined, logger: LoggerLike): Promise<void> {
+  const namespace = resolveCliNamespace(opts);
+  if (!namespace) {
+    logger.error("LibraVDB export requires a namespace. Provide --user-id or --session-key.");
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     const rpc = await runtime.getRpc();
     const result = await rpc.call<ExportResult>("export_memory", {
-      namespace: resolveCliNamespace(opts),
+      namespace,
     });
     for (const record of result.records ?? []) {
       stdout.write(`${JSON.stringify(record)}\n`);
@@ -426,11 +534,20 @@ async function runExport(runtime: PluginRuntime, opts: CliOptionBag | undefined,
 }
 
 async function runJournal(runtime: PluginRuntime, opts: CliOptionBag | undefined, logger: LoggerLike): Promise<void> {
+  let limit: number | undefined;
+  try {
+    limit = normalizeCliLimit(opts?.limit, "--limit");
+  } catch (validationError) {
+    logger.error(formatError(validationError));
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     const rpc = await runtime.getRpc();
     const result = await rpc.call<JournalResult>("list_lifecycle_journal", {
       sessionId: opts?.sessionId?.trim() || undefined,
-      limit: normalizeLimit(opts?.limit),
+      limit,
     });
     for (const record of result.results ?? []) {
       stdout.write(`${JSON.stringify(record)}\n`);
@@ -472,24 +589,31 @@ async function confirm(prompt: string): Promise<boolean> {
   }
 }
 
-function formatError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
+
+function normalizeCliLimit(limit: string | number | undefined, optionName: string): number | undefined {
+  if (limit === undefined) return undefined;
+  const parsed = parseStrictNumber(limit);
+  if (Number.isFinite(parsed) && Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
   }
-  return String(error);
+  throw new Error(`Invalid value for ${optionName}: must be a positive integer`);
 }
 
-function normalizeLimit(limit: string | number | undefined): number | undefined {
-  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
-    return Math.floor(limit);
+function normalizeCliScore(value: string | number | undefined, optionName: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = parseStrictNumber(value);
+  if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
+    return parsed;
   }
-  if (typeof limit === "string") {
-    const parsed = Number.parseInt(limit, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
+  throw new Error(`Invalid value for ${optionName}: must be a number between 0 and 1`);
+}
+
+function parseStrictNumber(value: string | number): number {
+  if (typeof value === "number") {
+    return value;
   }
-  return undefined;
+  const trimmed = value.trim();
+  return trimmed === "" ? NaN : Number(trimmed);
 }
 
 function normalizeNumber(value: string | number | undefined): number | undefined {
@@ -523,10 +647,11 @@ function normalizeQueryArg(value: unknown): string | undefined {
 function resolveCliNamespace(opts: CliOptionBag | undefined): string | undefined {
   const userId = opts?.userId?.trim();
   const sessionKey = opts?.sessionKey?.trim();
-  if (!userId && !sessionKey) {
+  const agentId = opts?.agent?.trim();
+  if (!userId && !sessionKey && !agentId) {
     return undefined;
   }
-  return resolveDurableNamespace({ userId, sessionKey });
+  return resolveDurableNamespace({ userId, sessionKey, agentId });
 }
 
 type CliRegistrar = {

@@ -4,6 +4,8 @@ import path from "node:path";
 
 import type { LoggerLike, PluginConfig } from "./types.js";
 import { hashBytes } from "./markdown-hash.js";
+import { formatError } from "./format-error.js";
+import { IngestQueue } from "./ingest-queue.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
@@ -193,9 +195,12 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly logger: LoggerLike;
   private readonly states = new Map<string, RootState>();
   private readonly fileStates = new Map<string, FileState>();
+  private readonly activeScans = new Set<Promise<void>>();
   private readonly tokenizerId: string;
   private readonly coreDoc: boolean;
   private started = false;
+  private ingestQueue: IngestQueue | null = null;
+  private stopping = false;
 
   constructor(kind: string, config: GenericMarkdownSourceConfig, getRpc: RpcGetterLike, logger: LoggerLike, fsApi: FsApi) {
     this.kind = kind;
@@ -215,11 +220,12 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       return;
     }
     this.started = true;
+    this.stopping = false;
     await this.refresh();
   }
 
   async refresh(): Promise<void> {
-    if (!this.started) {
+    if (!this.started || this.stopping) {
       return;
     }
     for (const root of this.roots) {
@@ -228,6 +234,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     for (const state of this.states.values()) {
       if (state.scanState.timer) {
         clearTimeout(state.scanState.timer);
@@ -237,6 +244,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         watcher.close();
       }
       state.directoryWatchers.clear();
+    }
+    if (this.activeScans.size > 0) {
+      await Promise.allSettled([...this.activeScans]);
     }
     this.states.clear();
     this.fileStates.clear();
@@ -264,6 +274,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 
   private async scanRoot(root: string): Promise<void> {
+    if (!this.started || this.stopping) {
+      return;
+    }
     const rootState = this.getRootState(root);
     if (rootState.scanState.scanning) {
       rootState.scanState.dirty = true;
@@ -271,21 +284,37 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     rootState.scanState.scanning = true;
-    try {
-      const currentFiles = new Set<string>();
-      await this.walkDirectory(rootState, rootState.root, currentFiles);
-      await this.pruneDeletedFiles(rootState, currentFiles);
-      rootState.knownFiles = currentFiles;
-    } finally {
-      rootState.scanState.scanning = false;
-      if (rootState.scanState.dirty) {
-        rootState.scanState.dirty = false;
-        this.scheduleRootScan(rootState);
+    const scan = (async () => {
+      try {
+        const currentFiles = new Set<string>();
+        await this.walkDirectory(rootState, rootState.root, currentFiles);
+        if (!this.stopping) {
+          await this.pruneDeletedFiles(rootState, currentFiles);
+          rootState.knownFiles = currentFiles;
+        }
+      } finally {
+        rootState.scanState.scanning = false;
+        if (rootState.scanState.dirty) {
+          rootState.scanState.dirty = false;
+          if (!this.stopping) {
+            this.scheduleRootScan(rootState);
+          }
+        }
       }
+    })();
+
+    this.activeScans.add(scan);
+    try {
+      await scan;
+    } finally {
+      this.activeScans.delete(scan);
     }
   }
 
   private scheduleRootScan(rootState: RootState): void {
+    if (!this.started || this.stopping) {
+      return;
+    }
     if (rootState.scanState.scanning) {
       rootState.scanState.dirty = true;
       return;
@@ -316,6 +345,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     for (const entry of entries) {
+      if (this.stopping) {
+        return;
+      }
       const child = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await this.walkDirectory(rootState, child, currentFiles);
@@ -331,7 +363,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       try {
         await this.syncMarkdownFile(rootState, child);
       } catch (error) {
-        this.logger.warn?.(`[markdown-ingest] sync failed for ${child}: ${formatError(error)}`);
+        if (!this.stopping) {
+          this.logger.warn?.(`[markdown-ingest] sync failed for ${child}: ${formatError(error)}`);
+        }
       }
     }
   }
@@ -343,7 +377,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
 
     try {
       const watcher = this.fsApi.watch(dir, () => {
-        this.scheduleRootScan(rootState);
+        if (!this.stopping) {
+          this.scheduleRootScan(rootState);
+        }
       });
       watcher.on("error", (error) => {
         this.logger.warn?.(`[markdown-ingest] watch error for ${dir}: ${formatError(error)}`);
@@ -454,30 +490,38 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     sourceSize: number,
     sourceMtimeMs: number,
   ): Promise<void> {
-    const rpc = await this.getRpc();
-    const params: IngestMarkdownDocumentParams = {
+    const queue = await this.getIngestQueue();
+    await queue.enqueueIngest(
       sourceDoc,
       text,
-      tokenizerId: this.tokenizerId,
-      coreDoc: this.coreDoc,
-      sourceMeta: {
-        sourceRoot,
-        sourcePath,
-        sourceKind: this.kind,
-        fileHash,
-        sourceSize,
-        sourceMtimeMs: Math.trunc(sourceMtimeMs),
-        ingestVersion: MARKDOWN_INGEST_VERSION,
-        hashBackend: HASH_BACKEND,
+      {
+        tokenizerId: this.tokenizerId,
+        coreDoc: this.coreDoc,
+        sourceMeta: {
+          sourceRoot,
+          sourcePath,
+          sourceKind: this.kind,
+          fileHash,
+          sourceSize,
+          sourceMtimeMs: Math.trunc(sourceMtimeMs),
+          ingestVersion: MARKDOWN_INGEST_VERSION,
+          hashBackend: HASH_BACKEND,
+        },
       },
-    };
-    await rpc.call("ingest_markdown_document", params);
+    );
   }
 
   private async deleteSourceDocument(sourceDoc: string): Promise<void> {
-    const rpc = await this.getRpc();
-    const params: DeleteAuthoredDocumentParams = { sourceDoc };
-    await rpc.call("delete_authored_document", params);
+    const queue = await this.getIngestQueue();
+    await queue.enqueueDelete(sourceDoc);
+  }
+
+  private async getIngestQueue(): Promise<IngestQueue> {
+    if (!this.ingestQueue) {
+      const rpc = await this.getRpc();
+      this.ingestQueue = new IngestQueue(rpc.call.bind(rpc), this.logger);
+    }
+    return this.ingestQueue;
   }
 
   private async safeStat(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
@@ -548,13 +592,6 @@ function matchesGlob(value: string, pattern: string): boolean {
     .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
     .join(".*");
   return new RegExp(`^${escaped}$`).test(value);
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 function looksLikeObsidianNote(filePath: string, text: string): boolean {

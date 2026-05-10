@@ -27,16 +27,19 @@ Example:
 ```json
 {
   "plugins": {
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "markdownIngestionEnabled": true,
-        "markdownIngestionRoots": [
-          "/Users/<you>/.openclaw/memory"
-        ],
-        "markdownIngestionObsidianEnabled": true,
-        "markdownIngestionObsidianRoots": [
-          "/Users/<you>/Documents/Obsidian/Main"
-        ]
+        "enabled": true,
+        "config": {
+          "markdownIngestionEnabled": true,
+          "markdownIngestionRoots": [
+            "/Users/<you>/.openclaw/memory"
+          ],
+          "markdownIngestionObsidianEnabled": true,
+          "markdownIngestionObsidianRoots": [
+            "/Users/<you>/Documents/Obsidian/Main"
+          ]
+        }
       }
     }
   }
@@ -51,7 +54,6 @@ Relevant config fields:
 | `markdownIngestionRoots` | Generic markdown roots to watch. |
 | `markdownIngestionInclude` | Optional include globs for generic roots. |
 | `markdownIngestionExclude` | Optional exclude globs for generic roots. |
-| `markdownIngestionCollection` | Target collection for generic markdown, default `global`. |
 | `markdownIngestionDebounceMs` | Watch debounce window, default `150`. |
 | `markdownIngestionObsidianEnabled` | Enables Obsidian ingestion when vault roots exist. |
 | `markdownIngestionObsidianRoots` | Obsidian vault roots to watch. |
@@ -85,12 +87,15 @@ Automatic diary watching:
 ```json
 {
   "plugins": {
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "dreamPromotionEnabled": true,
-        "dreamPromotionDiaryPath": "/Users/<you>/DREAMS.md",
-        "dreamPromotionUserId": "<userId>",
-        "dreamPromotionDebounceMs": 150
+        "enabled": true,
+        "config": {
+          "dreamPromotionEnabled": true,
+          "dreamPromotionDiaryPath": "/Users/<you>/DREAMS.md",
+          "dreamPromotionUserId": "<userId>",
+          "dreamPromotionDebounceMs": 150
+        }
       }
     }
   }
@@ -113,7 +118,7 @@ CLI API.
 
 | Command | Purpose |
 |---|---|
-| `openclaw memory status` | Show sidecar health, counts, active thresholds, and model readiness. |
+| `openclaw memory status` | Show sidecar health, counts, active thresholds, and model readiness. Use `--deep` to probe authored collection search health. |
 | `openclaw memory index --force` | Refresh delegated sidecar index state for OpenClaw memory CLI compatibility. |
 | `openclaw memory search "query"` | Search LibraVDB memory through the active memory runtime bridge. |
 | `openclaw memory export --user-id <userId>` | Stream stored memories as newline-delimited JSON for one durable namespace. |

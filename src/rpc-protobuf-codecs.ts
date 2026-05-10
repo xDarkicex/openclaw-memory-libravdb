@@ -26,13 +26,15 @@ import {
   PromoteDreamEntriesRequest,
   RankCandidatesRequest,
   RankCandidatesResponse,
+  RebuildIndexRequest,
+  RebuildIndexResponse,
   SearchTextCollectionsRequest,
   SearchTextRequest,
   SearchTextResponse,
   SessionLifecycleHintRequest,
   SessionLifecycleHintResponse,
   StringList,
-} from "./generated/libravdb/ipc/v1/rpc_pb.js";
+} from "@xdarkicex/libravdb-contracts";
 
 import type { LifecycleHint } from "./plugin-runtime.js";
 
@@ -66,6 +68,12 @@ function normalizeSearchTextResponse(bytes: Uint8Array): SearchTextResponse {
     }
     if (!item.metadata || typeof item.metadata !== "object" || Array.isArray(item.metadata)) {
       item.metadata = {};
+    }
+    if (typeof item.text !== "string") {
+      item.text = "";
+    }
+    if (typeof item.score !== "number" || !Number.isFinite(item.score)) {
+      item.score = 0;
     }
   }
   return response;
@@ -270,6 +278,10 @@ export const rpcProtobufCodecs = {
   rank_candidates: codec<RankCandidatesRequest, RankCandidatesResponse>(
     (params) => encodeMessage(RankCandidatesRequest, params),
     (bytes) => decodeProtobufResult<RankCandidatesResponse>(RankCandidatesResponse, bytes),
+  ),
+  rebuild_index: codec<RebuildIndexRequest, RebuildIndexResponse>(
+    (params) => encodeMessage(RebuildIndexRequest, params),
+    (bytes) => decodeProtobufResult<RebuildIndexResponse>(RebuildIndexResponse, bytes),
   ),
 } satisfies Record<string, RpcMethodCodec<any, any>>;
 

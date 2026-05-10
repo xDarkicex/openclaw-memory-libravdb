@@ -1,6 +1,6 @@
 {
   "name": "@xdarkicex/openclaw-memory-libravdb",
-  "version": "1.4.22",
+  "version": "1.4.52",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -31,17 +31,27 @@
   },
   "openclaw": {
     "extensions": [
-      "./dist/index.js"
+      "./dist/index.js",
+      "./dist/cli-metadata.js"
     ],
+    "compat": {
+      "pluginApi": ">=2026.3.22",
+      "minGatewayVersion": ">=2026.3.22"
+    },
+    "build": {
+      "openclawVersion": "2026.4.11",
+      "pluginSdkVersion": "2026.4.11"
+    },
     "install": {
       "minHostVersion": ">=2026.3.22"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && mkdir -p dist/proto dist/generated && cp -rf api/proto/. dist/proto/ && cp -rf src/generated/. dist/generated/",
+    "build": "tsc -p tsconfig.build.json && node scripts/bundle-entrypoint.mjs && mkdir -p dist/proto && cp -rf api/proto/. dist/proto/",
     "check": "tsc --noEmit && pnpm run test:ts",
-    "test:ts": "tsc -p tsconfig.tests.json && node --test .ts-build/test/unit/*.test.js",
-    "test:integration": "tsc -p tsconfig.tests.json && node --test .ts-build/test/integration/checklist-validation.test.js .ts-build/test/integration/dream-promotion.test.js .ts-build/test/integration/host-flow.test.js .ts-build/test/integration/markdown-ingest.test.js .ts-build/test/integration/sidecar-lifecycle.test.js",
+    "test:inspect": "pnpm run plugin:ci",
+    "test:ts": "pnpm run test:inspect && tsc -p tsconfig.tests.json && node --test .ts-build/test/unit/*.test.js",
+    "test:integration": "pnpm run test:inspect && tsc -p tsconfig.tests.json && node --test .ts-build/test/integration/checklist-validation.test.js .ts-build/test/integration/dream-promotion.test.js .ts-build/test/integration/host-flow.test.js .ts-build/test/integration/markdown-ingest.test.js .ts-build/test/integration/sidecar-lifecycle.test.js",
     "benchmark:session_search_mid": "tsc -p tsconfig.tests.json && OPENCLAW_PROFILE_ASSEMBLE=1 node --test --test-name-pattern=\"real sidecar mid-sized session search benchmark\" .ts-build/test/integration/host-flow.test.js",
     "gate:assemble_optimization": "tsc -p tsconfig.tests.json && OPENCLAW_PROFILE_ASSEMBLE=1 OPENCLAW_ENFORCE_ASSEMBLE_EVIDENCE_GATE=1 node --test --test-name-pattern=\"real sidecar mid-sized session search benchmark\" .ts-build/test/integration/host-flow.test.js",
     "probe:session_recall": "tsc -p tsconfig.tests.json && OPENCLAW_PROFILE_ASSEMBLE=1 node --test --test-name-pattern=\"real sidecar mid-sized session search benchmark\" .ts-build/test/integration/host-flow.test.js",
@@ -49,17 +59,22 @@
     "benchmark:longmemeval": "tsc -p tsconfig.tests.json && node --test .ts-build/test/integration/longmemeval-benchmark.test.js",
     "benchmark:longmemeval:score": "node scripts/longmemeval-score.mjs",
     "benchmark:longmemeval:diagnose": "node scripts/longmemeval-diagnose.mjs",
+    "plugin:check": "plugin-inspector inspect --no-openclaw",
+    "plugin:ci": "plugin-inspector ci --no-openclaw --runtime --mock-sdk --allow-execute",
     "prepack": "npm run build",
     "build:daemon": "bash scripts/build-daemon.sh"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "1.7.2",
-    "@grpc/grpc-js": "^1.14.3",
-    "@grpc/proto-loader": "^0.8.0",
     "openclaw": "*"
   },
   "devDependencies": {
+    "@bufbuild/protobuf": "1.7.2",
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0",
+    "@openclaw/plugin-inspector": "0.3.7",
     "@types/node": "^20.11.0",
+    "@xdarkicex/libravdb-contracts": "^0.0.6",
+    "esbuild": "^0.27.0",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {

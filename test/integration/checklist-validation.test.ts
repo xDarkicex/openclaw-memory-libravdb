@@ -14,7 +14,7 @@ test("manifest and package metadata satisfy checklist structure", async () => {
   assert.equal(manifest.configSchema.additionalProperties, false);
   assert.deepEqual(
     Object.keys(manifest).sort(),
-    ["activation", "configSchema", "description", "id", "kind", "name", "version"],
+    ["activation", "configSchema", "contracts", "description", "id", "kind", "name", "version"],
   );
   assert.deepEqual(manifest.activation, { onCommands: ["memory"] });
   assert.equal(manifest.version, pkg.version);

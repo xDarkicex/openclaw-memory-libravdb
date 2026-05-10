@@ -27,7 +27,7 @@ Current implementation facts:
 - the published plugin manifest does not register `openclaw.setup`
 - the published plugin source contains no direct `child_process` usage
 - the plugin connects only to a configured local endpoint such as
-  `unix:/Users/<you>/.clawdb/run/libravdb.sock` or `tcp:127.0.0.1:37421`
+  `unix:/Users/<you>/.libravdbd/run/libravdb.sock` or `tcp:127.0.0.1:37421`
 - daemon installation and lifecycle are explicit user or operator actions
 
 The daemon distribution surface should be evaluated separately from the plugin

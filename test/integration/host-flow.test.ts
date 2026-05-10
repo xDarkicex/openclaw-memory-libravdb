@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { buildContextEngineFactory as createContextEngineFactory } from "../../src/context-engine.js";
-import { createRecallCache } from "../../src/recall-cache.js";
 import { createMemoryLogger } from "../helpers/logger.js";
 import type { LoggerLike, PluginConfig, SearchResult } from "../../src/types.js";
 
@@ -65,24 +64,23 @@ class StaticContractRpc {
 function buildContextEngineFactory(
   getRpc: any,
   cfg: Parameters<typeof createContextEngineFactory>[1],
-  recallCache: Parameters<typeof createContextEngineFactory>[2],
   logger: LoggerLike = NOOP_LOGGER,
 ) {
   const runtime = {
     getRpc,
-    getKernel: () => null,
+    getKernel: async () => null,
     emitLifecycleHint: async () => {},
+    onShutdown: () => {},
     shutdown: async () => {},
   } as unknown as import("../../src/plugin-runtime.js").PluginRuntime;
-  return createContextEngineFactory(runtime, cfg, recallCache, logger);
+  return createContextEngineFactory(runtime, cfg, logger);
 }
 
 test("bootstrap correctly forwards session arguments to the RPC layer", async () => {
   const rpc = new StaticContractRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
 
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   await context.bootstrap({
     sessionId: "test-session",
@@ -99,10 +97,9 @@ test("bootstrap correctly forwards session arguments to the RPC layer", async ()
 
 test("ingest correctly forwards message payload to the RPC layer", async () => {
   const rpc = new StaticContractRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
 
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   await context.ingest({
     sessionId: "test-session",
@@ -127,7 +124,6 @@ test("assemble passes correct configuration mapping and returns expected payload
     debug: { recoveryTriggerFired: true, crossSessionRawRecovery: false },
   });
 
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = {
     rpcTimeoutMs: 1000,
     topK: 12,
@@ -136,7 +132,7 @@ test("assemble passes correct configuration mapping and returns expected payload
     continuityMinTurns: 4,
   };
 
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   const assembled = await context.assemble({
     sessionId: "test-session",
@@ -182,9 +178,8 @@ test("assemble clamps oversized daemon context to token budget", async () => {
     debug: { recoveryTriggerFired: false, crossSessionRawRecovery: false },
   });
 
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   const assembled = await context.assemble({
     sessionId: "test-session",
@@ -201,16 +196,16 @@ test("assemble fail-closed on sidecar errors with budget-clamped fallback", asyn
   const rpc = new StaticContractRpc();
   rpc.mockResponses.set("assemble_context_internal", new Error("Sidecar socket unavailable"));
 
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000, compactThreshold: 100000 };
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
+  const toolCalls = [{ id: "call-1", type: "function", function: { name: "memory", arguments: "{}" } }];
 
   const assembled = await context.assemble({
     sessionId: "test-session",
     userId: "test-user",
     messages: [
       { role: "user", content: "U".repeat(2200) },
-      { role: "assistant", content: "A".repeat(2200) },
+      { role: "assistant", content: "short fallback", tool_calls: toolCalls },
     ],
     tokenBudget: 512,
   });
@@ -218,6 +213,7 @@ test("assemble fail-closed on sidecar errors with budget-clamped fallback", asyn
   assert.ok(assembled.estimatedTokens <= 256);
   assert.ok(assembled.messages.length >= 1);
   assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(assembled.messages.at(-1)?.tool_calls, toolCalls);
 });
 
 test("assemble triggers force compaction at dynamic 80% threshold before daemon assembly", async () => {
@@ -229,13 +225,12 @@ test("assemble triggers force compaction at dynamic 80% threshold before daemon 
     systemPromptAddition: "",
   });
 
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = {
     rpcTimeoutMs: 1000,
     compactionThresholdFraction: 0.8,
   };
   const logger = createMemoryLogger();
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache, logger);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg, logger);
 
   const assembled = await context.assemble({
     sessionId: "test-session",
@@ -269,12 +264,11 @@ test("assemble prefers authoritative currentTokenCount for predictive compaction
     systemPromptAddition: "",
   });
 
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = {
     rpcTimeoutMs: 1000,
     compactionThresholdFraction: 0.8,
   };
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   await context.assemble({
     sessionId: "test-session",
@@ -299,13 +293,12 @@ test("assemble proceeds to assembly when server legitimately declines compaction
     systemPromptAddition: "<recalled>x</recalled>",
   });
 
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = {
     rpcTimeoutMs: 1000,
     compactionThresholdFraction: 0.8,
   };
   const logger = createMemoryLogger();
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache, logger);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg, logger);
 
   const assembled = await context.assemble({
     sessionId: "test-session",
@@ -330,12 +323,11 @@ test("assemble blocks daemon assembly when predictive compaction fails", async (
     systemPromptAddition: "x",
   });
 
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = {
     rpcTimeoutMs: 1000,
     compactionThresholdFraction: 0.8,
   };
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   const assembled = await context.assemble({
     sessionId: "test-session",
@@ -352,7 +344,6 @@ test("assemble blocks daemon assembly when predictive compaction fails", async (
 
 test("compact maps host budget requests onto legacy sidecar fields", async () => {
   const rpc = new StaticContractRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = {
     rpcTimeoutMs: 1000,
     continuityMinTurns: 4,
@@ -360,7 +351,7 @@ test("compact maps host budget requests onto legacy sidecar fields", async () =>
     continuityPriorContextTokens: 320,
   };
 
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   await context.compact({
     sessionId: "test-session",
@@ -389,9 +380,8 @@ test("compact normalizes daemon compact response into SDK CompactResult", async 
     meanConfidence: 0.91,
   });
 
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   const result = await context.compact({
     sessionId: "test-session",
@@ -418,9 +408,8 @@ test("compact normalizes daemon compact response into SDK CompactResult", async 
 
 test("compact rejects empty sessionId to prevent accidental session rollover", async () => {
   const rpc = new StaticContractRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   await assert.rejects(
     context.compact({
@@ -434,9 +423,8 @@ test("compact rejects empty sessionId to prevent accidental session rollover", a
 
 test("compact omits invalid currentTokenCount values from the wire request", async () => {
   const rpc = new StaticContractRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   await context.compact({
     sessionId: "test-session",
@@ -449,12 +437,11 @@ test("compact omits invalid currentTokenCount values from the wire request", asy
   assert.equal("currentTokenCount" in params, false);
 });
 
-test("afterTurn forwards only daemon-relevant fields, strips prePromptMessageCount", async () => {
+test("afterTurn forwards only post-prompt messages and strips prePromptMessageCount", async () => {
   const rpc = new StaticContractRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
 
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   const mockMessages = [
     { role: "user", content: "m1" },
@@ -473,7 +460,34 @@ test("afterTurn forwards only daemon-relevant fields, strips prePromptMessageCou
   assert.ok(params, "Expected after_turn_kernel to be called");
   assert.equal(params.sessionId, "test-session");
   assert.equal(params.userId, "test-user");
-  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon — daemon defaults to 0 and uses content-hash dedup");
+  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon");
+  assert.equal(params.isHeartbeat, false);
+  assert.deepEqual(params.messages, [mockMessages[1]]);
+});
+
+test("afterTurn forwards all messages when prePromptMessageCount is absent", async () => {
+  const rpc = new StaticContractRpc();
+  const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
+
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
+
+  const mockMessages = [
+    { role: "user", content: "m1" },
+    { role: "assistant", content: "m2" },
+  ];
+
+  await context.afterTurn({
+    sessionId: "test-session",
+    userId: "test-user",
+    messages: mockMessages,
+    isHeartbeat: false,
+  });
+
+  const params = rpc.getLastCall("after_turn_kernel");
+  assert.ok(params, "Expected after_turn_kernel to be called");
+  assert.equal(params.sessionId, "test-session");
+  assert.equal(params.userId, "test-user");
+  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon");
   assert.equal(params.isHeartbeat, false);
   assert.deepEqual(params.messages, mockMessages);
 });
@@ -481,14 +495,13 @@ test("afterTurn forwards only daemon-relevant fields, strips prePromptMessageCou
 test("afterTurn triggers predictive compaction from runtimeContext currentTokenCount", async () => {
   const rpc = new StaticContractRpc();
   rpc.mockResponses.set("compact_session", { didCompact: true });
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = {
     rpcTimeoutMs: 1000,
     compactionThresholdFraction: 0.8,
   };
   const logger = createMemoryLogger();
 
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache, logger);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg, logger);
 
   await context.afterTurn({
     sessionId: "test-session",
@@ -518,13 +531,12 @@ test("afterTurn triggers predictive compaction from runtimeContext currentTokenC
 
 test("afterTurn does not trigger predictive compaction without authoritative currentTokenCount", async () => {
   const rpc = new StaticContractRpc();
-  const recallCache = createRecallCache<SearchResult>();
   const cfg: PluginConfig = {
     rpcTimeoutMs: 1000,
     compactionThresholdFraction: 0.8,
   };
 
-  const context = buildContextEngineFactory(async () => rpc as never, cfg, recallCache);
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
 
   await context.afterTurn({
     sessionId: "test-session",

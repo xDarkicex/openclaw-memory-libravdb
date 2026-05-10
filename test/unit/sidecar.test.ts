@@ -27,10 +27,20 @@ test("resolveConfiguredEndpoint rejects executable paths", () => {
   );
 });
 
+test("resolveConfiguredEndpoint rejects malformed daemon endpoints", () => {
+  for (const sidecarPath of ["unix:", "tcp:", "tcp::123", "tcp:127.0.0.1", "tcp:127.0.0.1:notaport", "tcp:127.0.0.1:70000"]) {
+    assert.throws(
+      () => resolveConfiguredEndpoint({ rpcTimeoutMs: 1, sidecarPath }),
+      /must be a daemon endpoint/,
+      sidecarPath,
+    );
+  }
+});
+
 test("defaultEndpoint uses unix sockets on unix and localhost TCP on windows", () => {
-  // On machines where /opt/homebrew/var/clawdb/run/libravdb.sock exists (Homebrew install),
+  // On machines where /opt/homebrew/var/libravdbd/run/libravdb.sock exists (Homebrew install),
   // defaultEndpoint probes the filesystem and returns the Homebrew path. On machines without
-  // it, the user-local fallback (~/.clawdb/run/libravdb.sock) is used. Both are valid unix
+  // it, the user-local fallback (~/.libravdbd/run/libravdb.sock) is used. Both are valid unix
   // endpoints — the test verifies the platform dispatch (unix vs win32) and env-var override.
   const darwinResult = defaultEndpoint("darwin", "/Users/demo");
   assert.match(darwinResult, /^unix:.*libravdb\.sock$/);
@@ -56,10 +66,10 @@ test("defaultEndpoint prefers the Homebrew socket when the user-local socket is 
   const endpoint = defaultEndpoint(
     "darwin",
     "/Users/demo",
-    (candidate) => candidate === "/opt/homebrew/var/clawdb/run/libravdb.sock",
+    (candidate) => candidate === "/opt/homebrew/var/libravdbd/run/libravdb.sock",
   );
 
-  assert.equal(endpoint, "unix:/opt/homebrew/var/clawdb/run/libravdb.sock");
+  assert.equal(endpoint, "unix:/opt/homebrew/var/libravdbd/run/libravdb.sock");
 });
 
 test("computeBackoffMs applies capped exponential backoff", () => {
@@ -86,10 +96,6 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
     embeddingTokenizerPath: "/models/tokenizer.json",
     embeddingDimensions: 768,
     embeddingNormalize: false,
-    gatingWeights: { w1c: 0.35, w2c: 0.4, w3c: 0.25, w1t: 0.4, w2t: 0.35, w3t: 0.25 },
-    gatingTechNorm: 1.5,
-    ingestionGateThreshold: 0.35,
-    gatingCentroidK: 10,
     lifecycleJournalMaxEntries: 250,
   });
 
@@ -104,17 +110,17 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
     LIBRAVDB_EMBEDDING_TOKENIZER: "/models/tokenizer.json",
     LIBRAVDB_EMBEDDING_DIMENSIONS: "768",
     LIBRAVDB_EMBEDDING_NORMALIZE: "false",
-    LIBRAVDB_GATING_W1C: "0.35",
-    LIBRAVDB_GATING_W2C: "0.4",
-    LIBRAVDB_GATING_W3C: "0.25",
-    LIBRAVDB_GATING_W1T: "0.4",
-    LIBRAVDB_GATING_W2T: "0.35",
-    LIBRAVDB_GATING_W3T: "0.25",
-    LIBRAVDB_GATING_TECH_NORM: "1.5",
-    LIBRAVDB_GATING_THRESHOLD: "0.35",
-    LIBRAVDB_GATING_CENTROID_K: "10",
     LIBRAVDB_LIFECYCLE_JOURNAL_MAX_ENTRIES: "250",
   });
+});
+
+test("buildSidecarEnv defaults onnxDevice to cpu when not configured", () => {
+  const env = buildSidecarEnv({
+    rpcTimeoutMs: 1,
+    dbPath: "/tmp/libravdb",
+  });
+
+  assert.equal(env.LIBRAVDB_ONNX_DEVICE, "cpu");
 });
 
 test("daemonProvisioningHint explains the npm vs Homebrew split", () => {

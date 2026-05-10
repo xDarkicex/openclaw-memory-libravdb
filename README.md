@@ -12,45 +12,72 @@
 </div>
 
 `@xdarkicex/openclaw-memory-libravdb` is a local-first OpenClaw memory plugin
-backed by the `libravdbd` daemon. It replaces the lightweight default memory
+backed by the `libravdbd` vector service. It replaces the lightweight default memory
 path with scoped session, user, and global memory; continuity-aware prompt
 assembly; durable recall; and sidecar-owned compaction.
 
 [Install](./docs/install.md) · [Full installation reference](./docs/installation.md) · [Architecture](./docs/architecture.md) · [Security](./docs/security.md) · [Performance and tuning](./docs/performance-and-tuning.md) · [Contributing](./docs/contributing.md)
 
-New install? Start here: [Install guide](./docs/install.md). Preferred setup on
-macOS: install `libravdbd` with Homebrew, install the OpenClaw plugin, then
-assign the plugin to both required slots.
+New install? Start here: [Install guide](./docs/install.md).
 
 ## Install
+
+Install `libravdbd` with your system package manager, then install
+the OpenClaw plugin.
+
+**macOS (Homebrew)**
 
 ```bash
 brew tap xDarkicex/homebrew-openclaw-libravdb-memory
 brew install libravdbd
 brew services start libravdbd
+```
+
+**Linux (APT)**
+
+```bash
+sudo apt install libravdbd
+systemctl --user enable --now libravdbd
+```
+
+**Linux (AUR)**
+
+```bash
+yay -S libravdbd-bin
+systemctl --user enable --now libravdbd
+```
+
+**Plugin (all platforms)**
+
+```bash
 openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 ```
 
-Then activate both plugin slots in `~/.openclaw/openclaw.json`:
+Then activate the plugin in `~/.openclaw/openclaw.json`:
 
 ```json
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory",
-      "contextEngine": "libravdb-memory"
+      "memory": "libravdb-memory"
     },
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "sidecarPath": "auto"
+        "enabled": true,
+        "config": {
+          "sidecarPath": "auto"
+        }
       }
     }
   }
 }
 ```
 
-Verify the daemon and plugin:
+Verify the service and plugin:
 
+```bash
+openclaw memory status
+```
 
 Healthy output should show `Sidecar=running`, stored memory counts, the active
 gate threshold, and the loaded embedding profile.
@@ -61,7 +88,7 @@ Runtime requirements:
 
 - OpenClaw `>= 2026.3.22`
 - Node.js `>= 22`
-- a separately installed `libravdbd` daemon
+- a separately installed `libravdbd` service
 
 Compatibility note:
 
@@ -69,18 +96,21 @@ Compatibility note:
 
 Default endpoints:
 
-- macOS/Linux user-local daemon: `unix:$HOME/.clawdb/run/libravdb.sock`
-- Homebrew daemon on Apple Silicon: `unix:/opt/homebrew/var/clawdb/run/libravdb.sock`
-- Windows daemon: `tcp:127.0.0.1:37421`
+- macOS/Linux user-local service: `unix:$HOME/.libravdbd/run/libravdb.sock`
+- Homebrew service on Apple Silicon: `unix:/opt/homebrew/var/libravdbd/run/libravdb.sock`
+- Windows service: `tcp:127.0.0.1:37421`
 
-If your daemon runs elsewhere, set `sidecarPath`:
+If your service runs elsewhere, set `sidecarPath`:
 
 ```json
 {
   "plugins": {
-    "configs": {
+    "entries": {
       "libravdb-memory": {
-        "sidecarPath": "tcp:127.0.0.1:37421"
+        "enabled": true,
+        "config": {
+          "sidecarPath": "tcp:127.0.0.1:37421"
+        }
       }
     }
   }
@@ -89,7 +119,8 @@ If your daemon runs elsewhere, set `sidecarPath`:
 
 ## Highlights
 
-- **Dual slot ownership** - owns both OpenClaw `memory` and `contextEngine`.
+- **Memory capability ownership** - owns the OpenClaw `memory` slot and
+  registers the context engine capability at runtime.
 - **Memory runtime bridge** - routes built-in `memory_search` calls to the same
   libraVDB-backed sidecar on hosts that expose the runtime API.
 - **Three memory scopes** - keeps active session, durable user, and global memory
@@ -102,14 +133,14 @@ If your daemon runs elsewhere, set `sidecarPath`:
   newest working context.
 - **Local-first inference** - uses local embedding and compaction paths by
   default, with optional external summarizer configuration.
-- **Explicit daemon lifecycle** - the npm/OpenClaw package stays connect-only;
+- **Explicit service lifecycle** - the npm/OpenClaw package stays connect-only;
   `libravdbd` is installed and supervised separately.
 
 ## Security Defaults
 
 Stored memory is treated as untrusted historical context. Retrieved memory is
 framed before it reaches the downstream model, memory collections are scoped by
-session/user/global namespace, and daemon installation is outside the npm plugin
+session/user/global namespace, and service installation is outside the npm plugin
 package.
 
 Before exposing OpenClaw over remote channels, read [Security](./docs/security.md).
@@ -117,7 +148,7 @@ Before exposing OpenClaw over remote channels, read [Security](./docs/security.m
 ## Operator Quick Refs
 
 ```bash
-openclaw memory status
+openclaw memory status [--deep] [--json]
 openclaw memory index --force
 openclaw memory search "prior context"
 openclaw memory export --user-id <userId>
@@ -126,8 +157,22 @@ openclaw memory journal --limit 50
 openclaw memory dream-promote --user-id <userId> --dream-file /path/to/DREAMS.md
 ```
 
-Use [Install](./docs/install.md) for daemon lifecycle commands and
+Use [Install](./docs/install.md) for service lifecycle commands and
 [Uninstall](./docs/uninstall.md) for safe shutdown and removal.
+
+## Configuration
+
+All keys are optional. For the full reference, see [Configuration](./docs/configuration.md).
+
+| Key | Type | Default | |
+|---|---|---|---|
+| `sidecarPath` | string | `auto` | `"auto"` probes standard paths; set `unix:/path` or `tcp:host:port` to override |
+| `embeddingProfile` | string | `nomic-embed-text-v1.5` | Primary embedding model |
+| `fallbackProfile` | string | `bge-small-en-v1.5` | Fallback profile for dimension mismatches |
+| `onnxDevice` | string | `auto` | ONNX execution provider; set `cpu` to bypass CoreML/MPS on Intel Macs |
+| `userId` | string | auto-derived | Stable identity for cross-session durable memory |
+| `crossSessionRecall` | boolean | `true` | When `false`, only session-scoped memories are retrieved |
+| `compactSessionTokenBudget` | number | `2000` | Auto-compaction token threshold; `0` disables |
 
 ## Optional Features
 
@@ -135,15 +180,15 @@ Use [Install](./docs/install.md) for daemon lifecycle commands and
   and syncs eligible notes into memory. See [Features](./docs/features.md).
 - **Dream promotion** promotes vetted dream diary bullets into an isolated
   `dream:{userId}` collection. See [Features](./docs/features.md).
-- **Embedding profiles** expose local model metadata defaults for MiniLM and
-  Nomic. See [Embedding profiles](./docs/embedding-profiles.md).
+- **Embedding profiles** default to `nomic-embed-text-v1.5` with `bge-small-en-v1.5`
+  fallback. See [Embedding profiles](./docs/embedding-profiles.md).
 
 ## Docs By Goal
 
 - New install: [Install](./docs/install.md), [Installation reference](./docs/installation.md)
 - Understand the design: [Problem](./docs/problem.md), [Architecture](./docs/architecture.md), [ADRs](./docs/architecture-decisions/README.md)
+- Configure: [Configuration](./docs/configuration.md), [Features](./docs/features.md), [Embedding profiles](./docs/embedding-profiles.md), [Models](./docs/models.md)
 - Operate safely: [Security](./docs/security.md), [Uninstall](./docs/uninstall.md)
-- Configure optional inputs: [Features](./docs/features.md), [Embedding profiles](./docs/embedding-profiles.md), [Models](./docs/models.md)
 - Advanced operations: [Performance and tuning](./docs/performance-and-tuning.md)
 - Work from source: [Development](./docs/development.md), [Contributing](./docs/contributing.md)
 
@@ -156,8 +201,8 @@ bash scripts/build-daemon.sh
 ```
 
 `scripts/build-daemon.sh` prepares `.daemon-bin/libravdbd` for local plugin
-testing when you have a published daemon binary, a Homebrew daemon, or a local
-daemon checkout. For the full source workflow, read [Development](./docs/development.md).
+testing when you have a published service binary, a Homebrew service, or a local
+service checkout. For the full source workflow, read [Development](./docs/development.md).
 
 ## Runtime Facts
 
@@ -165,6 +210,6 @@ daemon checkout. For the full source workflow, read [Development](./docs/develop
 - OpenClaw plugin id: `libravdb-memory`
 - plugin kind: `memory`, `context-engine`
 - minimum OpenClaw host version: `>= 2026.3.22`
-- default data path: `$HOME/.clawdb/data.libravdb`
-- default macOS/Linux endpoint: `unix:$HOME/.clawdb/run/libravdb.sock`
+- default data path: `$HOME/.libravdbd/data_nomic-embed-text-v1_5.libravdb`
+- default macOS/Linux endpoint: `unix:$HOME/.libravdbd/run/libravdb.sock`
 - default Windows endpoint: `tcp:127.0.0.1:37421`

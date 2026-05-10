@@ -2,7 +2,6 @@ import type { PluginRuntime } from "./plugin-runtime.js";
 import type {
   LoggerLike,
   PluginConfig,
-  RecallCache,
   SearchResult,
 } from "./types.js";
 import {
@@ -12,7 +11,7 @@ import {
   IngestMessageKernelRequest,
   CompactSessionRequest,
   CompactSessionResponse,
-} from "./generated/libravdb/ipc/v1/rpc_pb.js";
+} from "@xdarkicex/libravdb-contracts";
 import { resolveIdentity, type ResolvedIdentity } from "./identity.js";
 
 type KernelCompatibleMessage = {
@@ -23,8 +22,9 @@ type KernelCompatibleMessage = {
 
 type OpenClawCompatibleMessage = {
   role: string;
-  content: string;
+  content: string | unknown[];
   id?: string;
+  [key: string]: unknown;
 };
 
 type OpenClawCompatibleAssembleResult = {
@@ -145,9 +145,14 @@ function normalizeKernelContent(content: unknown): string {
   return content.map(stringifyKernelBlock).filter((part) => part.length > 0).join("\n");
 }
 
-function approximateTokenCount(text: string): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / APPROX_CHARS_PER_TOKEN);
+function approximateTokenCount(text: unknown): number {
+  if (typeof text === "string") {
+    return Math.ceil(text.length / APPROX_CHARS_PER_TOKEN);
+  }
+  if (!Array.isArray(text)) {
+    return 0;
+  }
+  return Math.ceil(normalizeKernelContent(text).length / APPROX_CHARS_PER_TOKEN);
 }
 
 function approximateMessageTokens(message: OpenClawCompatibleMessage): number {
@@ -157,6 +162,29 @@ function approximateMessageTokens(message: OpenClawCompatibleMessage): number {
 
 function approximateMessagesTokens(messages: OpenClawCompatibleMessage[]): number {
   return messages.reduce((sum, message) => sum + approximateMessageTokens(message), 0);
+}
+
+function selectAfterTurnMessages<T>(
+  messages: T[],
+  prePromptMessageCount: number | undefined,
+  logger?: LoggerLike,
+): T[] {
+  if (
+    typeof prePromptMessageCount !== "number" ||
+    !Number.isFinite(prePromptMessageCount) ||
+    prePromptMessageCount <= 0
+  ) {
+    return messages;
+  }
+  const start = Math.floor(prePromptMessageCount);
+  if (start >= messages.length) {
+    logger?.warn?.(
+      `LibraVDB afterTurn prePromptMessageCount produced zero forwarded messages ` +
+      `prePromptMessageCount=${prePromptMessageCount} start=${start} totalMessages=${messages.length}`,
+    );
+    return [];
+  }
+  return messages.slice(start);
 }
 
 function normalizeCurrentTokenCount(currentTokenCount: number | undefined): number | undefined {
@@ -260,12 +288,13 @@ function logPredictiveCompactionOutcome(params: {
   params.logger.warn?.(message);
 }
 
-function truncateContentToTokenBudget(content: string, tokenBudget: number): string {
+function truncateContentToTokenBudget(content: unknown, tokenBudget: number): string {
   if (tokenBudget <= 0) return "";
   const maxChars = Math.max(1, tokenBudget * APPROX_CHARS_PER_TOKEN);
-  if (content.length <= maxChars) return content;
+  const normalized = normalizeKernelContent(content);
+  if (normalized.length <= maxChars) return normalized;
   // Keep the tail so recent tool output / latest answer content is preserved.
-  return content.slice(content.length - maxChars);
+  return normalized.slice(normalized.length - maxChars);
 }
 
 function trimMessagesToBudget(
@@ -490,10 +519,10 @@ export function normalizeAssembleResult(result: {
 export function buildContextEngineFactory(
   runtime: PluginRuntime,
   cfg: PluginConfig,
-  recallCache: RecallCache<SearchResult>,
   logger: LoggerLike = console,
 ) {
   let cachedIdentity: ResolvedIdentity | null = null;
+  let cachedSessionKey: string | undefined;
 
   function resolveUserId(args?: {
     userIdOverride?: string;
@@ -503,13 +532,15 @@ export function buildContextEngineFactory(
     const fwUserId = args?.userIdOverride?.trim();
     if (fwUserId) return fwUserId;
 
-    if (!cachedIdentity) {
+    const sessionKey = args?.sessionKey?.trim() || undefined;
+    if (!cachedIdentity || cachedSessionKey !== sessionKey) {
       cachedIdentity = resolveIdentity({
         configUserId: cfg.userId,
         identityPath: cfg.identityPath,
-        sessionKey: args?.sessionKey,
+        sessionKey,
         logger,
       });
+      cachedSessionKey = sessionKey;
     }
     return cachedIdentity.userId;
   }
@@ -520,6 +551,18 @@ export function buildContextEngineFactory(
       cfg.compactThreshold,
       cfg.compactionThresholdFraction,
     );
+
+  async function getKernelOrNull(phase: string): Promise<Awaited<ReturnType<PluginRuntime["getKernel"]>>> {
+    try {
+      return await runtime.getKernel();
+    } catch (error) {
+      logger.warn?.(
+        `LibraVDB ${phase} kernel unavailable, falling back to sidecar: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
 
   const buildAssemblyConfig = (tokenBudget: number | undefined) => ({
     useSessionRecallProjection: cfg.useSessionRecallProjection,
@@ -568,7 +611,7 @@ export function buildContextEngineFactory(
 
     const existingBlocks = [
       assembled.systemPromptAddition,
-      ...assembled.messages.map((message) => message.content),
+      ...assembled.messages.map((message) => normalizeKernelContent(message.content)),
     ]
       .flatMap((block) => block.split(/\n+/))
       .map((block) => block.trim())
@@ -679,7 +722,7 @@ export function buildContextEngineFactory(
     currentTokenCount?: number;
   }): Promise<OpenClawCompatibleCompactResult> {
     const request = buildCompactSessionRequest(args);
-    const kernel = runtime.getKernel();
+    const kernel = await getKernelOrNull("compact");
     try {
       if (kernel) {
         return normalizeCompactResult(await kernel.compactSession(request), {
@@ -757,7 +800,7 @@ export function buildContextEngineFactory(
         `LibraVDB bootstrap sessionId=${args.sessionId} userId=${userId} ` +
         `sessionKey=${args.sessionKey ?? "(none)"}`,
       );
-      const kernel = runtime.getKernel();
+      const kernel = await getKernelOrNull("bootstrap");
       if (kernel) {
         try {
           await kernel.initializeSession({
@@ -791,7 +834,7 @@ export function buildContextEngineFactory(
         `contentLen=${message.content.length}`,
       );
       try {
-        const kernel = runtime.getKernel();
+        const kernel = await getKernelOrNull("ingest");
         if (kernel) {
           return await kernel.ingestMessage({
             sessionId: args.sessionId,
@@ -819,7 +862,7 @@ export function buildContextEngineFactory(
       sessionId: string;
       sessionKey?: string;
       userId?: string;
-      messages: Array<{ role: string; content: unknown; id?: string }>;
+      messages: OpenClawCompatibleMessage[];
       tokenBudget: number;
       prompt?: string;
       currentTokenCount?: number;
@@ -872,10 +915,10 @@ export function buildContextEngineFactory(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
             `(threshold=${dynamicCompactThreshold}): ${compactionResult.reason ?? "compaction failed"}`,
           );
-          return buildBudgetFallbackContext(messages, args.tokenBudget);
+          return buildBudgetFallbackContext(args.messages, args.tokenBudget);
         }
       }
-      const kernel = runtime.getKernel();
+      const kernel = await getKernelOrNull("assemble");
       if (kernel) {
         try {
           const assembled = normalizeAssembleResult(await kernel.assembleContext({
@@ -902,7 +945,7 @@ export function buildContextEngineFactory(
             `LibraVDB assemble kernel failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
             }`,
           );
-          return buildBudgetFallbackContext(messages, args.tokenBudget);
+          return buildBudgetFallbackContext(args.messages, args.tokenBudget);
         }
       }
 
@@ -933,7 +976,7 @@ export function buildContextEngineFactory(
           `LibraVDB assemble sidecar failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
           }`,
         );
-        return buildBudgetFallbackContext(messages, args.tokenBudget);
+        return buildBudgetFallbackContext(args.messages, args.tokenBudget);
       }
     },
     async compact(args: {
@@ -949,7 +992,7 @@ export function buildContextEngineFactory(
       sessionId: string;
       sessionKey?: string;
       userId?: string;
-      messages: Array<{ role: string; content: unknown; id?: string }>;
+      messages: OpenClawCompatibleMessage[];
       prePromptMessageCount?: number;
       isHeartbeat?: boolean;
       tokenBudget?: number;
@@ -959,14 +1002,17 @@ export function buildContextEngineFactory(
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
       });
-      const messages = normalizeKernelMessages(args.messages);
+      const afterTurnMessages = selectAfterTurnMessages(args.messages, args.prePromptMessageCount, logger);
+      const messages = normalizeKernelMessages(afterTurnMessages);
       const msgCount = messages.length;
       logger.info?.(
         `LibraVDB afterTurn sessionId=${args.sessionId} userId=${userId} ` +
-        `messageCount=${msgCount} heartbeat=${args.isHeartbeat ?? false}`,
+        `messageCount=${msgCount} totalMessages=${args.messages.length} ` +
+        `prePromptMessageCount=${args.prePromptMessageCount ?? "unknown"} ` +
+        `heartbeat=${args.isHeartbeat ?? false}`,
       );
       try {
-        const kernel = runtime.getKernel();
+        const kernel = await getKernelOrNull("afterTurn");
         const currentTokenCount = normalizeCurrentTokenCount(
           typeof args.runtimeContext?.currentTokenCount === "number"
             ? args.runtimeContext.currentTokenCount

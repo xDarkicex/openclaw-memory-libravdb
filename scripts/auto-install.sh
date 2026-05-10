@@ -305,7 +305,7 @@ write_launchd_plist() {
   local escaped_home escaped_daemon_bin escaped_runtime_lib
   local runtime_block=""
 
-  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$HOME/.clawdb/run"
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$HOME/.libravdbd/run"
   escaped_home="$(xml_escape "$HOME")"
   escaped_daemon_bin="$(xml_escape "$daemon_bin")"
   escaped_runtime_lib="$(xml_escape "$runtime_lib")"
@@ -333,9 +333,9 @@ EOF
     <key>EnvironmentVariables</key>
     <dict>
       <key>LIBRAVDB_RPC_ENDPOINT</key>
-      <string>unix:${escaped_home}/.clawdb/run/libravdb.sock</string>
+      <string>unix:${escaped_home}/.libravdbd/run/libravdb.sock</string>
       <key>LIBRAVDB_DB_PATH</key>
-      <string>${escaped_home}/.clawdb/data.libravdb</string>
+      <string>${escaped_home}/.libravdbd/data_nomic-embed-text-v1_5.libravdb</string>
 ${runtime_block}
       <key>LIBRAVDB_SUMMARIZER_BACKEND</key>
       <string>bundled</string>
@@ -379,7 +379,7 @@ setup_systemd_manual() {
     info "[dry-run] systemctl --user enable --now libravdbd.service"
     return 0
   fi
-  mkdir -p "$HOME/.config/systemd/user" "$HOME/.clawdb/run"
+  mkdir -p "$HOME/.config/systemd/user" "$HOME/.libravdbd/run"
   cat > "$service" <<'EOF'
 [Unit]
 Description=LibraVDB daemon (user)
@@ -389,8 +389,8 @@ After=network.target
 ExecStart=%h/.local/bin/libravdbd serve
 Restart=on-failure
 RestartSec=5
-Environment=LIBRAVDB_RPC_ENDPOINT=unix:%h/.clawdb/run/libravdb.sock
-Environment=LIBRAVDB_DB_PATH=%h/.clawdb/data.libravdb
+Environment=LIBRAVDB_RPC_ENDPOINT=unix:%h/.libravdbd/run/libravdb.sock
+Environment=LIBRAVDB_DB_PATH=%h/.libravdbd/data_nomic-embed-text-v1_5.libravdb
 
 [Install]
 WantedBy=default.target
@@ -416,9 +416,9 @@ start_manual_daemon() {
     return 0
   fi
 
-  if [[ -f "$HOME/.clawdb/libravdbd.pid" ]]; then
+  if [[ -f "$HOME/.libravdbd/libravdbd.pid" ]]; then
     local pid
-    pid="$(cat "$HOME/.clawdb/libravdbd.pid" 2>/dev/null || true)"
+    pid="$(cat "$HOME/.libravdbd/libravdbd.pid" 2>/dev/null || true)"
     if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
       info "Manual daemon already running with pid ${pid}; skipping duplicate start."
       return 0
@@ -430,9 +430,9 @@ start_manual_daemon() {
     return 0
   fi
 
-  mkdir -p "$HOME/.clawdb"
-  nohup "$HOME/.local/bin/libravdbd" serve > "$HOME/.clawdb/libravdbd.log" 2>&1 &
-  echo $! > "$HOME/.clawdb/libravdbd.pid"
+  mkdir -p "$HOME/.libravdbd" "$HOME/.libravdbd/run"
+  nohup "$HOME/.local/bin/libravdbd" serve > "$HOME/.libravdbd/libravdbd.log" 2>&1 &
+  echo $! > "$HOME/.libravdbd/libravdbd.pid"
   warn "Started manual background daemon (no system service)."
 }
 
@@ -447,7 +447,7 @@ xml_escape() {
 }
 
 verify_manual_daemon_ready() {
-  local socket_path="$HOME/.clawdb/run/libravdb.sock"
+  local socket_path="$HOME/.libravdbd/run/libravdb.sock"
   local i
   for i in {1..20}; do
     if [[ -S "$socket_path" ]]; then
@@ -458,7 +458,7 @@ verify_manual_daemon_ready() {
     sleep 0.5
   done
   warn "Manual daemon socket was not detected at ${socket_path} after waiting."
-  warn "If startup failed, inspect logs under ~/.clawdb or ~/Library/Logs/libravdbd.log."
+  warn "If startup failed, inspect logs under ~/.libravdbd or ~/Library/Logs/libravdbd.log."
   return 1
 }
 
@@ -669,8 +669,8 @@ stop_daemon_services() {
     fi
   fi
 
-  if [[ -f "$HOME/.clawdb/libravdbd.pid" ]]; then
-    pid="$(cat "$HOME/.clawdb/libravdbd.pid" 2>/dev/null || true)"
+  if [[ -f "$HOME/.libravdbd/libravdbd.pid" ]]; then
+    pid="$(cat "$HOME/.libravdbd/libravdbd.pid" 2>/dev/null || true)"
     if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
       if [[ "$DRY_RUN" -eq 1 ]]; then
         info "[dry-run] kill ${pid}"
@@ -679,9 +679,9 @@ stop_daemon_services() {
       fi
     fi
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      info "[dry-run] rm -f $HOME/.clawdb/libravdbd.pid"
+      info "[dry-run] rm -f $HOME/.libravdbd/libravdbd.pid"
     else
-      rm -f "$HOME/.clawdb/libravdbd.pid"
+      rm -f "$HOME/.libravdbd/libravdbd.pid"
     fi
   fi
 }
@@ -705,7 +705,7 @@ run_uninstall_mode() {
 
   echo -e "${BOLD}LibraVDB Memory Uninstall (Safe Mode)${RESET}"
   echo "This will stop/remove user-level daemon wiring and remove plugin assignments."
-  echo "Data under ~/.clawdb is not deleted."
+  echo "Data under ~/.libravdbd is not deleted."
   echo
 
   if ! confirm "Proceed with uninstall actions?"; then

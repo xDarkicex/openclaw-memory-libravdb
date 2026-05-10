@@ -6,7 +6,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RpcClient } from "../../src/rpc.js";
 import { buildContextEngineFactory } from "../../src/context-engine.js";
-import { createRecallCache } from "../../src/recall-cache.js";
 import { acquireTestDaemonHandle, type TestDaemonHandle } from "./daemon-harness.js";
 import type { PluginConfig, SearchResult, SidecarSocket } from "../../src/types.js";
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
@@ -82,8 +81,9 @@ function connectToDaemon(endpoint: string): SidecarSocket {
 function buildRuntime(rpc: RpcClient): PluginRuntime {
   return {
     getRpc: async () => rpc,
-    getKernel: () => null,
+    getKernel: async () => null,
     emitLifecycleHint: async () => {},
+    onShutdown: () => {},
     shutdown: async () => {},
   };
 }
@@ -112,7 +112,6 @@ test("cross-session durable memory smoke test", { skip: !process.env.CI && !proc
     const engine = buildContextEngineFactory(
       buildRuntime(rpc),
       cfg,
-      createRecallCache<SearchResult>(),
     );
 
     // --- Session A: ingest the marker ---

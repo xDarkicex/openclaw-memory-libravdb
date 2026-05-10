@@ -87,19 +87,51 @@ test("memory runtime bridge searches the resolved durable namespace under the la
   assert.equal(result[0]?.source, "memory");
 });
 
-test("memory runtime bridge routes dream queries to the dream collection only", async () => {
+test("memory runtime bridge routes dream queries to the dream collection when cross-session recall is enabled", async () => {
+  for (const cfg of [{}, { crossSessionRecall: true }] satisfies PluginConfig[]) {
+    const rpc = new FakeRpc();
+    const runtime = buildMemoryRuntimeBridge(async () => rpc as never, cfg);
+    const { manager } = await runtime.getMemorySearchManager();
+
+    const result = await manager.search({ query: "tell me about your dreams from last week", userId: "u1" });
+
+    assert.ok(Array.isArray(result));
+    assert.equal(rpc.calls[1]?.method, "search_text");
+    assert.deepEqual(rpc.calls[1]?.params.collection, "dream:u1");
+    assert.equal(rpc.calls.some((call) => call.method === "search_text_collections"), false);
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.snippet, "dream recall item");
+  }
+});
+
+test("memory runtime bridge treats dream queries as session-scoped searches when cross-session recall is disabled", async () => {
   const rpc = new FakeRpc();
-  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
   const { manager } = await runtime.getMemorySearchManager();
 
-  const result = await manager.search({ query: "tell me about your dreams from last week", userId: "u1" });
+  const result = await manager.search({
+    query: "tell me about your dreams from last week",
+    userId: "u1",
+    sessionId: "s1",
+  });
 
   assert.ok(Array.isArray(result));
   assert.equal(rpc.calls[1]?.method, "search_text");
-  assert.deepEqual(rpc.calls[1]?.params.collection, "dream:u1");
-  assert.equal(rpc.calls.some((call) => call.method === "search_text_collections"), false);
+  assert.equal(rpc.calls[1]?.params.collection, "session:s1");
+  assert.equal(rpc.calls.some((call) => call.params.collection === "dream:u1"), false);
+  assert.equal(rpc.calls.some((call) => Array.isArray(call.params.collections)), false);
   assert.equal(result.length, 1);
-  assert.equal(result[0]?.snippet, "dream recall item");
+});
+
+test("memory runtime bridge returns no results for dream queries without a session when cross-session recall is disabled", async () => {
+  const rpc = new FakeRpc();
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "tell me about your dreams", userId: "u1" });
+
+  assert.deepEqual(result, []);
+  assert.equal(rpc.calls.some((call) => call.params.collection === "dream:u1"), false);
 });
 
 test("memory runtime bridge falls back to session-scoped namespace when no other identity is present", async () => {
@@ -130,6 +162,34 @@ test("memory runtime bridge keeps the legacy string search shape", async () => {
   assert.equal(Array.isArray(result), false);
   assert.equal(result.results.length, 1);
   assert.equal(result.results[0]?.content, "remembered item");
+});
+
+test("memory runtime bridge respects disabled cross-session recall", async () => {
+  const rpc = new FakeRpc();
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {
+    crossSessionRecall: false,
+    useSessionRecallProjection: true,
+  });
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "find session context", sessionId: "s1", userId: "u1" });
+
+  assert.ok(Array.isArray(result));
+  assert.equal(rpc.calls[1]?.method, "search_text");
+  assert.equal(rpc.calls[1]?.params.collection, "session_recall:s1");
+  assert.equal(rpc.calls.some((call) => call.method === "search_text_collections"), false);
+  assert.equal(result.length, 1);
+});
+
+test("memory runtime bridge returns no results without a session when cross-session recall is disabled", async () => {
+  const rpc = new FakeRpc();
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "find prior context", userId: "u1" });
+
+  assert.deepEqual(result, []);
+  assert.equal(rpc.calls.length, 1, "only the initial status check should run");
 });
 
 test("memory runtime bridge round-trips encoded collection names in result paths", async () => {

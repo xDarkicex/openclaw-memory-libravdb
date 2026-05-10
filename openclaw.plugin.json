@@ -2,11 +2,15 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Persistent vector memory with three-tier hybrid scoring",
-  "version": "1.4.22",
+  "version": "1.4.52",
   "kind": [
     "memory",
     "context-engine"
   ],
+  "contracts": {
+    "memory": true,
+    "contextEngine": true
+  },
   "activation": {
     "onCommands": [
       "memory"
@@ -73,6 +77,7 @@
           "directml",
           "openvino"
         ],
+        "default": "cpu",
         "description": "Optional ONNX execution provider override passed to libravdbd. Use cpu to bypass CoreML/MPS on Intel Macs."
       },
       "embeddingBackend": {
@@ -85,11 +90,11 @@
       },
       "embeddingProfile": {
         "type": "string",
-        "default": "all-minilm-l6-v2"
+        "default": "nomic-embed-text-v1.5"
       },
       "fallbackProfile": {
         "type": "string",
-        "default": "all-minilm-l6-v2"
+        "default": "bge-small-en-v1.5"
       },
       "embeddingModelPath": {
         "type": "string"
@@ -197,10 +202,6 @@
           "type": "string"
         }
       },
-      "markdownIngestionCollection": {
-        "type": "string",
-        "default": "global"
-      },
       "markdownIngestionDebounceMs": {
         "type": "number",
         "default": 150
@@ -218,52 +219,6 @@
       "dreamPromotionDebounceMs": {
         "type": "number",
         "default": 150
-      },
-      "gatingWeights": {
-        "type": "object",
-        "additionalProperties": false,
-        "default": {
-          "w1c": 0.35,
-          "w2c": 0.4,
-          "w3c": 0.25,
-          "w1t": 0.4,
-          "w2t": 0.35,
-          "w3t": 0.25
-        },
-        "properties": {
-          "w1c": {
-            "type": "number",
-            "default": 0.35
-          },
-          "w2c": {
-            "type": "number",
-            "default": 0.4
-          },
-          "w3c": {
-            "type": "number",
-            "default": 0.25
-          },
-          "w1t": {
-            "type": "number",
-            "default": 0.4
-          },
-          "w2t": {
-            "type": "number",
-            "default": 0.35
-          },
-          "w3t": {
-            "type": "number",
-            "default": 0.25
-          }
-        }
-      },
-      "gatingTechNorm": {
-        "type": "number",
-        "default": 1.5
-      },
-      "gatingCentroidK": {
-        "type": "number",
-        "default": 10
       },
       "lifecycleJournalMaxEntries": {
         "type": "number",

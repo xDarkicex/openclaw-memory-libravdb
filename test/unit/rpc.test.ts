@@ -7,10 +7,12 @@ import {
   AfterTurnKernelRequest,
   HealthResponse,
   IngestMessageKernelRequest,
+  RebuildIndexRequest,
+  RebuildIndexResponse,
   RpcRequest,
   RpcResponse,
   SearchTextResponse,
-} from "../../src/generated/libravdb/ipc/v1/rpc_pb.js";
+} from "@xdarkicex/libravdb-contracts";
 import {
   normalizeAssembleResult,
   normalizeKernelMessage,
@@ -421,4 +423,44 @@ test("RpcClient supports per-call timeout overrides", async () => {
   const client = new RpcClient(socket, { timeoutMs: 100 });
 
   await assert.rejects(client.call("health", {}, { timeoutMs: 10 }), /10ms/);
+});
+
+test("rebuild_index round-trips through protobuf codec", async () => {
+  const socket = new FakeSocket();
+  const client = new RpcClient(socket, { timeoutMs: 100 });
+
+  const pending = client.call<{
+    collectionsProcessed: number;
+    recordsReindexed: number;
+    collectionsRecreated: number;
+    errors: string[];
+  }>("rebuild_index", {
+    namespace: "test-user",
+    collections: ["authored:hard", "authored:soft"],
+  });
+
+  assert.equal(socket.writes.length, 1);
+  const request = RpcRequest.fromBinary(parseClientFrame(socket.writes[0]!));
+  assert.equal(request.method, "rebuild_index");
+
+  const decodedParams = RebuildIndexRequest.fromBinary(request.params);
+  assert.equal(decodedParams.namespace, "test-user");
+  assert.deepEqual(decodedParams.collections, ["authored:hard", "authored:soft"]);
+
+  const response = new (RpcResponse as any)({
+    id: request.id,
+    result: RebuildIndexResponse.fromJson({
+      collectionsProcessed: 3,
+      recordsReindexed: 42,
+      collectionsRecreated: 1,
+      errors: [],
+    }).toBinary(),
+  });
+  socket.emitData(frameServerPayload(response.toBinary()));
+
+  const result = await pending;
+  assert.equal(result.collectionsProcessed, 3);
+  assert.equal(result.recordsReindexed, 42);
+  assert.equal(result.collectionsRecreated, 1);
+  assert.ok(result.errors === undefined || result.errors.length === 0);
 });
