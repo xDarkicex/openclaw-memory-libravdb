@@ -426,7 +426,8 @@ function extractExactRecallTokens(text: string): string[] {
   return Array.from(tokens).slice(0, EXACT_RECALL_MAX_TOKENS);
 }
 
-function isExactRecallFact(text: string, token: string): boolean {
+function isExactRecallFact(text: string | undefined | null, token: string): boolean {
+  if (typeof text !== "string") return false;
   return (
     text.includes(token) &&
     /\bmeans\b/i.test(text) &&
@@ -444,11 +445,12 @@ function isQuestionShapedRecallCandidate(text: string): boolean {
 }
 
 function rankExactRecallCandidate(result: SearchResult, token: string): number {
-  if (!result.text.includes(token)) return Number.NEGATIVE_INFINITY;
+  const text = typeof result.text === "string" ? result.text : "";
+  if (!text.includes(token)) return Number.NEGATIVE_INFINITY;
   let rank = result.score;
-  if (/\bmeans\b/i.test(result.text)) rank += 100;
-  if (/\b(remember|durable|fact)\b/i.test(result.text)) rank += 10;
-  if (/\bwhat does\b/i.test(result.text) || result.text.includes("?")) rank -= 25;
+  if (/\bmeans\b/i.test(text)) rank += 100;
+  if (/\b(remember|durable|fact)\b/i.test(text)) rank += 10;
+  if (/\bwhat does\b/i.test(text) || text.includes("?")) rank -= 25;
   return rank;
 }
 
