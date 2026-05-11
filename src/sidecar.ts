@@ -245,7 +245,6 @@ class SidecarSupervisor implements SidecarHandle {
   async start(): Promise<SidecarSocket> {
     const endpoint = await this.runtime.resolveEndpoint(this.cfg);
     const socket = await this.connectEndpointWithRetry(endpoint);
-    this.retries = 0;
     this.reconnectScheduled = false;
     if (this.socket instanceof SupervisorSocket) {
       this.socket.bind(socket);
