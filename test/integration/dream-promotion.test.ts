@@ -53,76 +53,88 @@ function delay(ms: number): Promise<void> {
 }
 
 test("dream promotion handle reads diary bullets and forwards them to the sidecar", async () => {
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-dream-"));
-  const diaryPath = path.join(tempRoot, "DREAMS.md");
-  await fsp.writeFile(
-    diaryPath,
-    [
-      "# DREAMS",
-      "",
-      "## Deep Sleep",
-      "- Preserve the recent tail buffer {score=0.82 recall=3 unique=2}",
-      "- Too weak to promote {score=0.2 recall=1 unique=1}",
-    ].join("\n"),
-  );
+  let handle: ReturnType<typeof createDreamPromotionHandle> | null = null;
+  process.env.OPENCLAW_STATE_DIR = tempRoot;
 
-  const rpc = new FakeRpcClient();
-  const fsApi = new FakeFsApi();
-  const handle = createDreamPromotionHandle(
-    {
-      dreamPromotionEnabled: true,
-      dreamPromotionDiaryPath: diaryPath,
-      dreamPromotionUserId: "u1",
-      dreamPromotionDebounceMs: 0,
-    },
-    async () => rpc,
-    console,
-    fsApi as never,
-  );
+  try {
+    const diaryPath = path.join(tempRoot, "DREAMS.md");
+    await fsp.writeFile(
+      diaryPath,
+      [
+        "# DREAMS",
+        "",
+        "## Deep Sleep",
+        "- Preserve the recent tail buffer {score=0.82 recall=3 unique=2}",
+        "- Too weak to promote {score=0.2 recall=1 unique=1}",
+      ].join("\n"),
+    );
 
-  await handle.start();
-  await delay(25);
+    const rpc = new FakeRpcClient();
+    const fsApi = new FakeFsApi();
+    handle = createDreamPromotionHandle(
+      {
+        dreamPromotionEnabled: true,
+        dreamPromotionDiaryPath: diaryPath,
+        dreamPromotionUserId: "u1",
+        dreamPromotionDebounceMs: 0,
+      },
+      async () => rpc,
+      console,
+      fsApi as never,
+    );
 
-  const promoteCall = rpc.calls.find((call) => call.method === "promote_dream_entries");
-  assert.ok(promoteCall, "expected dream promotion RPC to fire");
-  const params = promoteCall?.params as {
-    userId: string;
-    sourceDoc: string;
-    sourceKind: string;
-    entries: Array<{
-      text: string;
-      score: number;
-      recallCount: number;
-      uniqueQueries: number;
-      line: number;
-      sourceLine: number;
-    }>;
-  };
-  assert.equal(params.userId, "u1");
-  assert.equal(params.sourceDoc, diaryPath);
-  assert.equal(params.sourceKind, "dream");
-  assert.equal(params.entries.length, 2);
-  assert.equal(params.entries[0]?.text, "Preserve the recent tail buffer");
-  assert.equal(params.entries[0]?.line, 4);
-  assert.equal(params.entries[0]?.sourceLine, 4);
-  assert.equal(params.entries[1]?.score, 0.2);
-  assert.equal(params.entries[1]?.line, 5);
-  assert.equal(params.entries[1]?.sourceLine, 5);
+    await handle.start();
+    await delay(25);
 
-  await fsp.writeFile(
-    diaryPath,
-    [
-      "# DREAMS",
-      "",
-      "## Deep Sleep",
-      "- Preserve the recent tail buffer {score=0.82 recall=3 unique=2}",
-      "- Too weak to promote {score=0.2 recall=1 unique=1}",
-    ].join("\n"),
-  );
-  fsApi.callbacks.get(path.dirname(diaryPath))?.[0]?.("change", path.basename(diaryPath));
-  await delay(25);
+    const promoteCall = rpc.calls.find((call) => call.method === "promote_dream_entries");
+    assert.ok(promoteCall, "expected dream promotion RPC to fire");
+    const params = promoteCall?.params as {
+      userId: string;
+      sourceDoc: string;
+      sourceKind: string;
+      entries: Array<{
+        text: string;
+        score: number;
+        recallCount: number;
+        uniqueQueries: number;
+        line: number;
+        sourceLine: number;
+      }>;
+    };
+    assert.equal(params.userId, "u1");
+    assert.equal(params.sourceDoc, diaryPath);
+    assert.equal(params.sourceKind, "dream");
+    assert.equal(params.entries.length, 2);
+    assert.equal(params.entries[0]?.text, "Preserve the recent tail buffer");
+    assert.equal(params.entries[0]?.line, 4);
+    assert.equal(params.entries[0]?.sourceLine, 4);
+    assert.equal(params.entries[1]?.score, 0.2);
+    assert.equal(params.entries[1]?.line, 5);
+    assert.equal(params.entries[1]?.sourceLine, 5);
 
-  assert.equal(rpc.calls.filter((call) => call.method === "promote_dream_entries").length, 1);
+    await fsp.writeFile(
+      diaryPath,
+      [
+        "# DREAMS",
+        "",
+        "## Deep Sleep",
+        "- Preserve the recent tail buffer {score=0.82 recall=3 unique=2}",
+        "- Too weak to promote {score=0.2 recall=1 unique=1}",
+      ].join("\n"),
+    );
+    fsApi.callbacks.get(path.dirname(diaryPath))?.[0]?.("change", path.basename(diaryPath));
+    await delay(25);
 
-  await handle.stop();
+    assert.equal(rpc.calls.filter((call) => call.method === "promote_dream_entries").length, 1);
+  } finally {
+    await handle?.stop();
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
 });

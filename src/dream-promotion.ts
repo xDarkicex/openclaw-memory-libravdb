@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import { getHashBackendName, hashBytes } from "./markdown-hash.js";
@@ -88,9 +89,17 @@ export function createDreamPromotionHandle(
   logger: LoggerLike = console,
   fsApi: FsApi = createRealFsApi(),
 ): DreamPromotionHandle {
-  const diaryPath = normalizeDiaryPath(cfg.dreamPromotionDiaryPath);
   const userId = cfg.dreamPromotionUserId?.trim() ?? "";
-  if (cfg.dreamPromotionEnabled !== true || !diaryPath || !userId) {
+  if (cfg.dreamPromotionEnabled !== true || !userId) {
+    return {
+      async start() {},
+      async refresh() {},
+      async stop() {},
+    };
+  }
+
+  const diaryPath = normalizeDiaryPath(cfg.dreamPromotionDiaryPath);
+  if (!diaryPath) {
     return {
       async start() {},
       async refresh() {},
@@ -467,7 +476,37 @@ function normalizeDiaryPath(value?: string): string {
   if (!trimmed) {
     return "";
   }
-  return path.resolve(trimmed);
+
+  // Reject traversal components — even though path.resolve collapses them,
+  // their presence signals an attempt to escape intended boundaries.
+  const segments = trimmed.split(/[/\\]+/);
+  if (segments.some((s) => s === "..")) {
+    throw new Error(
+      `dream diary path must not contain ".." traversal: ${trimmed}`,
+    );
+  }
+
+  const resolved = path.resolve(trimmed);
+
+  // Restrict to known-safe locations to prevent arbitrary file reads.
+  // Allowed roots: home directory and the configured OpenClaw state dir.
+  const allowedRoots = [
+    os.homedir(),
+    process.env.OPENCLAW_STATE_DIR,
+  ]
+    .filter((r): r is string => typeof r === "string" && r.trim().length > 0)
+    .map((root) => path.resolve(root));
+
+  const isAllowed = allowedRoots.some(
+    (root) => resolved.startsWith(root + path.sep) || resolved === root,
+  );
+  if (!isAllowed) {
+    throw new Error(
+      `dream diary path must be within an allowed root: ${allowedRoots.join(", ")}. Got: ${resolved}`,
+    );
+  }
+
+  return resolved;
 }
 
 function createRealFsApi(): FsApi {
