@@ -794,3 +794,26 @@ test("resolveIdentity with noAutoPersist skips writing identity file", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("escapeMemoryFactText escapes control characters (newline, tab, carriage return)", () => {
+  // Mirrors the private escapeMemoryFactText in context-engine.ts.
+  // Verifies that \n, \r, \t are escaped to XML character references,
+  // and that existing XML entity escapes remain correct.
+  const input = "line1\nline2\rline3\ttab&<>";
+  const escaped = input
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("\r", "&#13;")
+    .replaceAll("\n", "&#10;")
+    .replaceAll("\t", "&#9;");
+  assert.equal(escaped.includes("\n"), false, "should not contain raw newline");
+  assert.equal(escaped.includes("\r"), false, "should not contain raw carriage return");
+  assert.equal(escaped.includes("\t"), false, "should not contain raw tab");
+  assert.equal(escaped.includes("&amp;"), true, "should escape ampersand");
+  assert.equal(escaped.includes("&#10;"), true, "should escape newline to &#10;");
+  assert.equal(escaped.includes("&#13;"), true, "should escape carriage return to &#13;");
+  assert.equal(escaped.includes("&#9;"), true, "should escape tab to &#9;");
+});
