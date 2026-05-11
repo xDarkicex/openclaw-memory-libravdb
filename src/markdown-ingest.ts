@@ -600,12 +600,12 @@ function looksLikeObsidianNote(filePath: string, text: string): boolean {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatterEnd = findFrontmatterEnd(text, frontmatterStart);
-  if (frontmatterEnd < 0) {
+  const parsed = findFrontmatterEnd(text, frontmatterStart);
+  if (!parsed) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatter = text.slice(frontmatterStart, frontmatterEnd);
+  const frontmatter = text.slice(frontmatterStart, parsed.position);
   const lines = frontmatter.split(/\r?\n/);
   for (const line of lines) {
     const trimmed = line.trimStart();
@@ -619,7 +619,7 @@ function looksLikeObsidianNote(filePath: string, text: string): boolean {
     }
   }
 
-  return hasInlineObsidianTag(text.slice(frontmatterEnd + 4));
+  return hasInlineObsidianTag(text.slice(parsed.bodyOffset));
 }
 
 function parseFrontmatterStart(text: string): number | null {
@@ -632,20 +632,20 @@ function parseFrontmatterStart(text: string): number | null {
   return null;
 }
 
-function findFrontmatterEnd(text: string, offset: number): number {
+function findFrontmatterEnd(text: string, offset: number): { position: number; bodyOffset: number } | null {
   for (let i = offset; i < text.length - 3; i++) {
     if (text.charCodeAt(i) !== 45 || text.charCodeAt(i + 1) !== 45 || text.charCodeAt(i + 2) !== 45) {
       continue;
     }
     const next = text.charCodeAt(i + 3);
     if (next === 10) {
-      return i;
+      return { position: i, bodyOffset: i + 4 };
     }
     if (next === 13 && text.charCodeAt(i + 4) === 10) {
-      return i;
+      return { position: i, bodyOffset: i + 5 };
     }
   }
-  return -1;
+  return null;
 }
 
 function hasInlineObsidianTag(text: string): boolean {
