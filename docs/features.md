@@ -58,7 +58,7 @@ Relevant config fields:
 | `markdownIngestionObsidianEnabled` | Enables Obsidian ingestion when vault roots exist. |
 | `markdownIngestionObsidianRoots` | Obsidian vault roots to watch. |
 | `markdownIngestionObsidianInclude` | Optional include globs for Obsidian roots. |
-| `markdownIngestionObsidianExclude` | Optional exclude globs for Obsidian roots. |
+| `markdownIngestionObsidianExclude` | Optional exclude globs for Obsidian roots; merged with the same default excludes as generic markdown ingestion. |
 | `markdownIngestionObsidianDebounceMs` | Obsidian watch debounce window, default `150`. |
 
 By default, the Obsidian adapter auto-ingests notes that look like memory notes,

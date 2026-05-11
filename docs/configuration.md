@@ -95,7 +95,7 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | `markdownIngestionObsidianEnabled` | boolean | `false` | Watch Obsidian vault roots |
 | `markdownIngestionObsidianRoots` | string[] | — | Obsidian vault directories |
 | `markdownIngestionObsidianInclude` | string[] | — | Obsidian glob include patterns |
-| `markdownIngestionObsidianExclude` | string[] | — | Obsidian glob exclude patterns |
+| `markdownIngestionObsidianExclude` | string[] | common dependency/build dirs | Obsidian glob exclude patterns; merged with the same default excludes as generic markdown ingestion |
 | `markdownIngestionObsidianDebounceMs` | number | `150` | Obsidian debounce window |
 
 ## Dream promotion
