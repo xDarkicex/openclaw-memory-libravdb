@@ -11,6 +11,22 @@ const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
 const MARKDOWN_INGEST_VERSION = 3;
 const HASH_BACKEND = "wasm-fnv1a64";
+
+/** Directories that are always skipped during markdown ingestion walks. */
+const DEFAULT_SKIP_DIR_NAMES = new Set([
+  "node_modules",
+  ".git",
+  ".svn",
+  ".hg",
+  "dist",
+  "build",
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".next",
+  ".nuxt",
+  ".cache",
+]);
 type Disposable = { close(): void };
 
 interface RpcLike {
@@ -350,6 +366,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       const child = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        if (DEFAULT_SKIP_DIR_NAMES.has(entry.name)) {
+          continue;
+        }
         await this.walkDirectory(rootState, child, currentFiles);
         continue;
       }

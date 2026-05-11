@@ -16,3 +16,12 @@ test("markdown hash sentinel is stable and changes with content", () => {
 test("markdown hash sentinel uses the wasm backend when available", () => {
   assert.equal(getHashBackendName(), "wasm-fnv1a64");
 });
+
+test("DEFAULT_SKIP_DIR_NAMES includes known irrelevant directories", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../../src/markdown-ingest.ts", import.meta.url), "utf-8");
+  const expected = ["node_modules", ".git", ".svn", ".hg", "dist", "build", "__pycache__", ".venv", "venv", ".next", ".nuxt", ".cache"];
+  for (const name of expected) {
+    assert.ok(source.includes(`"${name}"`), `DEFAULT_SKIP_DIR_NAMES should contain "${name}"`);
+  }
+});
