@@ -795,25 +795,41 @@ test("resolveIdentity with noAutoPersist skips writing identity file", () => {
   }
 });
 
-test("escapeMemoryFactText escapes control characters (newline, tab, carriage return)", () => {
-  // Mirrors the private escapeMemoryFactText in context-engine.ts.
-  // Verifies that \n, \r, \t are escaped to XML character references,
-  // and that existing XML entity escapes remain correct.
-  const input = "line1\nline2\rline3\ttab&<>";
-  const escaped = input
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;")
-    .replaceAll("\r", "&#13;")
-    .replaceAll("\n", "&#10;")
-    .replaceAll("\t", "&#9;");
-  assert.equal(escaped.includes("\n"), false, "should not contain raw newline");
-  assert.equal(escaped.includes("\r"), false, "should not contain raw carriage return");
-  assert.equal(escaped.includes("\t"), false, "should not contain raw tab");
-  assert.equal(escaped.includes("&amp;"), true, "should escape ampersand");
-  assert.equal(escaped.includes("&#10;"), true, "should escape newline to &#10;");
-  assert.equal(escaped.includes("&#13;"), true, "should escape carriage return to &#13;");
-  assert.equal(escaped.includes("&#9;"), true, "should escape tab to &#9;");
+test("context engine exact recall escapes control characters inside injected memory facts", async () => {
+  const rpc = new FakeRpc();
+  const marker = "CONTROL_CHAR_MEMORY_MARKER_1234567890";
+  rpc.searchResults = [
+    {
+      id: "fact",
+      score: 0.9,
+      text: `${marker} means line1\nline2\rline3\ttab & <tag> "quoted" 'single'.`,
+      metadata: { collection: "user:fixed-user", role: "user" },
+    },
+  ];
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user", topK: 4 });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `What does ${marker} mean?`)],
+    prompt: `What does ${marker} mean?`,
+    tokenBudget: 4000,
+  });
+
+  const match = assembled.systemPromptAddition.match(
+    /<memory_fact source="exact_recalled">([\s\S]*?)<\/memory_fact>/,
+  );
+  assert.ok(match, "exact recall fact should be injected through the context engine");
+  const factText = match[1]!;
+
+  assert.equal(factText.includes("\n"), false, "memory fact text should not contain raw newline");
+  assert.equal(factText.includes("\r"), false, "memory fact text should not contain raw carriage return");
+  assert.equal(factText.includes("\t"), false, "memory fact text should not contain raw tab");
+  assert.ok(factText.includes("&#10;"), "newline should be escaped to XML char reference");
+  assert.ok(factText.includes("&#13;"), "carriage return should be escaped to XML char reference");
+  assert.ok(factText.includes("&#9;"), "tab should be escaped to XML char reference");
+  assert.ok(factText.includes("&amp;"), "ampersand should still be escaped");
+  assert.ok(factText.includes("&lt;tag&gt;"), "angle brackets should still be escaped");
+  assert.ok(factText.includes("&quot;quoted&quot;"), "double quotes should still be escaped");
+  assert.ok(factText.includes("&#39;single&#39;"), "single quotes should still be escaped");
 });
