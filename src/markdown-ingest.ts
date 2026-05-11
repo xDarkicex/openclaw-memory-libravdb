@@ -13,18 +13,31 @@ const MARKDOWN_INGEST_VERSION = 3;
 const HASH_BACKEND = "wasm-fnv1a64";
 const DEFAULT_MARKDOWN_INGEST_EXCLUDES = [
   "node_modules/**",
+  "**/node_modules/**",
   ".git/**",
+  "**/.git/**",
   "dist/**",
+  "**/dist/**",
   "build/**",
+  "**/build/**",
   "coverage/**",
+  "**/coverage/**",
   ".next/**",
+  "**/.next/**",
   ".nuxt/**",
+  "**/.nuxt/**",
   ".svelte-kit/**",
+  "**/.svelte-kit/**",
   ".turbo/**",
+  "**/.turbo/**",
   ".cache/**",
+  "**/.cache/**",
   ".venv/**",
+  "**/.venv/**",
   "venv/**",
+  "**/venv/**",
   "__pycache__/**",
+  "**/__pycache__/**",
 ];
 type Disposable = { close(): void };
 

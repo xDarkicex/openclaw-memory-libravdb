@@ -168,14 +168,20 @@ test("markdown ingestion default-excludes dependency and build directories", asy
   const nodeModulesPath = path.join(tempRoot, "node_modules", "pkg", "CHANGELOG.md");
   const gitPath = path.join(tempRoot, ".git", "README.md");
   const distPath = path.join(tempRoot, "dist", "README.md");
+  const nestedNodeModulesPath = path.join(tempRoot, "packages", "app", "node_modules", "pkg", "README.md");
+  const nestedBuildPath = path.join(tempRoot, "packages", "app", "build", "README.md");
   await fsp.mkdir(path.dirname(keepPath), { recursive: true });
   await fsp.mkdir(path.dirname(nodeModulesPath), { recursive: true });
   await fsp.mkdir(path.dirname(gitPath), { recursive: true });
   await fsp.mkdir(path.dirname(distPath), { recursive: true });
+  await fsp.mkdir(path.dirname(nestedNodeModulesPath), { recursive: true });
+  await fsp.mkdir(path.dirname(nestedBuildPath), { recursive: true });
   await fsp.writeFile(keepPath, "# Keep\n\nThis user-authored doc should ingest.");
   await fsp.writeFile(nodeModulesPath, "# Changelog\n\nDependency docs should not ingest.");
   await fsp.writeFile(gitPath, "# Git internals\n\nThis should not ingest.");
   await fsp.writeFile(distPath, "# Build output\n\nThis should not ingest.");
+  await fsp.writeFile(nestedNodeModulesPath, "# Nested dependency docs\n\nThis should not ingest.");
+  await fsp.writeFile(nestedBuildPath, "# Nested build output\n\nThis should not ingest.");
 
   const rpc = new FakeRpcClient();
   const fsApi = new FakeFsApi();
@@ -197,7 +203,10 @@ test("markdown ingestion default-excludes dependency and build directories", asy
   assert.equal(rpc.documents.has(nodeModulesPath), false);
   assert.equal(rpc.documents.has(gitPath), false);
   assert.equal(rpc.documents.has(distPath), false);
+  assert.equal(rpc.documents.has(nestedNodeModulesPath), false);
+  assert.equal(rpc.documents.has(nestedBuildPath), false);
   assert.equal(fsApi.callbacks.has(path.join(tempRoot, "node_modules")), false, "excluded directories should not be watched");
+  assert.equal(fsApi.callbacks.has(path.join(tempRoot, "packages", "app", "node_modules")), false, "nested excluded directories should not be watched");
 
   await handle.stop();
 });

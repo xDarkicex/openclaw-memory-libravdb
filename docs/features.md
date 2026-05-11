@@ -53,7 +53,7 @@ Relevant config fields:
 | `markdownIngestionEnabled` | Enables or disables generic markdown ingestion. |
 | `markdownIngestionRoots` | Generic markdown roots to watch. |
 | `markdownIngestionInclude` | Optional include globs for generic roots. |
-| `markdownIngestionExclude` | Optional exclude globs for generic roots; merged with default excludes for dependency/build dirs such as `node_modules/**`, `.git/**`, `dist/**`, and `build/**`. |
+| `markdownIngestionExclude` | Optional exclude globs for generic roots; merged with default excludes for dependency/build dirs such as `node_modules/**`, `**/node_modules/**`, `.git/**`, `dist/**`, and `build/**`. |
 | `markdownIngestionDebounceMs` | Watch debounce window, default `150`. |
 | `markdownIngestionObsidianEnabled` | Enables Obsidian ingestion when vault roots exist. |
 | `markdownIngestionObsidianRoots` | Obsidian vault roots to watch. |
@@ -63,7 +63,7 @@ Relevant config fields:
 
 By default, the Obsidian adapter auto-ingests notes that look like memory notes,
 using frontmatter tags or inline tags such as `#project`. The stock OpenClaw
-`MEMORY.md` file is always eligible through the generic adapter path. Generic markdown ingestion skips common generated or dependency directories by default so workspace-level roots do not crawl package changelogs, build outputs, or VCS internals.
+`MEMORY.md` file is always eligible through the generic adapter path. Generic markdown ingestion skips common generated or dependency directories at any depth by default so workspace-level roots do not crawl package changelogs, build outputs, or VCS internals.
 
 ## Dream Promotion
 
