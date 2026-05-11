@@ -198,6 +198,21 @@
       },
       "markdownIngestionExclude": {
         "type": "array",
+        "default": [
+          "node_modules/**",
+          ".git/**",
+          "dist/**",
+          "build/**",
+          "coverage/**",
+          ".next/**",
+          ".nuxt/**",
+          ".svelte-kit/**",
+          ".turbo/**",
+          ".cache/**",
+          ".venv/**",
+          "venv/**",
+          "__pycache__/**"
+        ],
         "items": {
           "type": "string"
         }

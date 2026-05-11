@@ -90,7 +90,7 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | `markdownIngestionEnabled` | boolean | `false` | Watch markdown roots for changes |
 | `markdownIngestionRoots` | string[] | — | Directories to watch |
 | `markdownIngestionInclude` | string[] | — | Glob patterns to include |
-| `markdownIngestionExclude` | string[] | — | Glob patterns to exclude |
+| `markdownIngestionExclude` | string[] | common dependency/build dirs | Glob patterns to exclude; merged with default excludes such as `node_modules/**`, `.git/**`, `dist/**`, and `build/**` |
 | `markdownIngestionDebounceMs` | number | `150` | Debounce window for file change events |
 | `markdownIngestionObsidianEnabled` | boolean | `false` | Watch Obsidian vault roots |
 | `markdownIngestionObsidianRoots` | string[] | — | Obsidian vault directories |

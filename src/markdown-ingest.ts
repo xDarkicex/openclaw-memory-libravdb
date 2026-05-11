@@ -11,6 +11,21 @@ const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
 const MARKDOWN_INGEST_VERSION = 3;
 const HASH_BACKEND = "wasm-fnv1a64";
+const DEFAULT_MARKDOWN_INGEST_EXCLUDES = [
+  "node_modules/**",
+  ".git/**",
+  "dist/**",
+  "build/**",
+  "coverage/**",
+  ".next/**",
+  ".nuxt/**",
+  ".svelte-kit/**",
+  ".turbo/**",
+  ".cache/**",
+  ".venv/**",
+  "venv/**",
+  "__pycache__/**",
+];
 type Disposable = { close(): void };
 
 interface RpcLike {
@@ -206,7 +221,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     this.kind = kind;
     this.roots = config.roots;
     this.includePatterns = config.include?.length ? config.include : [];
-    this.excludePatterns = config.exclude?.length ? config.exclude : [];
+    this.excludePatterns = mergeDefaultMarkdownIngestionExcludes(config.exclude);
     this.debounceMs = config.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.fsApi = fsApi;
     this.getRpc = getRpc;
@@ -350,6 +365,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       const child = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        if (this.shouldSkipDirectory(rootState.root, child)) {
+          continue;
+        }
         await this.walkDirectory(rootState, child, currentFiles);
         continue;
       }
@@ -388,6 +406,20 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     } catch (error) {
       this.logger.warn?.(`[markdown-ingest] watch unavailable for ${dir}: ${formatError(error)}`);
     }
+  }
+
+  private shouldSkipDirectory(root: string, dirPath: string): boolean {
+    const relative = toPosixPath(path.relative(root, dirPath));
+    if (!relative) {
+      return false;
+    }
+    const directoryPath = `${relative}/`;
+    for (const pattern of this.excludePatterns) {
+      if (matchesGlob(directoryPath, pattern) || matchesGlob(relative, pattern)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private shouldIncludeFile(root: string, filePath: string): boolean {
@@ -546,6 +578,17 @@ function toPosixPath(value: string): string {
 }
 
 const textDecoder = new TextDecoder();
+
+function mergeDefaultMarkdownIngestionExcludes(exclude?: string[]): string[] {
+  const merged = new Set(DEFAULT_MARKDOWN_INGEST_EXCLUDES);
+  for (const pattern of exclude ?? []) {
+    const trimmed = pattern.trim();
+    if (trimmed) {
+      merged.add(trimmed);
+    }
+  }
+  return [...merged];
+}
 
 function normalizeMarkdownRoots(roots?: string[]): string[] {
   if (!roots?.length) {

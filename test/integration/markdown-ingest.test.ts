@@ -162,6 +162,46 @@ test("markdown ingestion forwards raw markdown to the go sidecar and stays hash-
   await handle.stop();
 });
 
+test("markdown ingestion default-excludes dependency and build directories", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-default-exclude-"));
+  const keepPath = path.join(tempRoot, "docs", "guide.md");
+  const nodeModulesPath = path.join(tempRoot, "node_modules", "pkg", "CHANGELOG.md");
+  const gitPath = path.join(tempRoot, ".git", "README.md");
+  const distPath = path.join(tempRoot, "dist", "README.md");
+  await fsp.mkdir(path.dirname(keepPath), { recursive: true });
+  await fsp.mkdir(path.dirname(nodeModulesPath), { recursive: true });
+  await fsp.mkdir(path.dirname(gitPath), { recursive: true });
+  await fsp.mkdir(path.dirname(distPath), { recursive: true });
+  await fsp.writeFile(keepPath, "# Keep\n\nThis user-authored doc should ingest.");
+  await fsp.writeFile(nodeModulesPath, "# Changelog\n\nDependency docs should not ingest.");
+  await fsp.writeFile(gitPath, "# Git internals\n\nThis should not ingest.");
+  await fsp.writeFile(distPath, "# Build output\n\nThis should not ingest.");
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 1);
+  assert.equal(rpc.documents.has(keepPath), true);
+  assert.equal(rpc.documents.has(nodeModulesPath), false);
+  assert.equal(rpc.documents.has(gitPath), false);
+  assert.equal(rpc.documents.has(distPath), false);
+  assert.equal(fsApi.callbacks.has(path.join(tempRoot, "node_modules")), false, "excluded directories should not be watched");
+
+  await handle.stop();
+});
+
 test("obsidian markdown ingestion flips source kind while reusing the same rpc path", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-obsidian-"));
   const filePath = path.join(tempRoot, "memory.md");
