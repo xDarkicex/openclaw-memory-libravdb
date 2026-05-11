@@ -1,6 +1,21 @@
 const SESSION_KEY_NAMESPACE_PREFIX = "session-key:";
 const AGENT_ID_NAMESPACE_PREFIX = "agent-id:";
 
+/** Valid collection names: alphanumeric, underscores, hyphens, dots, colons, at-signs.
+ *  Must start with a letter. Max 128 characters. */
+const COLLECTION_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_.:@-]{0,127}$/;
+
+/** Validate and return a collection-safe namespace.
+ *  Throws on invalid characters or length. */
+export function validateNamespace(name: string): string {
+  if (!COLLECTION_NAME_RE.test(name)) {
+    throw new Error(
+      `Invalid collection namespace: "${name}". Must match ${COLLECTION_NAME_RE.source}`,
+    );
+  }
+  return name;
+}
+
 export type RetrievalScopes = {
   /** Always queried — fresh context bound to this session. */
   session: string;
@@ -18,15 +33,18 @@ export function resolveDurableNamespace(params: {
   fallback?: string;
 }): string {
   const explicitUserId = firstNonEmpty(params.userId);
-  if (explicitUserId) return explicitUserId;
+  if (explicitUserId) return validateNamespace(explicitUserId);
 
   const sessionKey = firstNonEmpty(params.sessionKey);
-  if (sessionKey) return `${SESSION_KEY_NAMESPACE_PREFIX}${sessionKey}`;
+  if (sessionKey) return validateNamespace(`${SESSION_KEY_NAMESPACE_PREFIX}${sessionKey}`);
 
   const agentId = firstNonEmpty(params.agentId);
-  if (agentId) return `${AGENT_ID_NAMESPACE_PREFIX}${agentId}`;
+  if (agentId) return validateNamespace(`${AGENT_ID_NAMESPACE_PREFIX}${agentId}`);
 
-  return firstNonEmpty(params.fallback) ?? "default";
+  const fallback = firstNonEmpty(params.fallback);
+  if (fallback) return validateNamespace(fallback);
+
+  return "default";
 }
 
 export function resolveScopes(params: {
