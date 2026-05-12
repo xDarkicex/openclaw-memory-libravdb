@@ -16,6 +16,10 @@ export interface GrpcClientOptions {
   timeoutMs?: number;
 }
 
+export function resolveGrpcTarget(endpoint: string): string {
+  return endpoint.startsWith("tcp:") ? endpoint.substring(4) : endpoint;
+}
+
 export class GrpcKernelClient {
   private client: any;
   private readonly secret: string | undefined;
@@ -37,11 +41,7 @@ export class GrpcKernelClient {
     const protoDescriptor = grpc.loadPackageDefinition(packageDefinition) as any;
     const kernelService = protoDescriptor.intelligence_kernel.v1.IntelligenceKernel;
 
-    const target = options.endpoint.startsWith("tcp:") 
-      ? options.endpoint.substring(4) 
-      : options.endpoint.startsWith("unix:")
-        ? options.endpoint.substring(5)
-        : options.endpoint;
+    const target = resolveGrpcTarget(options.endpoint);
 
     this.client = new kernelService(target, grpc.credentials.createInsecure());
   }

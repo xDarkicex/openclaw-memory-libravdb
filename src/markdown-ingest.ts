@@ -4,6 +4,8 @@ import path from "node:path";
 
 import type { LoggerLike, PluginConfig } from "./types.js";
 import { hashBytes } from "./markdown-hash.js";
+import { formatError } from "./format-error.js";
+import { IngestQueue } from "./ingest-queue.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
@@ -197,6 +199,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly tokenizerId: string;
   private readonly coreDoc: boolean;
   private started = false;
+  private ingestQueue: IngestQueue | null = null;
   private stopping = false;
 
   constructor(kind: string, config: GenericMarkdownSourceConfig, getRpc: RpcGetterLike, logger: LoggerLike, fsApi: FsApi) {
@@ -487,30 +490,38 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     sourceSize: number,
     sourceMtimeMs: number,
   ): Promise<void> {
-    const rpc = await this.getRpc();
-    const params: IngestMarkdownDocumentParams = {
+    const queue = await this.getIngestQueue();
+    await queue.enqueueIngest(
       sourceDoc,
       text,
-      tokenizerId: this.tokenizerId,
-      coreDoc: this.coreDoc,
-      sourceMeta: {
-        sourceRoot,
-        sourcePath,
-        sourceKind: this.kind,
-        fileHash,
-        sourceSize,
-        sourceMtimeMs: Math.trunc(sourceMtimeMs),
-        ingestVersion: MARKDOWN_INGEST_VERSION,
-        hashBackend: HASH_BACKEND,
+      {
+        tokenizerId: this.tokenizerId,
+        coreDoc: this.coreDoc,
+        sourceMeta: {
+          sourceRoot,
+          sourcePath,
+          sourceKind: this.kind,
+          fileHash,
+          sourceSize,
+          sourceMtimeMs: Math.trunc(sourceMtimeMs),
+          ingestVersion: MARKDOWN_INGEST_VERSION,
+          hashBackend: HASH_BACKEND,
+        },
       },
-    };
-    await rpc.call("ingest_markdown_document", params);
+    );
   }
 
   private async deleteSourceDocument(sourceDoc: string): Promise<void> {
-    const rpc = await this.getRpc();
-    const params: DeleteAuthoredDocumentParams = { sourceDoc };
-    await rpc.call("delete_authored_document", params);
+    const queue = await this.getIngestQueue();
+    await queue.enqueueDelete(sourceDoc);
+  }
+
+  private async getIngestQueue(): Promise<IngestQueue> {
+    if (!this.ingestQueue) {
+      const rpc = await this.getRpc();
+      this.ingestQueue = new IngestQueue(rpc.call.bind(rpc), this.logger);
+    }
+    return this.ingestQueue;
   }
 
   private async safeStat(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
@@ -583,25 +594,19 @@ function matchesGlob(value: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`).test(value);
 }
 
-function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
-}
-
 function looksLikeObsidianNote(filePath: string, text: string): boolean {
-  if (!text.startsWith("---\n")) {
+  const frontmatterStart = parseFrontmatterStart(text);
+  if (frontmatterStart == null) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatterEnd = findFrontmatterEnd(text, 4);
-  if (frontmatterEnd < 0) {
+  const parsed = findFrontmatterEnd(text, frontmatterStart);
+  if (!parsed) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatter = text.slice(4, frontmatterEnd);
-  const lines = frontmatter.split("\n");
+  const frontmatter = text.slice(frontmatterStart, parsed.position);
+  const lines = frontmatter.split(/\r?\n/);
   for (const line of lines) {
     const trimmed = line.trimStart();
     if (
@@ -614,23 +619,33 @@ function looksLikeObsidianNote(filePath: string, text: string): boolean {
     }
   }
 
-  return hasInlineObsidianTag(text.slice(frontmatterEnd + 4));
+  return hasInlineObsidianTag(text.slice(parsed.bodyOffset));
 }
 
-function findFrontmatterEnd(text: string, offset: number): number {
+function parseFrontmatterStart(text: string): number | null {
+  if (text.startsWith("---\n")) {
+    return 4;
+  }
+  if (text.startsWith("---\r\n")) {
+    return 5;
+  }
+  return null;
+}
+
+function findFrontmatterEnd(text: string, offset: number): { position: number; bodyOffset: number } | null {
   for (let i = offset; i < text.length - 3; i++) {
     if (text.charCodeAt(i) !== 45 || text.charCodeAt(i + 1) !== 45 || text.charCodeAt(i + 2) !== 45) {
       continue;
     }
     const next = text.charCodeAt(i + 3);
     if (next === 10) {
-      return i;
+      return { position: i, bodyOffset: i + 4 };
     }
     if (next === 13 && text.charCodeAt(i + 4) === 10) {
-      return i;
+      return { position: i, bodyOffset: i + 5 };
     }
   }
-  return -1;
+  return null;
 }
 
 function hasInlineObsidianTag(text: string): boolean {
@@ -645,10 +660,8 @@ function hasInlineObsidianTag(text: string): boolean {
     if (inFence) {
       continue;
     }
-    if (trimmed.startsWith("#")) {
-      continue;
-    }
-    if (/(^|[^A-Za-z0-9_])#([A-Za-z][A-Za-z0-9/_-]*)\b/.test(line)) {
+    const searchable = trimmed.replace(/^#{1,6}\s+/, "");
+    if (/(^|[^A-Za-z0-9_])#([A-Za-z][A-Za-z0-9/_-]*)\b/.test(searchable)) {
       return true;
     }
   }

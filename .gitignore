@@ -17,6 +17,7 @@ CLAUDE.md
 *.docx
 *.tgz
 *.pl
+reports/plugin-inspector*
 
 node_modules/
 .DS_Store

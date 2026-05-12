@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { buildContextEngineFactory } from "../../src/context-engine.js";
+import fs from "node:fs";
 import { resolveIdentity } from "../../src/identity.js";
 import type { PluginConfig, SearchResult } from "../../src/types.js";
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
@@ -493,6 +494,41 @@ test("context engine assemble keeps daemon result when exact recall RPC acquisit
   assert.match(warnings[0] ?? "", /exact recall skipped/);
 });
 
+test("context engine exact recall skips empty-text search results", async () => {
+  const rpc = new FakeRpc();
+  const marker = "BROKEN_SESSION_MEMORY_MARKER_1234567890";
+  rpc.assembleResponse = {
+    messages: [{ role: "user", content: `What does ${marker} mean?` }],
+    estimatedTokens: 24,
+    systemPromptAddition: "",
+  };
+  rpc.searchResults = [
+    {
+      id: "empty-fact",
+      score: 0,
+      text: "",
+      metadata: { collection: "user:fixed-user" },
+    },
+  ];
+  const warnings: string[] = [];
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn(message: string) { warnings.push(message); },
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `What does ${marker} mean?`)],
+    prompt: `What does ${marker} mean?`,
+    tokenBudget: 4000,
+  });
+
+  assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(warnings.some((message) => /exact recall failed/.test(message)), false);
+});
+
 test("exact recall extracts quoted phrases from user queries", async () => {
   const rpc = new FakeRpc();
   const phrase = "blue lobster preference";
@@ -742,4 +778,58 @@ test("resolveIdentity returns 'default' when no inputs are provided", () => {
   // When userInfo() works: auto-derived. An identity file or "default" may also apply.
   assert.ok(["auto", "default", "file"].includes(result.source));
   assert.ok(result.userId.length > 0);
+});
+
+test("resolveIdentity with noAutoPersist skips writing identity file", () => {
+  const tmpDir = `/tmp/libravdb-test-identity-${process.pid}`;
+  const identityPath = `${tmpDir}/libravdb-identity.json`;
+  try {
+    const result = resolveIdentity({ identityPath, noAutoPersist: true });
+    // Should still derive a userId
+    assert.ok(result.userId.length > 0);
+    assert.equal(result.source, "auto");
+    // But must not have written the file
+    assert.equal(fs.existsSync(identityPath), false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("context engine exact recall escapes control characters inside injected memory facts", async () => {
+  const rpc = new FakeRpc();
+  const marker = "CONTROL_CHAR_MEMORY_MARKER_1234567890";
+  rpc.searchResults = [
+    {
+      id: "fact",
+      score: 0.9,
+      text: `${marker} means line1\nline2\rline3\ttab & <tag> "quoted" 'single'.`,
+      metadata: { collection: "user:fixed-user", role: "user" },
+    },
+  ];
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user", topK: 4 });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `What does ${marker} mean?`)],
+    prompt: `What does ${marker} mean?`,
+    tokenBudget: 4000,
+  });
+
+  const match = assembled.systemPromptAddition.match(
+    /<memory_fact source="exact_recalled">([\s\S]*?)<\/memory_fact>/,
+  );
+  assert.ok(match, "exact recall fact should be injected through the context engine");
+  const factText = match[1]!;
+
+  assert.equal(factText.includes("\n"), false, "memory fact text should not contain raw newline");
+  assert.equal(factText.includes("\r"), false, "memory fact text should not contain raw carriage return");
+  assert.equal(factText.includes("\t"), false, "memory fact text should not contain raw tab");
+  assert.ok(factText.includes("&#10;"), "newline should be escaped to XML char reference");
+  assert.ok(factText.includes("&#13;"), "carriage return should be escaped to XML char reference");
+  assert.ok(factText.includes("&#9;"), "tab should be escaped to XML char reference");
+  assert.ok(factText.includes("&amp;"), "ampersand should still be escaped");
+  assert.ok(factText.includes("&lt;tag&gt;"), "angle brackets should still be escaped");
+  assert.ok(factText.includes("&quot;quoted&quot;"), "double quotes should still be escaped");
+  assert.ok(factText.includes("&#39;single&#39;"), "single quotes should still be escaped");
 });

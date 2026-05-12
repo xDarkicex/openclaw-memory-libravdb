@@ -9,7 +9,108 @@ import {
   isTcpEndpoint,
   resolveConfiguredEndpoint,
   resolveEndpoint,
+  startSidecar,
+  type SidecarRuntime,
 } from "../../src/sidecar.js";
+import type { SidecarSocket } from "../../src/types.js";
+
+type UnitCloseHandler = () => void;
+type UnitDataHandler = (chunk: Buffer) => void;
+type UnitErrorHandler = (error: Error) => void;
+
+class ManualSidecarSocket implements SidecarSocket {
+  private readonly onData = new Set<UnitDataHandler>();
+  private readonly onClose = new Set<UnitCloseHandler>();
+  private readonly onError = new Set<UnitErrorHandler>();
+  private readonly connectOnce = new Set<UnitCloseHandler>();
+  private readonly errorOnce = new Set<UnitErrorHandler>();
+
+  constructor(readonly endpoint: string) {
+    queueMicrotask(() => this.emitConnect());
+  }
+
+  setEncoding(_encoding: string): void {}
+
+  on(event: "data" | "close" | "error", handler: UnitDataHandler | UnitCloseHandler | UnitErrorHandler): void {
+    if (event === "data") {
+      this.onData.add(handler as UnitDataHandler);
+      return;
+    }
+    if (event === "error") {
+      this.onError.add(handler as UnitErrorHandler);
+      return;
+    }
+    this.onClose.add(handler as UnitCloseHandler);
+  }
+
+  once(event: "connect" | "error", handler: UnitCloseHandler | UnitErrorHandler): void {
+    if (event === "connect") {
+      this.connectOnce.add(handler as UnitCloseHandler);
+      return;
+    }
+    this.errorOnce.add(handler as UnitErrorHandler);
+  }
+
+  off(event: "connect" | "error", handler: UnitCloseHandler | UnitErrorHandler): void {
+    if (event === "connect") {
+      this.connectOnce.delete(handler as UnitCloseHandler);
+      return;
+    }
+    this.errorOnce.delete(handler as UnitErrorHandler);
+  }
+
+  write(_chunk: Buffer | string): void {}
+
+  destroy(_err?: Error): void {
+    this.emitClose();
+  }
+
+  emitClose(): void {
+    for (const handler of this.onClose) {
+      handler();
+    }
+  }
+
+  emitError(error: Error): void {
+    for (const handler of this.onError) {
+      handler(error);
+    }
+    for (const handler of this.errorOnce) {
+      handler(error);
+    }
+    this.errorOnce.clear();
+  }
+
+  private emitConnect(): void {
+    for (const handler of this.connectOnce) {
+      handler();
+    }
+    this.connectOnce.clear();
+  }
+}
+
+function createManualRestartRuntime() {
+  const sockets: ManualSidecarSocket[] = [];
+  const scheduled: Array<{ delayMs: number; restart: () => void }> = [];
+
+  const runtime: SidecarRuntime = {
+    resolveEndpoint: () => "unix:/tmp/libravdb.sock",
+    createSocket(endpoint) {
+      const socket = new ManualSidecarSocket(endpoint);
+      sockets.push(socket);
+      return socket;
+    },
+    scheduleRestart(delayMs, restart) {
+      scheduled.push({ delayMs, restart });
+    },
+  };
+
+  return { runtime, sockets, scheduled };
+}
+
+function flushAsyncWork(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 test("resolveEndpoint strips unix prefix and keeps tcp endpoints", () => {
   assert.equal(resolveEndpoint({ rpcTimeoutMs: 1, sidecarPath: "unix:/tmp/x.sock" }), "/tmp/x.sock");
@@ -78,6 +179,25 @@ test("computeBackoffMs applies capped exponential backoff", () => {
   assert.equal(computeBackoffMs(10), 16000);
 });
 
+test("shutdown suppresses a previously scheduled sidecar reconnect", async () => {
+  const runtime = createManualRestartRuntime();
+  const logger = { error() {}, info() {}, warn() {} };
+  const handle = await startSidecar({ rpcTimeoutMs: 50, maxRetries: 2 }, logger, runtime.runtime);
+
+  assert.equal(runtime.sockets.length, 1);
+  runtime.sockets[0]?.emitClose();
+  await flushAsyncWork();
+
+  assert.equal(runtime.scheduled.length, 1);
+  await handle.shutdown();
+
+  runtime.scheduled[0]?.restart();
+  await flushAsyncWork();
+
+  assert.equal(runtime.sockets.length, 1);
+  assert.equal(handle.isDegraded(), false);
+});
+
 test("isTcpEndpoint detects tcp endpoints", () => {
   assert.equal(isTcpEndpoint("tcp:127.0.0.1:7777"), true);
   assert.equal(isTcpEndpoint("/tmp/x.sock"), false);
@@ -112,6 +232,15 @@ test("buildSidecarEnv maps embedding config into sidecar environment", () => {
     LIBRAVDB_EMBEDDING_NORMALIZE: "false",
     LIBRAVDB_LIFECYCLE_JOURNAL_MAX_ENTRIES: "250",
   });
+});
+
+test("buildSidecarEnv defaults onnxDevice to cpu when not configured", () => {
+  const env = buildSidecarEnv({
+    rpcTimeoutMs: 1,
+    dbPath: "/tmp/libravdb",
+  });
+
+  assert.equal(env.LIBRAVDB_ONNX_DEVICE, "cpu");
 });
 
 test("daemonProvisioningHint points to the automated installer", () => {

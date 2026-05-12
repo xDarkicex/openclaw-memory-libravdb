@@ -28,8 +28,8 @@ importers:
         specifier: ^20.11.0
         version: 20.19.39
       '@xdarkicex/libravdb-contracts':
-        specifier: ^0.0.1
-        version: 0.0.1
+        specifier: ^0.0.6
+        version: 0.0.6
       esbuild:
         specifier: ^0.27.0
         version: 0.27.7
@@ -1469,8 +1469,8 @@ packages:
   '@types/node@25.6.0':
     resolution: {integrity: sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ==}
 
-  '@types/qs@6.15.0':
-    resolution: {integrity: sha512-JawvT8iBVWpzTrz3EGw9BTQFg3BQNmwERdKE22vlTxawwtbyUSlMppvZYKLZzB5zgACXdXxbD3m1bXaMqP/9ow==}
+  '@types/qs@6.15.1':
+    resolution: {integrity: sha512-GZHUBZR9hckSUhrxmp1nG6NwdpM9fCunJwyThLW1X3AyHgd9IlHb6VANpQQqDr2o/qQp6McZ3y/IA2rVzKzSbw==}
 
   '@types/range-parser@1.2.7':
     resolution: {integrity: sha512-hKormJbkJqzQGhziax5PItDUTMAM9uE2XXQmM37dyd4hVM+5aVl7oVxMVUiVQn2oCQFN/LKCZdvSM0pFRqbSmQ==}
@@ -1493,8 +1493,8 @@ packages:
   '@wasm-audio-decoders/common@9.0.7':
     resolution: {integrity: sha512-WRaUuWSKV7pkttBygml/a6dIEpatq2nnZGFIoPTc5yPLkxL6Wk4YaslPM98OPQvWacvNZ+Py9xROGDtrFBDzag==}
 
-  '@xdarkicex/libravdb-contracts@0.0.1':
-    resolution: {integrity: sha512-HRHHo/BlR56oyHw3E8PJhhaoKiS0OdXTPDRhLfMydCo5n3afp4wF7fLv1yeqGaaEuDo9vio4Oh1fOKac0RlamA==}
+  '@xdarkicex/libravdb-contracts@0.0.6':
+    resolution: {integrity: sha512-sHB35LbZcJuRdNwDIixm2iK0aZ8fqY8T8XwE6SbdtQgLGm5DHk6ErYgDytLjKQVZirjlED6q4zdKEUPQyCv83A==}
     engines: {node: '>=22'}
 
   abbrev@1.1.1:
@@ -5210,7 +5210,7 @@ snapshots:
   '@types/express-serve-static-core@5.1.1':
     dependencies:
       '@types/node': 20.19.39
-      '@types/qs': 6.15.0
+      '@types/qs': 6.15.1
       '@types/range-parser': 1.2.7
       '@types/send': 1.2.1
 
@@ -5245,7 +5245,7 @@ snapshots:
     dependencies:
       undici-types: 7.19.2
 
-  '@types/qs@6.15.0': {}
+  '@types/qs@6.15.1': {}
 
   '@types/range-parser@1.2.7': {}
 
@@ -5274,7 +5274,7 @@ snapshots:
       '@eshaz/web-worker': 1.2.2
       simple-yenc: 1.0.4
 
-  '@xdarkicex/libravdb-contracts@0.0.1':
+  '@xdarkicex/libravdb-contracts@0.0.6':
     dependencies:
       '@bufbuild/protobuf': 1.7.2
 

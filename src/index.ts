@@ -13,6 +13,11 @@ import type { PluginConfig } from "./types.js";
 export const MEMORY_ID = "libravdb-memory";
 
 const LIGHTWEIGHT_MODES = new Set(["cli-metadata", "setup-only"]);
+const RUNTIME_CLEANUP_SHUTDOWN_REASONS = new Set(["delete", "restart"]);
+
+export function shouldShutdownRuntimeForLifecycleCleanup(reason: string): boolean {
+  return RUNTIME_CLEANUP_SHUTDOWN_REASONS.has(reason);
+}
 
 export function register(api: OpenClawPluginApi) {
   const registrationMode = api.registrationMode;
@@ -140,11 +145,38 @@ export function register(api: OpenClawPluginApi) {
     },
   });
 
+  api.registerRuntimeLifecycle?.({
+    id: "libravdb-shutdown",
+    description: "Shut down the vector service runtime on terminal plugin cleanup",
+    async cleanup(ctx) {
+      if (shouldShutdownRuntimeForLifecycleCleanup(ctx.reason)) {
+        logger.info?.(`LibraVDB ${ctx.reason} — shutting down runtime`);
+        await runtime.shutdown();
+      } else if (ctx.reason === "disable") {
+        logger.info?.(
+          "LibraVDB disable cleanup observed; preserving runtime for active context engine",
+        );
+      }
+    },
+  });
+
   api.on("before_reset", createBeforeResetHook(runtime, api.logger ?? console));
   api.on("session_end", createSessionEndHook(runtime, api.logger ?? console));
+  api.on("agent_end", async (event: unknown) => {
+    const e = asRecord(event) ?? {};
+    logger.info?.(
+      `LibraVDB agent_end success=${e.success ?? 'unknown'} ` +
+      `durationMs=${e.durationMs ?? "?"} ` +
+      `error=${typeof e.error === "string" ? e.error : "none"}`,
+    );
+  });
   api.on("gateway_stop", async () => {
     await runtime.shutdown();
   });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
 }
 
 export default definePluginEntry({

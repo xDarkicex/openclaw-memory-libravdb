@@ -198,13 +198,14 @@ test("assemble fail-closed on sidecar errors with budget-clamped fallback", asyn
 
   const cfg: PluginConfig = { rpcTimeoutMs: 1000, compactThreshold: 100000 };
   const context = buildContextEngineFactory(async () => rpc as never, cfg);
+  const toolCalls = [{ id: "call-1", type: "function", function: { name: "memory", arguments: "{}" } }];
 
   const assembled = await context.assemble({
     sessionId: "test-session",
     userId: "test-user",
     messages: [
       { role: "user", content: "U".repeat(2200) },
-      { role: "assistant", content: "A".repeat(2200) },
+      { role: "assistant", content: "short fallback", tool_calls: toolCalls },
     ],
     tokenBudget: 512,
   });
@@ -212,6 +213,7 @@ test("assemble fail-closed on sidecar errors with budget-clamped fallback", asyn
   assert.ok(assembled.estimatedTokens <= 256);
   assert.ok(assembled.messages.length >= 1);
   assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(assembled.messages.at(-1)?.tool_calls, toolCalls);
 });
 
 test("assemble triggers force compaction at dynamic 80% threshold before daemon assembly", async () => {
@@ -435,7 +437,7 @@ test("compact omits invalid currentTokenCount values from the wire request", asy
   assert.equal("currentTokenCount" in params, false);
 });
 
-test("afterTurn forwards only daemon-relevant fields, strips prePromptMessageCount", async () => {
+test("afterTurn forwards only post-prompt messages and strips prePromptMessageCount", async () => {
   const rpc = new StaticContractRpc();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
 
@@ -458,7 +460,34 @@ test("afterTurn forwards only daemon-relevant fields, strips prePromptMessageCou
   assert.ok(params, "Expected after_turn_kernel to be called");
   assert.equal(params.sessionId, "test-session");
   assert.equal(params.userId, "test-user");
-  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon — daemon defaults to 0 and uses content-hash dedup");
+  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon");
+  assert.equal(params.isHeartbeat, false);
+  assert.deepEqual(params.messages, [mockMessages[1]]);
+});
+
+test("afterTurn forwards all messages when prePromptMessageCount is absent", async () => {
+  const rpc = new StaticContractRpc();
+  const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
+
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
+
+  const mockMessages = [
+    { role: "user", content: "m1" },
+    { role: "assistant", content: "m2" },
+  ];
+
+  await context.afterTurn({
+    sessionId: "test-session",
+    userId: "test-user",
+    messages: mockMessages,
+    isHeartbeat: false,
+  });
+
+  const params = rpc.getLastCall("after_turn_kernel");
+  assert.ok(params, "Expected after_turn_kernel to be called");
+  assert.equal(params.sessionId, "test-session");
+  assert.equal(params.userId, "test-user");
+  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon");
   assert.equal(params.isHeartbeat, false);
   assert.deepEqual(params.messages, mockMessages);
 });

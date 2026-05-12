@@ -12,6 +12,7 @@ type ErrorHandler = (error: Error) => void;
 const STARTUP_CONNECT_MAX_RETRIES = 5;
 const STARTUP_CONNECT_BASE_DELAY_MS = 100;
 const STARTUP_CONNECT_MAX_TOTAL_WAIT_MS = 2000;
+const CONNECTION_STABILITY_WINDOW_MS = 15_000;
 
 export interface SidecarRuntime {
   resolveEndpoint(cfg: PluginConfig): string | Promise<string>;
@@ -232,6 +233,7 @@ class SidecarSupervisor implements SidecarHandle {
   private degraded = false;
   private shuttingDown = false;
   private reconnectScheduled = false;
+  private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
   public socket: SidecarSocket;
 
   constructor(
@@ -246,6 +248,7 @@ class SidecarSupervisor implements SidecarHandle {
     const endpoint = await this.runtime.resolveEndpoint(this.cfg);
     const socket = await this.connectEndpointWithRetry(endpoint);
     this.reconnectScheduled = false;
+    this.scheduleStabilityReset();
     if (this.socket instanceof SupervisorSocket) {
       this.socket.bind(socket);
     } else {
@@ -260,7 +263,24 @@ class SidecarSupervisor implements SidecarHandle {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.clearStabilityTimer();
     this.socket.destroy();
+  }
+
+  private scheduleStabilityReset(): void {
+    this.clearStabilityTimer();
+    this.stabilityTimer = setTimeout(() => {
+      this.stabilityTimer = null;
+      this.retries = 0;
+    }, CONNECTION_STABILITY_WINDOW_MS);
+    this.stabilityTimer.unref?.();
+  }
+
+  private clearStabilityTimer(): void {
+    if (this.stabilityTimer) {
+      clearTimeout(this.stabilityTimer);
+      this.stabilityTimer = null;
+    }
   }
 
   private async connectEndpointWithRetry(endpoint: string): Promise<SidecarSocket> {
@@ -319,6 +339,8 @@ class SidecarSupervisor implements SidecarHandle {
       return;
     }
 
+    this.clearStabilityTimer();
+
     const maxRetries = this.cfg.maxRetries ?? 3;
     if (this.retries >= maxRetries) {
       this.logger.error("[libravdb] sidecar retries exhausted; degraded mode");
@@ -330,6 +352,10 @@ class SidecarSupervisor implements SidecarHandle {
     this.retries += 1;
     this.reconnectScheduled = true;
     this.runtime.scheduleRestart(backoffMs, () => {
+      if (this.shuttingDown) {
+        this.reconnectScheduled = false;
+        return;
+      }
       void this.start().catch((error) => {
         this.reconnectScheduled = false;
         const message = error instanceof Error ? error.message : String(error);
@@ -442,9 +468,7 @@ export function buildSidecarEnv(cfg: PluginConfig): Record<string, string> {
   if (cfg.embeddingRuntimePath) {
     env.LIBRAVDB_ONNX_RUNTIME = cfg.embeddingRuntimePath;
   }
-  if (cfg.onnxDevice) {
-    env.LIBRAVDB_ONNX_DEVICE = cfg.onnxDevice;
-  }
+  env.LIBRAVDB_ONNX_DEVICE = cfg.onnxDevice ?? "cpu";
   if (cfg.embeddingBackend) {
     env.LIBRAVDB_EMBEDDING_BACKEND = cfg.embeddingBackend;
   }

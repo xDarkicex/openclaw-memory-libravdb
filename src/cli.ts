@@ -3,6 +3,8 @@ import { stdin, stdout } from "node:process";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { MEMORY_CLI_DESCRIPTOR, isMemorySlotSelected } from "./cli-descriptors.js";
 import { resolveDurableNamespace } from "./memory-scopes.js";
+import { resolveIdentity } from "./identity.js";
+import { formatError } from "./format-error.js";
 import { promoteDreamDiaryFile } from "./dream-promotion.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import type { PluginRuntime } from "./plugin-runtime.js";
@@ -251,7 +253,7 @@ async function runStatus(
   try {
     const rpc = await runtime.getRpc();
     const status = await rpc.call<StatusResult>("status", {});
-    const deep = opts.deep ? await runDeepStatusProbe(rpc) : undefined;
+    const deep = opts.deep ? await runDeepStatusProbe(rpc, cfg) : undefined;
     if (opts.json) {
       console.log(JSON.stringify({ status, ...(deep ? { deep } : {}) }, null, 2));
       if (deep && !deep.ok) {
@@ -306,11 +308,26 @@ async function runStatus(
   }
 }
 
-const DEEP_STATUS_COLLECTIONS = ["authored:hard", "authored:soft", "authored:variant"] as const;
+const AUTHORED_STATUS_COLLECTIONS = ["authored:hard", "authored:soft", "authored:variant"] as const;
 
-async function runDeepStatusProbe(rpc: { call<T>(method: string, params: unknown): Promise<T> }): Promise<DeepStatusResult> {
+async function runDeepStatusProbe(
+  rpc: { call<T>(method: string, params: unknown): Promise<T> },
+  cfg: PluginConfig,
+): Promise<DeepStatusResult> {
+  // Resolve userId without triggering auto-derive file writes.
+  // status --deep should be read-only; if no userId is configured and no
+  // identity file exists, fall back to "default" rather than creating one.
+  const { userId } = resolveIdentity({
+    configUserId: cfg.userId,
+    identityPath: cfg.identityPath,
+    noAutoPersist: true,
+  });
+  const durableCollections = [`user:${userId}`, "global"] as const;
+
+  const allCollections = [...AUTHORED_STATUS_COLLECTIONS, ...durableCollections] as const;
+
   const probes: DeepStatusProbe[] = [];
-  for (const collection of DEEP_STATUS_COLLECTIONS) {
+  for (const collection of allCollections) {
     try {
       const result = await rpc.call<{ results?: unknown[] }>("search_text", {
         collection,
@@ -415,18 +432,28 @@ async function runSearch(
     return;
   }
 
+  let maxResults: number | undefined;
+  let explicitMinScore: number | undefined;
+  try {
+    maxResults = normalizeCliLimit(opts?.maxResults ?? opts?.limit, "--max-results");
+    explicitMinScore = normalizeCliScore(opts?.minScore, "--min-score");
+  } catch (validationError) {
+    logger.error(formatError(validationError));
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     const bridge = buildMemoryRuntimeBridge(runtime.getRpc, cfg);
     const { manager } = await bridge.getMemorySearchManager({
       agentId: opts?.agent,
     });
-    const maxResults = normalizeLimit(opts?.maxResults ?? opts?.limit);
-    const minScore = normalizeNumber(opts?.minScore);
+    const minScore = explicitMinScore ?? resolveDefaultSearchMinScore(manager.status(), cfg);
     const results = (await manager.search(
       {
         query,
         ...(maxResults ? { maxResults } : {}),
-        ...(minScore !== undefined ? { minScore } : {}),
+        minScore,
       },
     )) as Array<{
       path: string;
@@ -452,6 +479,10 @@ async function runSearch(
     logger.error(`LibraVDB search failed: ${formatError(error)}`);
     process.exitCode = 1;
   }
+}
+
+function resolveDefaultSearchMinScore(status: { gatingThreshold?: number } | undefined, cfg: PluginConfig): number {
+  return normalizeNumber(status?.gatingThreshold) ?? normalizeNumber(cfg.ingestionGateThreshold) ?? 0.35;
 }
 
 async function runFlush(runtime: PluginRuntime, opts: CliOptionBag | undefined, logger: LoggerLike): Promise<void> {
@@ -481,10 +512,17 @@ async function runFlush(runtime: PluginRuntime, opts: CliOptionBag | undefined, 
 }
 
 async function runExport(runtime: PluginRuntime, opts: CliOptionBag | undefined, logger: LoggerLike): Promise<void> {
+  const namespace = resolveCliNamespace(opts);
+  if (!namespace) {
+    logger.error("LibraVDB export requires a namespace. Provide --user-id or --session-key.");
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     const rpc = await runtime.getRpc();
     const result = await rpc.call<ExportResult>("export_memory", {
-      namespace: resolveCliNamespace(opts),
+      namespace,
     });
     for (const record of result.records ?? []) {
       stdout.write(`${JSON.stringify(record)}\n`);
@@ -496,11 +534,20 @@ async function runExport(runtime: PluginRuntime, opts: CliOptionBag | undefined,
 }
 
 async function runJournal(runtime: PluginRuntime, opts: CliOptionBag | undefined, logger: LoggerLike): Promise<void> {
+  let limit: number | undefined;
+  try {
+    limit = normalizeCliLimit(opts?.limit, "--limit");
+  } catch (validationError) {
+    logger.error(formatError(validationError));
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     const rpc = await runtime.getRpc();
     const result = await rpc.call<JournalResult>("list_lifecycle_journal", {
       sessionId: opts?.sessionId?.trim() || undefined,
-      limit: normalizeLimit(opts?.limit),
+      limit,
     });
     for (const record of result.results ?? []) {
       stdout.write(`${JSON.stringify(record)}\n`);
@@ -542,24 +589,31 @@ async function confirm(prompt: string): Promise<boolean> {
   }
 }
 
-function formatError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
+
+function normalizeCliLimit(limit: string | number | undefined, optionName: string): number | undefined {
+  if (limit === undefined) return undefined;
+  const parsed = parseStrictNumber(limit);
+  if (Number.isFinite(parsed) && Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
   }
-  return String(error);
+  throw new Error(`Invalid value for ${optionName}: must be a positive integer`);
 }
 
-function normalizeLimit(limit: string | number | undefined): number | undefined {
-  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
-    return Math.floor(limit);
+function normalizeCliScore(value: string | number | undefined, optionName: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = parseStrictNumber(value);
+  if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
+    return parsed;
   }
-  if (typeof limit === "string") {
-    const parsed = Number.parseInt(limit, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
+  throw new Error(`Invalid value for ${optionName}: must be a number between 0 and 1`);
+}
+
+function parseStrictNumber(value: string | number): number {
+  if (typeof value === "number") {
+    return value;
   }
-  return undefined;
+  const trimmed = value.trim();
+  return trimmed === "" ? NaN : Number(trimmed);
 }
 
 function normalizeNumber(value: string | number | undefined): number | undefined {

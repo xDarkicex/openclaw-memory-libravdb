@@ -42,6 +42,7 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
 
   interface PluginsSlots {
     memory?: string;
+    contextEngine?: string;
   }
 
   interface PluginsConfig {
@@ -94,6 +95,11 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
       id: string;
       start(ctx: unknown): void | Promise<void>;
       stop?(ctx: unknown): void | Promise<void>;
+    }): void;
+    registerRuntimeLifecycle?(registration: {
+      id: string;
+      description?: string;
+      cleanup(ctx: { reason: "disable" | "reset" | "delete" | "restart" }): void | Promise<void>;
     }): void;
     on(event: string, handler: (...args: unknown[]) => void | Promise<void>, opts?: { priority?: number }): void;
   }

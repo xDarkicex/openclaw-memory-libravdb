@@ -103,7 +103,7 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `dreamPromotionEnabled` | boolean | `false` | Enable dream diary promotion |
-| `dreamPromotionDiaryPath` | string | — | Path to dream diary markdown file |
+| `dreamPromotionDiaryPath` | string | — | Path to dream diary markdown file under the operator home directory or `OPENCLAW_STATE_DIR` |
 | `dreamPromotionUserId` | string | — | User ID for dream collection scoping |
 | `dreamPromotionDebounceMs` | number | `150` | Debounce window for dream diary changes |
 

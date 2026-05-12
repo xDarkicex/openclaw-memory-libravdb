@@ -228,6 +228,156 @@ test("status command shuts the plugin runtime down after printing status", async
 });
 
 
+test("search command applies the status gate threshold by default", async () => {
+  let registered: RegisteredCli | null = null;
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string) {
+            if (method === "status") {
+              return {
+                ok: true,
+                message: "ok",
+                gatingThreshold: 0.5,
+                embeddingProfile: "all-minilm-l6-v2",
+              };
+            }
+            if (method === "search_text_collections") {
+              return {
+                results: [
+                  {
+                    id: "low",
+                    score: 0.25,
+                    text: "weak unrelated memory",
+                    metadata: { collection: "user:test-user" },
+                  },
+                  {
+                    id: "mid",
+                    score: 0.4,
+                    text: "mid-range memory gated by status threshold",
+                    metadata: { collection: "user:test-user" },
+                  },
+                  {
+                    id: "high",
+                    score: 0.76,
+                    text: "strong relevant memory",
+                    metadata: { collection: "user:test-user" },
+                  },
+                ],
+              };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      getKernel: async () => null,
+      async emitLifecycleHint() {},
+      onShutdown: async () => {},
+      async shutdown() {},
+    },
+    { userId: "test-user" },
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const search = memory?.commands.find((command) => command.name() === "search");
+  assert.ok(search?.handler);
+
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = ((message?: unknown) => { logs.push(String(message)); }) as typeof console.log;
+  try {
+    await search.handler?.("query", {});
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.equal(logs.some((line) => line.includes("weak unrelated memory")), false);
+  assert.equal(logs.some((line) => line.includes("mid-range memory gated by status threshold")), false);
+  assert.equal(logs.some((line) => line.includes("strong relevant memory")), true);
+});
+
+test("search command honors an explicit min-score below the default threshold", async () => {
+  let registered: RegisteredCli | null = null;
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string) {
+            if (method === "status") {
+              return {
+                ok: true,
+                message: "ok",
+                gatingThreshold: 0.35,
+                embeddingProfile: "all-minilm-l6-v2",
+              };
+            }
+            if (method === "search_text_collections") {
+              return {
+                results: [
+                  {
+                    id: "low",
+                    score: 0.25,
+                    text: "weak but explicitly requested memory",
+                    metadata: { collection: "user:test-user" },
+                  },
+                ],
+              };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      getKernel: async () => null,
+      async emitLifecycleHint() {},
+      onShutdown: async () => {},
+      async shutdown() {},
+    },
+    { userId: "test-user" },
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const search = memory?.commands.find((command) => command.name() === "search");
+  assert.ok(search?.handler);
+
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = ((message?: unknown) => { logs.push(String(message)); }) as typeof console.log;
+  try {
+    await search.handler?.("query", { minScore: "0.2" });
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.equal(logs.some((line) => line.includes("weak but explicitly requested memory")), true);
+});
+
 test("status --deep probes authored collection search health", async () => {
   let registered: RegisteredCli | null = null;
   let shutdownCalls = 0;
@@ -266,7 +416,7 @@ test("status --deep probes authored collection search health", async () => {
         shutdownCalls += 1;
       },
     },
-    {},
+    { userId: "default" },
   );
 
   assert.ok(registered);
@@ -297,7 +447,7 @@ test("status --deep probes authored collection search health", async () => {
   assert.equal(payload.deep.ok, false);
   assert.deepEqual(
     rpcCalls.filter((call) => call.method === "search_text").map((call) => call.params.collection),
-    ["authored:hard", "authored:soft", "authored:variant"],
+    ["authored:hard", "authored:soft", "authored:variant", "user:default", "global"],
   );
   assert.match(payload.deep.probes[1]?.error ?? "", /dimension 384/);
   assert.equal(observedExitCode, 1);
@@ -323,7 +473,13 @@ test("status --deep includes authored probe rows in table output", async () => {
               return { ok: true, message: "ok", embeddingProfile: "bge-small-en-v1.5" };
             }
             if (method === "search_text") {
-              return { results: params.collection === "authored:variant" ? [{ id: "v1" }] : [] };
+              if (params.collection === "authored:variant") {
+                return { results: [{ id: "v1" }] };
+              }
+              if (params.collection === "global") {
+                return { results: [{ id: "g1" }] };
+              }
+              return { results: [] };
             }
             throw new Error(`unexpected rpc method: ${method}`);
           },
@@ -334,7 +490,7 @@ test("status --deep includes authored probe rows in table output", async () => {
       onShutdown: async () => {},
       async shutdown() {},
     },
-    {},
+    { userId: "default" },
   );
 
   assert.ok(registered);
@@ -365,6 +521,8 @@ test("status --deep includes authored probe rows in table output", async () => {
   assert.equal(tables[0]?.["Probe authored:hard"], "ok (0 hits)");
   assert.equal(tables[0]?.["Probe authored:soft"], "ok (0 hits)");
   assert.equal(tables[0]?.["Probe authored:variant"], "ok (1 hits)");
+  assert.equal(tables[0]?.["Probe user:default"], "ok (0 hits)");
+  assert.equal(tables[0]?.["Probe global"], "ok (1 hits)");
 });
 
 test("non-full CLI registration exposes command structure without action handlers", () => {

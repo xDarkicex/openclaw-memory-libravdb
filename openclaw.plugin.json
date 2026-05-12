@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Persistent vector memory with three-tier hybrid scoring",
-  "version": "1.4.35",
+  "version": "1.4.58",
   "kind": [
     "memory",
     "context-engine"
@@ -77,6 +77,7 @@
           "directml",
           "openvino"
         ],
+        "default": "cpu",
         "description": "Optional ONNX execution provider override passed to libravdbd. Use cpu to bypass CoreML/MPS on Intel Macs."
       },
       "embeddingBackend": {

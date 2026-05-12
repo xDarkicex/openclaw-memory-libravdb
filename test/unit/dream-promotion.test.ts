@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseDreamPromotionCandidates } from "../../src/dream-promotion.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { createDreamPromotionHandle, parseDreamPromotionCandidates, promoteDreamDiaryFile } from "../../src/dream-promotion.js";
 
 test("dream promotion parser only accepts explicit deep-sleep candidate bullets", () => {
   const candidates = parseDreamPromotionCandidates(
@@ -26,4 +30,113 @@ test("dream promotion parser only accepts explicit deep-sleep candidate bullets"
   assert.equal(candidates[0]?.recallCount, 3);
   assert.equal(candidates[0]?.uniqueQueries, 2);
   assert.equal(candidates[1]?.text, "too weak to promote");
+});
+
+test("disabled dream promotion does not validate unused diary paths", () => {
+  assert.doesNotThrow(() => {
+    createDreamPromotionHandle(
+      {
+        dreamPromotionEnabled: false,
+        dreamPromotionDiaryPath: "/etc/passwd",
+        dreamPromotionUserId: "fixed-user",
+      },
+      async () => ({ call: async <T>() => ({ promoted: 0 }) as T }),
+    );
+  });
+});
+
+test("enabled dream promotion validates configured diary paths", () => {
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  delete process.env.OPENCLAW_STATE_DIR;
+
+  try {
+    assert.throws(
+      () => createDreamPromotionHandle(
+        {
+          dreamPromotionEnabled: true,
+          dreamPromotionDiaryPath: "/etc/passwd",
+          dreamPromotionUserId: "fixed-user",
+        },
+        async () => ({ call: async <T>() => ({ promoted: 0 }) as T }),
+      ),
+      /must be within an allowed root/,
+    );
+  } finally {
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+  }
+});
+
+test("dream promotion rejects traversal and paths outside allowed roots", async () => {
+  const rpc = { call: async <T>() => ({ promoted: 0 }) as T };
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  delete process.env.OPENCLAW_STATE_DIR;
+
+  try {
+    await assert.rejects(
+      () => promoteDreamDiaryFile(rpc, {
+        userId: "fixed-user",
+        diaryPath: `${os.tmpdir()}/../etc/passwd`,
+        text: "",
+      }),
+      /must not contain "\.\." traversal/,
+    );
+
+    await assert.rejects(
+      () => promoteDreamDiaryFile(rpc, {
+        userId: "fixed-user",
+        diaryPath: "/etc/passwd",
+        text: "",
+      }),
+      /must be within an allowed root/,
+    );
+  } finally {
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+  }
+});
+
+test("dream promotion accepts explicit diary files under an allowed root", async () => {
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const rpc = {
+    call: async <T>(method: string, params: unknown): Promise<T> => {
+      calls.push({ method, params });
+      return { promoted: 1 } as T;
+    },
+  };
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "libravdb-state-"));
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+
+  try {
+    const diaryPath = path.join(stateDir, "libravdb-dreams.md");
+
+    await promoteDreamDiaryFile(rpc, {
+      userId: "fixed-user",
+      diaryPath,
+      text: [
+        "## Deep Sleep",
+        "- Keep this durable fact {score=0.9 recall=3 unique=2}",
+      ].join("\n"),
+    });
+
+    assert.equal(calls.length, 1);
+    const params = calls[0]?.params as { sourceDoc: string; sourceRoot: string; sourcePath: string };
+    assert.equal(params.sourceDoc, path.resolve(diaryPath));
+    assert.equal(params.sourceRoot, path.dirname(path.resolve(diaryPath)));
+    assert.equal(params.sourcePath, path.basename(diaryPath));
+  } finally {
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
 });

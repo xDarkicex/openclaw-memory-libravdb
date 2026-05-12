@@ -1,4 +1,5 @@
 import type { PluginRuntime } from "./plugin-runtime.js";
+import { formatError } from "./format-error.js";
 import type { LoggerLike } from "./types.js";
 
 type AgentContext = {
@@ -86,11 +87,4 @@ function asSessionEndEvent(value: unknown): SessionEndEvent {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
-  }
-  return String(error);
 }
