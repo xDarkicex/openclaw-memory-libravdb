@@ -87,6 +87,61 @@ function snapshotPath(tempRoot: string, kind: "generic" | "obsidian" = "generic"
   return path.join(tempRoot, `${kind}-snapshot.json`);
 }
 
+test("markdown ingestion roots stay inert unless explicitly enabled", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-disabled-"));
+  const filePath = path.join(tempRoot, "MEMORY.md");
+  await fsp.writeFile(filePath, "# Memory\n\nThis root is configured but not enabled.");
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+  fsApi.triggerAll("change");
+  await delay(25);
+
+  assert.equal(rpc.calls.length, 0);
+  assert.equal(fsApi.callbacks.size, 0);
+
+  await handle.stop();
+});
+
+test("obsidian roots stay inert unless explicitly enabled", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-obsidian-disabled-"));
+  const filePath = path.join(tempRoot, "tagged.md");
+  await fsp.writeFile(filePath, "# Project #openclaw\n\nThis vault root is configured but not enabled.");
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: false,
+      markdownIngestionObsidianRoots: [tempRoot],
+      markdownIngestionObsidianDebounceMs: 0,
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+  fsApi.triggerAll("change");
+  await delay(25);
+
+  assert.equal(rpc.calls.length, 0);
+  assert.equal(fsApi.callbacks.size, 0);
+
+  await handle.stop();
+});
+
 test("markdown ingestion forwards raw markdown to the go sidecar and stays hash-stable", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-"));
   const nestedDir = path.join(tempRoot, "skills", "alpha");

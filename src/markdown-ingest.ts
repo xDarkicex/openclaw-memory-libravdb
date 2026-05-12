@@ -151,7 +151,7 @@ export function createMarkdownIngestionHandle(
   }
 
   const obsidianRoots = normalizeMarkdownRoots(cfg.markdownIngestionObsidianRoots);
-  if (cfg.markdownIngestionObsidianEnabled !== false && obsidianRoots.length > 0) {
+  if (cfg.markdownIngestionObsidianEnabled === true && obsidianRoots.length > 0) {
     adapters.push(
       new DirectoryMarkdownSourceAdapter(
         "obsidian",
@@ -738,10 +738,7 @@ function resolveMarkdownSnapshotPath(kind: string, configuredPath?: string): str
 }
 
 function isMarkdownIngestionEnabled(cfg: PluginConfig, roots: string[]): boolean {
-  if (cfg.markdownIngestionEnabled === false) {
-    return false;
-  }
-  return roots.length > 0;
+  return cfg.markdownIngestionEnabled === true && roots.length > 0;
 }
 
 function createRealFsApi(): FsApi {
