@@ -38,6 +38,23 @@ export function register(api: OpenClawPluginApi) {
     `crossSessionRecall=${cfg.crossSessionRecall !== false}`,
   );
 
+  // Slot gating: reject conflicts and skip explicit opt-out BEFORE runtime
+  // creation, so no work is wasted when memory is disabled or misconfigured.
+  const memSlot = api.config?.plugins?.slots?.memory;
+  if (!isLightweight && !isDiscovery) {
+    if (memSlot && memSlot !== MEMORY_ID && memSlot !== "none") {
+      throw new Error(
+        `[libravdb-memory] plugins.slots.memory is "${memSlot}". ` +
+          `Set it to "libravdb-memory" before enabling this plugin.`,
+      );
+    }
+    if (memSlot === "none") {
+      logger.info?.("[libravdb-memory] plugins.slots.memory is \"none\"; skipping memory and context-engine hooks.");
+      registerMemoryCli(api, null, cfg, logger);
+      return;
+    }
+  }
+
   // Runtime creation:
   // - Lightweight modes (cli-metadata, setup-only): no runtime, CLI structure only.
   // - Discovery mode: runtime for lazy CLI loading, but no context engine.
@@ -70,20 +87,6 @@ export function register(api: OpenClawPluginApi) {
   const runtime = runtimeOrNull;
   if (!runtime) return; // unreachable but satisfies the type checker
 
-  // Exclusive slot check: refuse to register if another plugin owns the memory slot.
-  // plugins.slots.memory is the only configurable slot; context engine exclusivity
-  // is enforced by the registry at runtime (no config surface for it).
-  const memSlot = api.config?.plugins?.slots?.memory;
-  if (memSlot && memSlot !== MEMORY_ID && memSlot !== "none") {
-    throw new Error(
-      `[libravdb-memory] plugins.slots.memory is "${memSlot}". ` +
-        `Set it to "libravdb-memory" before enabling this plugin.`,
-    );
-  }
-  if (memSlot === "none") {
-    logger.info?.("[libravdb-memory] plugins.slots.memory is \"none\"; skipping memory and context-engine hooks.");
-    return;
-  }
   if (!memSlot) {
     logger.warn?.("[libravdb-memory] plugins.slots.memory is unset; set it to \"libravdb-memory\" for memory to work.");
   }
