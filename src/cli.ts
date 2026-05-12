@@ -68,6 +68,8 @@ type JournalResult = {
   }>;
 };
 
+const INDEX_REBUILD_TIMEOUT_MS = 5 * 60 * 1000;
+
 type CliCommand = {
   commands?: CliCommand[];
   command(name: string): CliCommand;
@@ -367,7 +369,7 @@ function formatDeepStatusTableRows(deep: DeepStatusResult): Record<string, strin
 
 async function runIndex(
   runtime: PluginRuntime,
-  _cfg: PluginConfig,
+  cfg: PluginConfig,
   opts: CliOptionBag | undefined,
   logger: LoggerLike,
   params: { quiet?: boolean } = {},
@@ -394,6 +396,8 @@ async function runIndex(
     }>("rebuild_index", {
       namespace: namespace ?? "",
       ...(collections?.length ? { collections } : {}),
+    }, {
+      timeoutMs: resolveIndexRebuildTimeoutMs(cfg),
     });
 
     if (!params.quiet) {
@@ -416,6 +420,10 @@ async function runIndex(
     logger.error(`LibraVDB index rebuild failed: ${formatError(error)}`);
     process.exitCode = 1;
   }
+}
+
+function resolveIndexRebuildTimeoutMs(cfg: PluginConfig): number {
+  return Math.max(INDEX_REBUILD_TIMEOUT_MS, cfg.rpcTimeoutMs ?? 0);
 }
 
 async function runSearch(

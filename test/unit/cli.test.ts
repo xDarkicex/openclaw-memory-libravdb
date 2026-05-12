@@ -525,6 +525,73 @@ test("status --deep includes authored probe rows in table output", async () => {
   assert.equal(tables[0]?.["Probe global"], "ok (1 hits)");
 });
 
+test("index command uses an extended timeout for rebuild_index", async () => {
+  let registered: RegisteredCli | null = null;
+  let shutdownCalls = 0;
+  const rpcCalls: Array<{
+    method: string;
+    params: Record<string, unknown>;
+    options?: { timeoutMs?: number };
+  }> = [];
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string, params: Record<string, unknown>, options?: { timeoutMs?: number }) {
+            rpcCalls.push({ method, params, options });
+            if (method === "rebuild_index") {
+              return {
+                collectionsProcessed: 1,
+                recordsReindexed: 2,
+                collectionsRecreated: 0,
+                errors: [],
+              };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      getKernel: async () => null,
+      async emitLifecycleHint() {},
+      onShutdown: async () => {},
+      async shutdown() {
+        shutdownCalls += 1;
+      },
+    },
+    {},
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const index = memory?.commands.find((command) => command.name() === "index");
+  assert.ok(index?.handler);
+
+  const originalLog = console.log;
+  console.log = (() => {}) as typeof console.log;
+  try {
+    await index.handler?.({ force: true });
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.equal(rpcCalls.length, 1);
+  assert.equal(rpcCalls[0]?.method, "rebuild_index");
+  assert.equal(rpcCalls[0]?.options?.timeoutMs, 300000);
+  assert.equal(shutdownCalls, 1);
+});
+
 test("non-full CLI registration exposes command structure without action handlers", () => {
   let registered: RegisteredCli | null = null;
   const api = {
