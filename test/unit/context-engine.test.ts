@@ -251,7 +251,10 @@ test("context engine uses gRPC kernel on cold assemble without falling back to R
   assert.equal(params.sessionId, "s1");
   assert.equal(params.sessionKey, "sk1");
   assert.equal(params.userId, "fixed-user");
-  assert.deepEqual(assembled.messages, [{ role: "assistant", content: "kernel context" }]);
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "kernel context" },
+  ]);
 });
 
 function makeMessage(role: string, content: string, id?: string) {
@@ -334,6 +337,41 @@ test("context engine assemble resolves config userId and passes it to daemon", a
   assert.equal(call.params.sessionId, "s1");
   assert.equal(call.params.sessionKey, "sk1");
   assert.equal(call.params.userId, "fixed-user");
+});
+
+test("context engine assemble reinjects a user turn when daemon output is assistant-only", async () => {
+  const rpc = new FakeRpc();
+  rpc.assembleResponse = {
+    messages: [{ role: "assistant", content: "recalled memory block" }],
+    estimatedTokens: 24,
+    systemPromptAddition: "",
+  };
+  const warnings: string[] = [];
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn(message: string) { warnings.push(message); },
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("assistant", "previous context"),
+      makeMessage("user", "current user query"),
+    ],
+    prompt: "current user query",
+    tokenBudget: 4000,
+  });
+
+  assert.equal(assembled.messages[0]?.role, "user");
+  assert.equal(assembled.messages[0]?.content, "current user query");
+  assert.equal(assembled.messages[1]?.role, "assistant");
+  assert.equal(assembled.messages[1]?.content, "recalled memory block");
+  assert.equal(
+    warnings.some((message) => /reinjecting the latest user message/.test(message)),
+    true,
+  );
 });
 
 test("context engine assemble injects exact factual recall for marker tokens", async () => {
@@ -451,7 +489,10 @@ test("context engine exact recall skips additions that would exceed the token bu
 
   assert.equal(assembled.systemPromptAddition, "");
   assert.equal(assembled.estimatedTokens, 43);
-  assert.match(warnings[0] ?? "", /addition exceeds token budget/);
+  assert.equal(
+    warnings.some((message) => /addition exceeds token budget/.test(message)),
+    true,
+  );
 });
 
 test("context engine assemble keeps daemon result when exact recall RPC acquisition fails", async () => {
@@ -489,9 +530,15 @@ test("context engine assemble keeps daemon result when exact recall RPC acquisit
     tokenBudget: 4000,
   });
 
-  assert.deepEqual(assembled.messages, [{ role: "assistant", content: "base recalled context" }]);
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: `What does ${marker} mean?` },
+    { role: "assistant", content: "base recalled context" },
+  ]);
   assert.equal(getRpcCalls, 2);
-  assert.match(warnings[0] ?? "", /exact recall skipped/);
+  assert.equal(
+    warnings.some((message) => /exact recall skipped/.test(message)),
+    true,
+  );
 });
 
 test("context engine exact recall skips empty-text search results", async () => {
