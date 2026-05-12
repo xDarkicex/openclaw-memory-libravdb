@@ -178,6 +178,14 @@ function selectAfterTurnMessages<T>(
   }
   const start = Math.floor(prePromptMessageCount);
   if (start >= messages.length) {
+    if (messages.length > 0) {
+      logger?.warn?.(
+        `LibraVDB afterTurn prePromptMessageCount consumed all messages; ` +
+        `forwarding latest message for compatibility ` +
+        `prePromptMessageCount=${prePromptMessageCount} start=${start} totalMessages=${messages.length}`,
+      );
+      return messages.slice(-1);
+    }
     logger?.warn?.(
       `LibraVDB afterTurn prePromptMessageCount produced zero forwarded messages ` +
       `prePromptMessageCount=${prePromptMessageCount} start=${start} totalMessages=${messages.length}`,

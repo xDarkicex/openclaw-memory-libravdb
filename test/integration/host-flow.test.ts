@@ -465,6 +465,35 @@ test("afterTurn forwards only post-prompt messages and strips prePromptMessageCo
   assert.deepEqual(params.messages, [mockMessages[1]]);
 });
 
+test("afterTurn forwards latest message when prePromptMessageCount consumes all messages", async () => {
+  const rpc = new StaticContractRpc();
+  const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
+  const logger = createMemoryLogger();
+
+  const context = buildContextEngineFactory(async () => rpc as never, cfg, logger);
+
+  const mockMessages = [
+    { role: "assistant", content: "final answer that should still persist" },
+  ];
+
+  await context.afterTurn({
+    sessionId: "test-session",
+    userId: "test-user",
+    messages: mockMessages,
+    prePromptMessageCount: 1,
+    isHeartbeat: false,
+  });
+
+  const params = rpc.getLastCall("after_turn_kernel");
+  assert.ok(params, "Expected after_turn_kernel to be called");
+  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon");
+  assert.deepEqual(params.messages, mockMessages);
+  assert.ok(
+    logger.warns.some((message) => /forwarding latest message for compatibility/.test(message)),
+    "boundary fallback should emit an operator warning",
+  );
+});
+
 test("afterTurn forwards all messages when prePromptMessageCount is absent", async () => {
   const rpc = new StaticContractRpc();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
