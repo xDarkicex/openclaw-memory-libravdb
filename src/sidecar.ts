@@ -331,6 +331,10 @@ class SidecarSupervisor implements SidecarHandle {
     this.retries += 1;
     this.reconnectScheduled = true;
     this.runtime.scheduleRestart(backoffMs, () => {
+      if (this.shuttingDown) {
+        this.reconnectScheduled = false;
+        return;
+      }
       void this.start().catch((error) => {
         this.reconnectScheduled = false;
         const message = error instanceof Error ? error.message : String(error);
