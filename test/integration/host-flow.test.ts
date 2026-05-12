@@ -192,7 +192,8 @@ test("assemble clamps oversized daemon context to token budget", async () => {
   });
 
   assert.ok(assembled.estimatedTokens <= 256);
-  assert.ok(assembled.messages.length <= 1);
+  assert.ok(assembled.messages.length <= 2);
+  assert.equal(assembled.messages[0]?.role, "user");
 });
 
 test("assemble fail-closed on sidecar errors with budget-clamped fallback", async () => {

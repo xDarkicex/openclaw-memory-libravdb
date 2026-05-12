@@ -164,6 +164,12 @@ function approximateMessagesTokens(messages: OpenClawCompatibleMessage[]): numbe
   return messages.reduce((sum, message) => sum + approximateMessageTokens(message), 0);
 }
 
+function hasReplaySafeUserTurn(messages: OpenClawCompatibleMessage[]): boolean {
+  return messages.some(
+    (message) => message.role === "user" && normalizeKernelContent(message.content).trim().length > 0,
+  );
+}
+
 function selectAfterTurnMessages<T>(
   messages: T[],
   prePromptMessageCount: number | undefined,
@@ -517,11 +523,9 @@ function ensureReplaySafeUserTurn(
   assembled: OpenClawCompatibleAssembleResult,
   sourceMessages: OpenClawCompatibleMessage[],
   logger?: LoggerLike,
+  tokenBudget?: number,
 ): OpenClawCompatibleAssembleResult {
-  const hasUserTurn = assembled.messages.some(
-    (message) => message.role === "user" && normalizeKernelContent(message.content).trim().length > 0,
-  );
-  if (hasUserTurn) {
+  if (hasReplaySafeUserTurn(assembled.messages)) {
     return assembled;
   }
 
@@ -533,12 +537,48 @@ function ensureReplaySafeUserTurn(
   logger?.warn?.(
     "LibraVDB assemble produced no replay-safe user turn; reinjecting the latest user message for provider compatibility.",
   );
-  const messages = [fallbackUser, ...assembled.messages];
   const baseEstimatedTokens = Math.max(
     0,
     assembled.estimatedTokens,
     approximateMessagesTokens(assembled.messages),
   );
+
+  if (typeof tokenBudget === "number" && Number.isFinite(tokenBudget) && tokenBudget > 0) {
+    const effectiveBudget = resolveEffectiveAssembleBudget(tokenBudget);
+    const fallbackCost = approximateMessageTokens(fallbackUser);
+    const fullMessages = [fallbackUser, ...assembled.messages];
+    const fullApproxTokens = fallbackCost + approximateMessagesTokens(assembled.messages);
+    if (baseEstimatedTokens + fallbackCost <= effectiveBudget && fullApproxTokens <= effectiveBudget) {
+      return {
+        ...assembled,
+        messages: fullMessages,
+        estimatedTokens: baseEstimatedTokens + fallbackCost,
+      };
+    }
+
+    if (fallbackCost >= effectiveBudget) {
+      const truncated = truncateContentToTokenBudget(fallbackUser.content, Math.max(1, effectiveBudget - 8));
+      return {
+        ...assembled,
+        messages: truncated ? [{ ...fallbackUser, content: truncated }] : [],
+        estimatedTokens: Math.min(
+          effectiveBudget,
+          truncated ? approximateMessageTokens({ ...fallbackUser, content: truncated }) : 0,
+        ),
+      };
+    }
+
+    const remainingBudget = Math.max(0, effectiveBudget - fallbackCost);
+    const trimmedMessages = trimMessagesToBudget(assembled.messages, remainingBudget);
+    const messages = [fallbackUser, ...trimmedMessages];
+    return {
+      ...assembled,
+      messages,
+      estimatedTokens: Math.min(effectiveBudget, fallbackCost + approximateMessagesTokens(trimmedMessages)),
+    };
+  }
+
+  const messages = [fallbackUser, ...assembled.messages];
   return {
     ...assembled,
     messages,
@@ -978,27 +1018,28 @@ export function buildContextEngineFactory(
       const kernel = await getKernelOrNull("assemble");
       if (kernel) {
         try {
-          const assembled = ensureReplaySafeUserTurn(
-            normalizeAssembleResult(await kernel.assembleContext({
-              sessionId: args.sessionId,
-              sessionKey: args.sessionKey,
-              userId,
-              queryText: args.prompt ?? "",
-              visibleMessages: messages,
-              tokenBudget: args.tokenBudget,
-              config: buildAssemblyConfig(args.tokenBudget),
-              emitDebug: true,
-            })),
+          const assembled = normalizeAssembleResult(await kernel.assembleContext({
+            sessionId: args.sessionId,
+            sessionKey: args.sessionKey,
+            userId,
+            queryText: args.prompt ?? "",
+            visibleMessages: messages,
+            tokenBudget: args.tokenBudget,
+            config: buildAssemblyConfig(args.tokenBudget),
+            emitDebug: true,
+          }));
+          return ensureReplaySafeUserTurn(
+            enforceTokenBudgetInvariant(
+              await augmentWithExactRecall(assembled, {
+                queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
+                userId,
+                sessionId: args.sessionId,
+                tokenBudget: args.tokenBudget,
+              }),
+              args.tokenBudget,
+            ),
             args.messages,
             logger,
-          );
-          return enforceTokenBudgetInvariant(
-            await augmentWithExactRecall(assembled, {
-              queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
-              userId,
-              sessionId: args.sessionId,
-              tokenBudget: args.tokenBudget,
-            }),
             args.tokenBudget,
           );
         } catch (error) {
@@ -1022,18 +1063,19 @@ export function buildContextEngineFactory(
           emitDebug: true,
           config: buildAssemblyConfig(args.tokenBudget),
         });
-        const assembled = ensureReplaySafeUserTurn(
-          normalizeAssembleResult(resp),
+        const assembled = normalizeAssembleResult(resp);
+        return ensureReplaySafeUserTurn(
+          enforceTokenBudgetInvariant(
+            await augmentWithExactRecall(assembled, {
+              queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
+              userId,
+              sessionId: args.sessionId,
+              tokenBudget: args.tokenBudget,
+            }),
+            args.tokenBudget,
+          ),
           args.messages,
           logger,
-        );
-        return enforceTokenBudgetInvariant(
-          await augmentWithExactRecall(assembled, {
-            queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
-            userId,
-            sessionId: args.sessionId,
-            tokenBudget: args.tokenBudget,
-          }),
           args.tokenBudget,
         );
       } catch (error) {
