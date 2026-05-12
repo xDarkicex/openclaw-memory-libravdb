@@ -40,6 +40,17 @@ test("resolveConfiguredEndpoint rejects malformed daemon endpoints", () => {
   }
 });
 
+test("resolveConfiguredEndpoint normalizes incidental Unix path whitespace", () => {
+  assert.equal(
+    resolveConfiguredEndpoint({ rpcTimeoutMs: 1, sidecarPath: " unix: /tmp/libravdb.sock " }),
+    "unix:/tmp/libravdb.sock",
+  );
+  assert.equal(
+    resolveEndpoint({ rpcTimeoutMs: 1, sidecarPath: " unix: /tmp/libravdb.sock " }),
+    "/tmp/libravdb.sock",
+  );
+});
+
 test("defaultEndpoint uses unix sockets on unix and localhost TCP on windows", () => {
   // On machines where /opt/homebrew/var/libravdbd/run/libravdb.sock exists (Homebrew install),
   // defaultEndpoint probes the filesystem and returns the Homebrew path. On machines without
@@ -52,7 +63,7 @@ test("defaultEndpoint uses unix sockets on unix and localhost TCP on windows", (
   // Env var override takes precedence when set.
   const savedEnv = process.env.LIBRAVDB_RPC_ENDPOINT;
   try {
-    process.env.LIBRAVDB_RPC_ENDPOINT = "unix:/custom/path/libravdb.sock";
+    process.env.LIBRAVDB_RPC_ENDPOINT = "unix: /custom/path/libravdb.sock ";
     assert.equal(defaultEndpoint("darwin", "/Users/demo"), "unix:/custom/path/libravdb.sock");
     process.env.LIBRAVDB_RPC_ENDPOINT = "tcp:10.0.0.1:9999";
     assert.equal(defaultEndpoint("darwin", "/Users/demo"), "tcp:10.0.0.1:9999");

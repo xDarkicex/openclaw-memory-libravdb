@@ -411,12 +411,13 @@ export function resolveConfiguredEndpoint(cfg: PluginConfig): string {
   if (!value || value === "auto") {
     return defaultEndpoint();
   }
-  if (!isConfiguredEndpoint(value)) {
+  const endpoint = normalizeConfiguredEndpoint(value);
+  if (!endpoint) {
     throw new Error(
       `LibraVDB sidecarPath must be a daemon endpoint like unix:/path/to/libravdb.sock or tcp:127.0.0.1:37421. Executable paths are no longer supported.`,
     );
   }
-  return value;
+  return endpoint;
 }
 
 export function daemonProvisioningHint(): string {
@@ -429,8 +430,8 @@ export function defaultEndpoint(
   pathExists: (path: string) => boolean = fs.existsSync,
 ): string {
   // Honour the daemon's own env var first (set by Homebrew LaunchAgent / systemd unit).
-  const envEndpoint = process.env.LIBRAVDB_RPC_ENDPOINT?.trim();
-  if (envEndpoint && isConfiguredEndpoint(envEndpoint)) {
+  const envEndpoint = normalizeConfiguredEndpoint(process.env.LIBRAVDB_RPC_ENDPOINT);
+  if (envEndpoint) {
     return envEndpoint;
   }
 
@@ -604,6 +605,18 @@ function isConfiguredEndpoint(value?: string): boolean {
   const host = address.slice(0, separator).trim();
   const port = Number(address.slice(separator + 1));
   return host.length > 0 && Number.isInteger(port) && port > 0 && port <= 65535;
+}
+
+function normalizeConfiguredEndpoint(value?: string): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === "auto") {
+    return null;
+  }
+  if (trimmed.startsWith("unix:")) {
+    const socketPath = trimmed.slice("unix:".length).trim();
+    return socketPath ? `unix:${socketPath}` : null;
+  }
+  return isConfiguredEndpoint(trimmed) ? trimmed : null;
 }
 
 export { PlaceholderSocket };
