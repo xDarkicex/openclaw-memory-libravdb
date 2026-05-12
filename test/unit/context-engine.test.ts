@@ -696,29 +696,61 @@ test("identity is resolved and sessionKey forwarded when no config userId is set
 });
 
 // ---------------------------------------------------------------------------
-// sessionId is always passed through
+// sessionId validation
 // ---------------------------------------------------------------------------
 
-test("sessionId is non-empty in every lifecycle hook across bootstrap/ingest/afterTurn", async () => {
+test("sessionId is normalized in every context engine lifecycle hook", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { userId: "u1" };
   const engine = buildContextEngineFactory(fakeRuntime(rpc), cfg);
 
-  const sessionId = "conformance-session-1";
+  const sessionId = "  conformance-session-1  ";
   await engine.bootstrap({ sessionId, sessionKey: "sk" });
   await engine.ingest({ sessionId, sessionKey: "sk", message: makeMessage("user", "m1") });
+  await engine.assemble({ sessionId, sessionKey: "sk", messages: [makeMessage("user", "m1")], tokenBudget: 1000 });
   await engine.afterTurn({ sessionId, sessionKey: "sk", messages: [makeMessage("user", "m1")] });
 
   const lifecycleCalls = rpc.calls.filter(
     (c) => c.method === "bootstrap_session_kernel" ||
           c.method === "ingest_message_kernel" ||
+          c.method === "assemble_context_internal" ||
           c.method === "after_turn_kernel",
   );
-  assert.equal(lifecycleCalls.length, 3, "bootstrap, ingest, and afterTurn all fired");
+  assert.equal(lifecycleCalls.length, 4, "bootstrap, ingest, assemble, and afterTurn all fired");
   for (const call of lifecycleCalls) {
-    assert.equal(call.params.sessionId, sessionId);
+    assert.equal(call.params.sessionId, "conformance-session-1");
     assert.equal(call.params.sessionKey, "sk");
   }
+});
+
+test("context engine rejects blank sessionId before lifecycle RPCs", async () => {
+  const rpc = new FakeRpc();
+  const cfg: PluginConfig = { userId: "u1" };
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), cfg);
+
+  await assert.rejects(
+    () => engine.bootstrap({ sessionId: "   ", sessionKey: "sk" }),
+    /bootstrap requires a non-empty sessionId/,
+  );
+  await assert.rejects(
+    () => engine.ingest({ sessionId: "   ", sessionKey: "sk", message: makeMessage("user", "m1") }),
+    /ingest requires a non-empty sessionId/,
+  );
+  await assert.rejects(
+    () => engine.assemble({
+      sessionId: "   ",
+      sessionKey: "sk",
+      messages: [makeMessage("user", "m1")],
+      tokenBudget: 1000,
+    }),
+    /assemble requires a non-empty sessionId/,
+  );
+  await assert.rejects(
+    () => engine.afterTurn({ sessionId: "   ", sessionKey: "sk", messages: [makeMessage("user", "m1")] }),
+    /afterTurn requires a non-empty sessionId/,
+  );
+
+  assert.equal(rpc.calls.length, 0);
 });
 
 // ---------------------------------------------------------------------------

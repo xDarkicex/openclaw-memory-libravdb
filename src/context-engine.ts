@@ -795,12 +795,13 @@ export function buildContextEngineFactory(
     info: { id: "libravdb-memory", name: "LibraVDB Memory", ownsCompaction: true },
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
+      const sessionId = requireSessionId(args.sessionId, "bootstrap");
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
       });
       logger.info?.(
-        `LibraVDB bootstrap sessionId=${args.sessionId} userId=${userId} ` +
+        `LibraVDB bootstrap sessionId=${sessionId} userId=${userId} ` +
         `sessionKey=${args.sessionKey ?? "(none)"}`,
       );
       const kernel = await getKernelOrNull("bootstrap");
@@ -814,7 +815,7 @@ export function buildContextEngineFactory(
           // Proceed even if initialize session fails or doesn't return nonce if secret optional
         }
         return await kernel.bootstrapSession({
-          sessionId: args.sessionId,
+          sessionId,
           sessionKey: args.sessionKey,
           userId,
         });
@@ -822,17 +823,19 @@ export function buildContextEngineFactory(
       const rpc = await runtime.getRpc();
       return await rpc.call("bootstrap_session_kernel", {
         ...args,
+        sessionId,
         userId,
       });
     },
     async ingest(args: { sessionId: string; sessionKey?: string; userId?: string; message: { role: string; content: unknown; id?: string }; isHeartbeat?: boolean }) {
+      const sessionId = requireSessionId(args.sessionId, "ingest");
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
       });
       const message = normalizeKernelMessage(args.message);
       logger.info?.(
-        `LibraVDB ingest sessionId=${args.sessionId} userId=${userId} ` +
+        `LibraVDB ingest sessionId=${sessionId} userId=${userId} ` +
         `role=${message.role} heartbeat=${args.isHeartbeat ?? false} ` +
         `contentLen=${message.content.length}`,
       );
@@ -840,7 +843,7 @@ export function buildContextEngineFactory(
         const kernel = await getKernelOrNull("ingest");
         if (kernel) {
           return await kernel.ingestMessage({
-            sessionId: args.sessionId,
+            sessionId,
             sessionKey: args.sessionKey,
             userId,
             message,
@@ -850,12 +853,13 @@ export function buildContextEngineFactory(
         const rpc = await runtime.getRpc();
         return await rpc.call("ingest_message_kernel", {
           ...args,
+          sessionId,
           userId,
           message,
         });
       } catch (error) {
         logger.warn?.(
-          `LibraVDB ingest failed sessionId=${args.sessionId}: ` +
+          `LibraVDB ingest failed sessionId=${sessionId}: ` +
           `${error instanceof Error ? error.message : String(error)}`,
         );
         throw error;
@@ -870,6 +874,7 @@ export function buildContextEngineFactory(
       prompt?: string;
       currentTokenCount?: number;
     }): Promise<OpenClawCompatibleAssembleResult> {
+      const sessionId = requireSessionId(args.sessionId, "assemble");
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -889,14 +894,14 @@ export function buildContextEngineFactory(
         logPredictiveCompactionAttempt({
           logger,
           phase: "assemble",
-          sessionId: args.sessionId,
+          sessionId,
           currentTokenCount: currentContextTokens,
           threshold: dynamicCompactThreshold,
           targetSize: predictiveTargetSize,
           tokenBudget: args.tokenBudget,
         });
         const compactionResult = await runCompaction({
-          sessionId: args.sessionId,
+          sessionId,
           targetSize: predictiveTargetSize,
           tokenBudget: args.tokenBudget,
           force: true,
@@ -905,7 +910,7 @@ export function buildContextEngineFactory(
         logPredictiveCompactionOutcome({
           logger,
           phase: "assemble",
-          sessionId: args.sessionId,
+          sessionId,
           currentTokenCount: currentContextTokens,
           threshold: dynamicCompactThreshold,
           targetSize: predictiveTargetSize,
@@ -925,7 +930,7 @@ export function buildContextEngineFactory(
       if (kernel) {
         try {
           const assembled = normalizeAssembleResult(await kernel.assembleContext({
-            sessionId: args.sessionId,
+            sessionId,
             sessionKey: args.sessionKey,
             userId,
             queryText: args.prompt ?? "",
@@ -938,7 +943,7 @@ export function buildContextEngineFactory(
             await augmentWithExactRecall(assembled, {
               queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
               userId,
-              sessionId: args.sessionId,
+              sessionId,
               tokenBudget: args.tokenBudget,
             }),
             args.tokenBudget,
@@ -955,7 +960,7 @@ export function buildContextEngineFactory(
       const rpc = await runtime.getRpc();
       try {
         const resp = await rpc.call<AssembleContextInternalResponse>("assemble_context_internal", {
-          sessionId: args.sessionId,
+          sessionId,
           sessionKey: args.sessionKey,
           userId,
           messages,
@@ -969,7 +974,7 @@ export function buildContextEngineFactory(
           await augmentWithExactRecall(assembled, {
             queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
             userId,
-            sessionId: args.sessionId,
+            sessionId,
             tokenBudget: args.tokenBudget,
           }),
           args.tokenBudget,
@@ -1001,6 +1006,7 @@ export function buildContextEngineFactory(
       tokenBudget?: number;
       runtimeContext?: Record<string, unknown>;
     }) {
+      const sessionId = requireSessionId(args.sessionId, "afterTurn");
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -1009,7 +1015,7 @@ export function buildContextEngineFactory(
       const messages = normalizeKernelMessages(afterTurnMessages);
       const msgCount = messages.length;
       logger.info?.(
-        `LibraVDB afterTurn sessionId=${args.sessionId} userId=${userId} ` +
+        `LibraVDB afterTurn sessionId=${sessionId} userId=${userId} ` +
         `messageCount=${msgCount} totalMessages=${args.messages.length} ` +
         `prePromptMessageCount=${args.prePromptMessageCount ?? "unknown"} ` +
         `heartbeat=${args.isHeartbeat ?? false}`,
@@ -1023,14 +1029,14 @@ export function buildContextEngineFactory(
         );
         if (kernel) {
           const result = await kernel.afterTurn({
-            sessionId: args.sessionId,
+            sessionId,
             sessionKey: args.sessionKey,
             userId,
             messages,
             isHeartbeat: args.isHeartbeat,
           });
           await performAfterTurnPredictiveCompaction({
-            sessionId: args.sessionId,
+            sessionId,
             tokenBudget: args.tokenBudget,
             currentTokenCount,
           });
@@ -1038,21 +1044,21 @@ export function buildContextEngineFactory(
         }
         const rpc = await runtime.getRpc();
         const result = await rpc.call("after_turn_kernel", {
-          sessionId: args.sessionId,
+          sessionId,
           sessionKey: args.sessionKey,
           userId,
           messages,
           isHeartbeat: args.isHeartbeat,
         });
         await performAfterTurnPredictiveCompaction({
-          sessionId: args.sessionId,
+          sessionId,
           tokenBudget: args.tokenBudget,
           currentTokenCount,
         });
         return result;
       } catch (error) {
         logger.warn?.(
-          `LibraVDB afterTurn failed sessionId=${args.sessionId}: ` +
+          `LibraVDB afterTurn failed sessionId=${sessionId}: ` +
           `${error instanceof Error ? error.message : String(error)}`,
         );
         throw error;
