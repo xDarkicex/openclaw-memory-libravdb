@@ -13,6 +13,8 @@ const DEFAULT_MIN_RECALL_COUNT = 2;
 const DEFAULT_MIN_UNIQUE_QUERIES = 2;
 const DREAM_PROMOTION_VERSION = 1;
 const DREAM_SOURCE_KIND = "dream";
+const STRICT_NUMBER_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
+const STRICT_INTEGER_PATTERN = /^[+-]?\d+$/;
 
 type Disposable = { close(): void };
 
@@ -449,7 +451,11 @@ function parseNumber(value: string | undefined): number | null {
   if (!value) {
     return null;
   }
-  const parsed = Number.parseFloat(value);
+  const trimmed = value.trim();
+  if (!STRICT_NUMBER_PATTERN.test(trimmed)) {
+    return null;
+  }
+  const parsed = Number(trimmed);
   if (!Number.isFinite(parsed)) {
     return null;
   }
@@ -460,8 +466,12 @@ function parseInteger(value: string | undefined): number | null {
   if (!value) {
     return null;
   }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
+  const trimmed = value.trim();
+  if (!STRICT_INTEGER_PATTERN.test(trimmed)) {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed)) {
     return null;
   }
   return parsed;

@@ -32,6 +32,25 @@ test("dream promotion parser only accepts explicit deep-sleep candidate bullets"
   assert.equal(candidates[1]?.text, "too weak to promote");
 });
 
+test("dream promotion parser rejects malformed numeric metadata", () => {
+  const candidates = parseDreamPromotionCandidates(
+    [
+      "## Deep Sleep",
+      "- Keep a valid candidate {score=0.82 recall=3 unique=2}",
+      "- Reject a malformed score {score=0.82abc recall=3 unique=2}",
+      "- Reject a malformed recall count {score=0.82 recall=3abc unique=2}",
+      "- Reject a fractional unique count {score=0.82 recall=3 unique=2.5}",
+      "- Keep an exponent score {score=8.2e-1 recall=3 unique=2}",
+    ].join("\n"),
+  );
+
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.text),
+    ["Keep a valid candidate", "Keep an exponent score"],
+  );
+  assert.equal(candidates[1]?.score, 0.82);
+});
+
 test("disabled dream promotion does not validate unused diary paths", () => {
   assert.doesNotThrow(() => {
     createDreamPromotionHandle(
