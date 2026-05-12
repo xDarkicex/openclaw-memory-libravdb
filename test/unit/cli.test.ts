@@ -227,6 +227,75 @@ test("status command shuts the plugin runtime down after printing status", async
   assert.equal(shutdownCalls, 1);
 });
 
+test("flush and export send userId for user targets and namespace for session keys", async () => {
+  let registered: RegisteredCli | null = null;
+  let shutdownCalls = 0;
+  const rpcCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string, params: Record<string, unknown>) {
+            rpcCalls.push({ method, params });
+            if (method === "flush_namespace") {
+              return { ok: true };
+            }
+            if (method === "export_memory") {
+              return { records: [] };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      async getKernel() {
+        return null;
+      },
+      async emitLifecycleHint() {},
+      onShutdown() {},
+      async shutdown() {
+        shutdownCalls += 1;
+      },
+    },
+    {},
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const flush = memory?.commands.find((command) => command.name() === "flush");
+  const exportCmd = memory?.commands.find((command) => command.name() === "export");
+  assert.ok(flush?.handler);
+  assert.ok(exportCmd?.handler);
+
+  const originalLog = console.log;
+  console.log = (() => undefined) as typeof console.log;
+  try {
+    await flush.handler({ userId: "  test-user  ", yes: true });
+    await exportCmd.handler({ userId: "  test-user  " });
+    await flush.handler({ sessionKey: "  session-1  ", yes: true });
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.deepEqual(rpcCalls, [
+    { method: "flush_namespace", params: { userId: "test-user" } },
+    { method: "export_memory", params: { userId: "test-user" } },
+    { method: "flush_namespace", params: { namespace: "session-key:session-1" } },
+  ]);
+  assert.equal(shutdownCalls, 3);
+});
+
 
 test("search command applies the status gate threshold by default", async () => {
   let registered: RegisteredCli | null = null;
