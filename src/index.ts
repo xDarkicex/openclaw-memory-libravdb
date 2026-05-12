@@ -162,21 +162,9 @@ export function register(api: OpenClawPluginApi) {
 
   api.on("before_reset", createBeforeResetHook(runtime, api.logger ?? console));
   api.on("session_end", createSessionEndHook(runtime, api.logger ?? console));
-  api.on("agent_end", async (event: unknown) => {
-    const e = asRecord(event) ?? {};
-    logger.info?.(
-      `LibraVDB agent_end success=${e.success ?? 'unknown'} ` +
-      `durationMs=${e.durationMs ?? "?"} ` +
-      `error=${typeof e.error === "string" ? e.error : "none"}`,
-    );
-  });
   api.on("gateway_stop", async () => {
     await runtime.shutdown();
   });
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
 }
 
 export default definePluginEntry({

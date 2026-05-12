@@ -52,13 +52,21 @@ export function createSessionEndHook(runtime: PluginRuntime, logger: LoggerLike 
   return async (event: unknown, ctx: unknown): Promise<void> => {
     const typedEvent = asSessionEndEvent(event);
     const typedCtx = asAgentContext(ctx);
+    const sessionId = typedEvent.sessionId ?? typedCtx.sessionId;
+    const sessionKey = typedEvent.sessionKey ?? typedCtx.sessionKey;
     try {
+      logger.info?.(
+        `LibraVDB session_end sessionId=${sessionId ?? "(unknown)"} ` +
+        `messageCount=${typedEvent.messageCount ?? "?"} ` +
+        `durationMs=${typedEvent.durationMs ?? "?"} ` +
+        `reason=${typedEvent.reason ?? "unknown"}`,
+      );
       await runtime.emitLifecycleHint({
         hook: "session_end",
         reason: typedEvent.reason,
         sessionFile: typedEvent.sessionFile,
-        sessionId: typedEvent.sessionId ?? typedCtx.sessionId,
-        sessionKey: typedEvent.sessionKey ?? typedCtx.sessionKey,
+        sessionId,
+        sessionKey,
         agentId: typedCtx.agentId,
         workspaceDir: typedCtx.workspaceDir,
         messageCount: typedEvent.messageCount,
