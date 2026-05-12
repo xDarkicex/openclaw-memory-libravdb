@@ -445,11 +445,15 @@ function parseTrailingMetadata(body: string): { bodyStart: number; score: number
   };
 }
 
+const DECIMAL_NUMBER_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
+const INTEGER_PATTERN = /^[+-]?\d+$/;
+
 function parseNumber(value: string | undefined): number | null {
-  if (!value) {
+  const trimmed = value?.trim();
+  if (!trimmed || !DECIMAL_NUMBER_PATTERN.test(trimmed)) {
     return null;
   }
-  const parsed = Number.parseFloat(value);
+  const parsed = Number(trimmed);
   if (!Number.isFinite(parsed)) {
     return null;
   }
@@ -457,11 +461,12 @@ function parseNumber(value: string | undefined): number | null {
 }
 
 function parseInteger(value: string | undefined): number | null {
-  if (!value) {
+  const trimmed = value?.trim();
+  if (!trimmed || !INTEGER_PATTERN.test(trimmed)) {
     return null;
   }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed)) {
     return null;
   }
   return parsed;
