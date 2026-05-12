@@ -181,12 +181,51 @@ test("memory runtime bridge respects disabled cross-session recall", async () =>
   assert.equal(result.length, 1);
 });
 
+test("memory runtime bridge treats whitespace-only structured queries as missing", async () => {
+  const rpc = new FakeRpc();
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "   " });
+
+  assert.deepEqual(result, []);
+  assert.deepEqual(rpc.calls.map((call) => call.method), ["status"]);
+});
+
+test("memory runtime bridge trims query and scope strings before searching", async () => {
+  const rpc = new FakeRpc();
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({
+    query: "  find prior context  ",
+    sessionId: "  s1  ",
+    userId: "  u1  ",
+  });
+
+  assert.ok(Array.isArray(result));
+  assert.equal(rpc.calls[1]?.method, "search_text_collections");
+  assert.deepEqual(rpc.calls[1]?.params.collections, ["session:s1", "user:u1", "global"]);
+  assert.equal(rpc.calls[1]?.params.text, "find prior context");
+});
+
 test("memory runtime bridge returns no results without a session when cross-session recall is disabled", async () => {
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
   const { manager } = await runtime.getMemorySearchManager();
 
   const result = await manager.search({ query: "find prior context", userId: "u1" });
+
+  assert.deepEqual(result, []);
+  assert.equal(rpc.calls.length, 1, "only the initial status check should run");
+});
+
+test("memory runtime bridge ignores whitespace-only session ids when cross-session recall is disabled", async () => {
+  const rpc = new FakeRpc();
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "find prior context", userId: "u1", sessionId: "   " });
 
   assert.deepEqual(result, []);
   assert.equal(rpc.calls.length, 1, "only the initial status check should run");

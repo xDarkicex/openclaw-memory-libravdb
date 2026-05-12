@@ -225,7 +225,16 @@ function resolveSessionSearchCollection(cfg: PluginConfig, sessionId: string): s
 }
 
 function firstString(...values: Array<string | undefined>): string | undefined {
-  return values.find((value) => typeof value === "string" && value.length > 0);
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+  return undefined;
 }
 
 function toMemorySearchResult(item: SearchResult) {
