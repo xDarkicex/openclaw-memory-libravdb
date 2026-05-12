@@ -330,7 +330,10 @@ function trimMessagesToBudget(
   }
 
   const last = messages[messages.length - 1]!;
-  const contentBudget = Math.max(1, tokenBudget - 8);
+  const contentBudget = tokenBudget - 8;
+  if (contentBudget <= 0) {
+    return [];
+  }
   const truncated = truncateContentToTokenBudget(last.content, contentBudget);
   if (!truncated) {
     return [];
@@ -371,7 +374,7 @@ function enforceTokenBudgetInvariant(
     };
   }
 
-  const messageBudget = Math.max(1, effectiveBudget - systemPromptTokens);
+  const messageBudget = Math.max(0, effectiveBudget - systemPromptTokens);
   const trimmedMessages = trimMessagesToBudget(result.messages, messageBudget);
   const trimmedEstimate = approximateMessagesTokens(trimmedMessages);
   return {
