@@ -252,3 +252,52 @@ test("sidecar retry budget resets after stability window", async () => {
   assert.equal(handle.isDegraded(), false);
   assert.equal(runtime.scheduled.length, 2);
 });
+
+test("crash before stability window preserves retry count and triggers degraded mode", async () => {
+  const runtime = createManualRestartRuntime();
+  runtime.runtime.stabilityWindowMs = 60_000;
+  const logger = { error() {}, info() {}, warn() {} };
+  const handle = await startSidecar({ rpcTimeoutMs: 50, maxRetries: 1 }, logger, runtime.runtime);
+
+  // First crash schedules reconnect.
+  runtime.sockets[0]?.emitClose();
+  await flushAsyncWork();
+  assert.equal(runtime.scheduled.length, 1);
+
+  // Reconnect succeeds, stability timer starts but window is 60s away.
+  runtime.scheduled[0]?.restart();
+  await flushAsyncWork();
+  assert.equal(runtime.sockets.length, 2);
+
+  // Second crash before stability window — retries still 1, triggers degraded.
+  runtime.sockets[1]?.emitClose();
+  await flushAsyncWork();
+
+  assert.equal(handle.isDegraded(), true);
+});
+
+test("stability window with non-zero delay resets retry budget after timer fires", async () => {
+  const runtime = createManualRestartRuntime();
+  runtime.runtime.stabilityWindowMs = 10;
+  const logger = { error() {}, info() {}, warn() {} };
+  const handle = await startSidecar({ rpcTimeoutMs: 50, maxRetries: 1 }, logger, runtime.runtime);
+
+  // First outage: crash schedules reconnect.
+  runtime.sockets[0]?.emitClose();
+  await flushAsyncWork();
+  assert.equal(runtime.scheduled.length, 1);
+
+  // Reconnect succeeds, stability timer starts with 10ms window.
+  runtime.scheduled[0]?.restart();
+  await flushAsyncWork();
+
+  // Wait for the timer to fire (10ms window + buffer).
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Second outage: budget was reset by the timer, crash does NOT degrade.
+  runtime.sockets[1]?.emitClose();
+  await flushAsyncWork();
+
+  assert.equal(handle.isDegraded(), false);
+  assert.equal(runtime.scheduled.length, 2);
+});
