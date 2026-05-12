@@ -49,7 +49,10 @@ export function register(api: OpenClawPluginApi) {
       );
     }
     if (memSlot === "none") {
-      logger.info?.("[libravdb-memory] plugins.slots.memory is \"none\"; skipping memory and context-engine hooks.");
+      logger.info?.(
+        "[libravdb-memory] plugins.slots.memory is \"none\"; " +
+        "skipping memory capability, context engine, embedding providers, services, and hooks.",
+      );
       registerMemoryCli(api, null, cfg, logger);
       return;
     }
