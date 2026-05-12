@@ -273,6 +273,7 @@ class SidecarSupervisor implements SidecarHandle {
       this.stabilityTimer = null;
       this.retries = 0;
     }, CONNECTION_STABILITY_WINDOW_MS);
+    this.stabilityTimer.unref?.();
   }
 
   private clearStabilityTimer(): void {
