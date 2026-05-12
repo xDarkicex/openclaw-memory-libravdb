@@ -206,6 +206,12 @@
         "type": "number",
         "default": 150
       },
+      "markdownIngestionSnapshotPath": {
+        "type": "string"
+      },
+      "markdownIngestionObsidianSnapshotPath": {
+        "type": "string"
+      },
       "dreamPromotionEnabled": {
         "type": "boolean",
         "default": false

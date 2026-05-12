@@ -49,6 +49,8 @@ export interface PluginConfig {
   markdownIngestionInclude?: string[];
   markdownIngestionExclude?: string[];
   markdownIngestionDebounceMs?: number;
+  markdownIngestionSnapshotPath?: string;
+  markdownIngestionObsidianSnapshotPath?: string;
   dreamPromotionEnabled?: boolean;
   dreamPromotionDiaryPath?: string;
   dreamPromotionUserId?: string;

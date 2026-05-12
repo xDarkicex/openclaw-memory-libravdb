@@ -93,7 +93,6 @@ test("slot check — ours: register succeeds", () => {
   assert.deepEqual(api.registrations.hooks, [
     "before_reset",
     "session_end",
-    "agent_end",
     "gateway_stop",
   ]);
 });
@@ -131,7 +130,6 @@ test("slot check — unset: register succeeds with warning", () => {
   assert.deepEqual(api.registrations.hooks, [
     "before_reset",
     "session_end",
-    "agent_end",
     "gateway_stop",
   ]);
 });

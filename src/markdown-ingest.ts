@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import type { LoggerLike, PluginConfig } from "./types.js";
@@ -77,6 +78,28 @@ interface GenericMarkdownSourceConfig {
   include?: string[];
   exclude?: string[];
   debounceMs?: number;
+  snapshotPath?: string;
+}
+
+interface ScanStats {
+  directoriesScanned: number;
+  directoriesPruned: number;
+  markdownFilesSeen: number;
+  filesIncluded: number;
+  filesSkipped: number;
+  filesUnchanged: number;
+  filesIngested: number;
+  filesDeleted: number;
+  syncErrors: number;
+}
+
+type SyncMarkdownResult = "ingested" | "unchanged" | "deleted" | "skipped";
+
+interface MarkdownSnapshotFile {
+  version: number;
+  ingestVersion: number;
+  hashBackend: string;
+  files: Record<string, FileState>;
 }
 
 interface IngestMarkdownDocumentParams {
@@ -118,6 +141,7 @@ export function createMarkdownIngestionHandle(
           include: cfg.markdownIngestionInclude,
           exclude: cfg.markdownIngestionExclude,
           debounceMs: cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
+          snapshotPath: resolveMarkdownSnapshotPath("generic", cfg.markdownIngestionSnapshotPath),
         },
         getRpc,
         logger,
@@ -136,6 +160,7 @@ export function createMarkdownIngestionHandle(
           include: cfg.markdownIngestionObsidianInclude,
           exclude: cfg.markdownIngestionObsidianExclude,
           debounceMs: cfg.markdownIngestionObsidianDebounceMs ?? cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
+          snapshotPath: resolveMarkdownSnapshotPath("obsidian", cfg.markdownIngestionObsidianSnapshotPath),
         },
         getRpc,
         logger,
@@ -193,6 +218,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly fsApi: FsApi;
   private readonly getRpc: RpcGetterLike;
   private readonly logger: LoggerLike;
+  private readonly snapshotPath: string;
   private readonly states = new Map<string, RootState>();
   private readonly fileStates = new Map<string, FileState>();
   private readonly activeScans = new Set<Promise<void>>();
@@ -201,6 +227,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private started = false;
   private ingestQueue: IngestQueue | null = null;
   private stopping = false;
+  private snapshotLoaded = false;
+  private snapshotDirty = false;
 
   constructor(kind: string, config: GenericMarkdownSourceConfig, getRpc: RpcGetterLike, logger: LoggerLike, fsApi: FsApi) {
     this.kind = kind;
@@ -211,6 +239,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     this.fsApi = fsApi;
     this.getRpc = getRpc;
     this.logger = logger;
+    this.snapshotPath = config.snapshotPath ?? resolveMarkdownSnapshotPath(kind);
     this.tokenizerId = DEFAULT_TOKENIZER_ID;
     this.coreDoc = true;
   }
@@ -219,6 +248,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     if (this.started) {
       return;
     }
+    await this.loadSnapshot();
     this.started = true;
     this.stopping = false;
     await this.refresh();
@@ -248,8 +278,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     if (this.activeScans.size > 0) {
       await Promise.allSettled([...this.activeScans]);
     }
+    await this.saveSnapshotIfDirty();
     this.states.clear();
     this.fileStates.clear();
+    this.snapshotLoaded = false;
     this.started = false;
   }
 
@@ -266,7 +298,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         dirty: false,
         timer: null,
       },
-      knownFiles: new Set<string>(),
+      knownFiles: this.snapshotFilesForRoot(resolved),
       directoryWatchers: new Map<string, FsWatcherLike>(),
     };
     this.states.set(resolved, created);
@@ -285,12 +317,16 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
 
     rootState.scanState.scanning = true;
     const scan = (async () => {
+      const stats = createScanStats();
+      const startedAt = Date.now();
       try {
         const currentFiles = new Set<string>();
-        await this.walkDirectory(rootState, rootState.root, currentFiles);
+        await this.walkDirectory(rootState, rootState.root, currentFiles, stats);
         if (!this.stopping) {
-          await this.pruneDeletedFiles(rootState, currentFiles);
+          await this.pruneDeletedFiles(rootState, currentFiles, stats);
           rootState.knownFiles = currentFiles;
+          await this.saveSnapshotIfDirty();
+          this.logScanStats(rootState.root, stats, Date.now() - startedAt);
         }
       } finally {
         rootState.scanState.scanning = false;
@@ -330,7 +366,13 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }, this.debounceMs);
   }
 
-  private async walkDirectory(rootState: RootState, dir: string, currentFiles: Set<string>): Promise<void> {
+  private async walkDirectory(rootState: RootState, dir: string, currentFiles: Set<string>, stats: ScanStats): Promise<void> {
+    if (this.shouldPruneDirectory(rootState.root, dir)) {
+      stats.directoriesPruned++;
+      return;
+    }
+
+    stats.directoriesScanned++;
     await this.ensureDirectoryWatcher(rootState, dir);
 
     let entries: FsDirentLike[];
@@ -350,24 +392,42 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       const child = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await this.walkDirectory(rootState, child, currentFiles);
+        await this.walkDirectory(rootState, child, currentFiles, stats);
         continue;
       }
       if (!entry.isFile() || !isMarkdownFile(entry.name)) {
         continue;
       }
+      stats.markdownFilesSeen++;
       if (!this.shouldIncludeFile(rootState.root, child)) {
+        stats.filesSkipped++;
         continue;
       }
+      stats.filesIncluded++;
       currentFiles.add(child);
       try {
-        await this.syncMarkdownFile(rootState, child);
+        const result = await this.syncMarkdownFile(rootState, child);
+        recordSyncResult(stats, result);
       } catch (error) {
+        stats.syncErrors++;
         if (!this.stopping) {
           this.logger.warn?.(`[markdown-ingest] sync failed for ${child}: ${formatError(error)}`);
         }
       }
     }
+  }
+
+  private shouldPruneDirectory(root: string, dir: string): boolean {
+    const relative = toPosixPath(path.relative(root, dir));
+    if (!relative || relative === "." || relative.startsWith("..")) {
+      return false;
+    }
+    for (const pattern of this.excludePatterns) {
+      if (matchesExcludedDirectory(relative, pattern)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async ensureDirectoryWatcher(rootState: RootState, dir: string): Promise<void> {
@@ -413,7 +473,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     return true;
   }
 
-  private async pruneDeletedFiles(rootState: RootState, currentFiles: Set<string>): Promise<void> {
+  private async pruneDeletedFiles(rootState: RootState, currentFiles: Set<string>, stats: ScanStats): Promise<void> {
     const removed: string[] = [];
     for (const previous of rootState.knownFiles) {
       if (!currentFiles.has(previous)) {
@@ -426,34 +486,38 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     for (const filePath of removed) {
       await this.deleteSourceDocument(filePath);
       this.fileStates.delete(filePath);
+      this.snapshotDirty = true;
+      stats.filesDeleted++;
     }
   }
 
-  private async syncMarkdownFile(rootState: RootState, filePath: string): Promise<void> {
+  private async syncMarkdownFile(rootState: RootState, filePath: string): Promise<SyncMarkdownResult> {
     const sourceDoc = filePath;
     const relativePath = toPosixPath(path.relative(rootState.root, filePath));
     const stat = await this.safeStat(filePath);
     if (!stat) {
       await this.deleteSourceDocument(sourceDoc);
       this.fileStates.delete(sourceDoc);
-      return;
+      this.snapshotDirty = true;
+      return "deleted";
     }
 
     const cached = this.fileStates.get(sourceDoc);
     if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
-      return;
+      return "unchanged";
     }
 
     const bytes = await this.safeReadFile(filePath);
     if (!bytes) {
       await this.deleteSourceDocument(sourceDoc);
       this.fileStates.delete(sourceDoc);
-      return;
+      this.snapshotDirty = true;
+      return "deleted";
     }
 
     const fileHash = hashBytes(bytes);
     if (cached && cached.fileHash === fileHash) {
-      this.fileStates.set(sourceDoc, {
+      this.setFileState(sourceDoc, {
         root: rootState.root,
         sourceDoc,
         relativePath,
@@ -461,17 +525,18 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         size: stat.size,
         mtimeMs: stat.mtimeMs,
       });
-      return;
+      return "unchanged";
     }
 
     const text = textDecoder.decode(bytes);
     if (this.kind === "obsidian" && this.includePatterns.length === 0 && !looksLikeObsidianNote(filePath, text)) {
       await this.deleteSourceDocument(sourceDoc);
       this.fileStates.delete(sourceDoc);
-      return;
+      this.snapshotDirty = true;
+      return "skipped";
     }
     await this.ingestMarkdownDocument(sourceDoc, text, rootState.root, relativePath, fileHash, stat.size, stat.mtimeMs);
-    this.fileStates.set(sourceDoc, {
+    this.setFileState(sourceDoc, {
       root: rootState.root,
       sourceDoc,
       relativePath,
@@ -479,6 +544,12 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
     });
+    return "ingested";
+  }
+
+  private setFileState(sourceDoc: string, state: FileState): void {
+    this.fileStates.set(sourceDoc, state);
+    this.snapshotDirty = true;
   }
 
   private async ingestMarkdownDocument(
@@ -539,6 +610,101 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       return null;
     }
   }
+
+  private snapshotFilesForRoot(root: string): Set<string> {
+    const files = new Set<string>();
+    for (const state of this.fileStates.values()) {
+      if (state.root === root) {
+        files.add(state.sourceDoc);
+      }
+    }
+    return files;
+  }
+
+  private async loadSnapshot(): Promise<void> {
+    if (this.snapshotLoaded) {
+      return;
+    }
+    this.snapshotLoaded = true;
+    let raw: string;
+    try {
+      raw = await fsp.readFile(this.snapshotPath, "utf8");
+    } catch (error) {
+      if (!formatError(error).includes("ENOENT")) {
+        this.logger.warn?.(`[markdown-ingest] failed to read snapshot ${this.snapshotPath}: ${formatError(error)}`);
+      }
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<MarkdownSnapshotFile>;
+      if (parsed.ingestVersion !== MARKDOWN_INGEST_VERSION || parsed.hashBackend !== HASH_BACKEND || !parsed.files) {
+        return;
+      }
+      const configuredRoots = new Set(this.roots.map((root) => path.resolve(root)));
+      for (const [sourceDoc, state] of Object.entries(parsed.files)) {
+        if (isValidSnapshotState(sourceDoc, state) && configuredRoots.has(path.resolve(state.root))) {
+          this.fileStates.set(sourceDoc, state);
+        }
+      }
+      this.logger.info?.(`[markdown-ingest] loaded ${this.fileStates.size} ${this.kind} file snapshots from ${this.snapshotPath}`);
+    } catch (error) {
+      this.logger.warn?.(`[markdown-ingest] failed to parse snapshot ${this.snapshotPath}: ${formatError(error)}`);
+    }
+  }
+
+  private async saveSnapshotIfDirty(): Promise<void> {
+    if (!this.snapshotDirty) {
+      return;
+    }
+    const payload: MarkdownSnapshotFile = {
+      version: 1,
+      ingestVersion: MARKDOWN_INGEST_VERSION,
+      hashBackend: HASH_BACKEND,
+      files: Object.fromEntries([...this.fileStates.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    };
+    try {
+      await fsp.mkdir(path.dirname(this.snapshotPath), { recursive: true });
+      const tmp = `${this.snapshotPath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+      await fsp.writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`);
+      await fsp.rename(tmp, this.snapshotPath);
+      this.snapshotDirty = false;
+    } catch (error) {
+      this.logger.warn?.(`[markdown-ingest] failed to write snapshot ${this.snapshotPath}: ${formatError(error)}`);
+    }
+  }
+
+  private logScanStats(root: string, stats: ScanStats, durationMs: number): void {
+    this.logger.info?.(
+      `[markdown-ingest] ${this.kind} scan complete root=${root} dirs=${stats.directoriesScanned} prunedDirs=${stats.directoriesPruned} markdown=${stats.markdownFilesSeen} included=${stats.filesIncluded} skipped=${stats.filesSkipped} unchanged=${stats.filesUnchanged} ingested=${stats.filesIngested} deleted=${stats.filesDeleted} errors=${stats.syncErrors} durationMs=${durationMs}`,
+    );
+  }
+}
+
+function createScanStats(): ScanStats {
+  return {
+    directoriesScanned: 0,
+    directoriesPruned: 0,
+    markdownFilesSeen: 0,
+    filesIncluded: 0,
+    filesSkipped: 0,
+    filesUnchanged: 0,
+    filesIngested: 0,
+    filesDeleted: 0,
+    syncErrors: 0,
+  };
+}
+
+function recordSyncResult(stats: ScanStats, result: SyncMarkdownResult): void {
+  if (result === "ingested") {
+    stats.filesIngested++;
+  } else if (result === "unchanged") {
+    stats.filesUnchanged++;
+  } else if (result === "deleted") {
+    stats.filesDeleted++;
+  } else {
+    stats.filesSkipped++;
+  }
 }
 
 function toPosixPath(value: string): string {
@@ -560,6 +726,15 @@ function normalizeMarkdownRoots(roots?: string[]): string[] {
     resolved.add(path.resolve(trimmed));
   }
   return [...resolved];
+}
+
+function resolveMarkdownSnapshotPath(kind: string, configuredPath?: string): string {
+  const trimmed = configuredPath?.trim();
+  if (trimmed) {
+    return path.resolve(trimmed);
+  }
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(os.homedir(), ".openclaw");
+  return path.join(stateDir, `libravdb-markdown-ingest-${kind}.json`);
 }
 
 function isMarkdownIngestionEnabled(cfg: PluginConfig, roots: string[]): boolean {
@@ -592,6 +767,28 @@ function matchesGlob(value: string, pattern: string): boolean {
     .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
     .join(".*");
   return new RegExp(`^${escaped}$`).test(value);
+}
+
+function matchesExcludedDirectory(relativeDir: string, pattern: string): boolean {
+  const normalized = relativeDir.replace(/\/+$/, "");
+  return matchesGlob(normalized, pattern) || matchesGlob(`${normalized}/`, pattern) || matchesGlob(`${normalized}/.probe`, pattern);
+}
+
+function isValidSnapshotState(sourceDoc: string, value: unknown): value is FileState {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const state = value as Partial<FileState>;
+  return (
+    state.sourceDoc === sourceDoc &&
+    typeof state.root === "string" &&
+    typeof state.relativePath === "string" &&
+    typeof state.fileHash === "string" &&
+    typeof state.size === "number" &&
+    Number.isFinite(state.size) &&
+    typeof state.mtimeMs === "number" &&
+    Number.isFinite(state.mtimeMs)
+  );
 }
 
 function looksLikeObsidianNote(filePath: string, text: string): boolean {
