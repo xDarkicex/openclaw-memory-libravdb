@@ -245,6 +245,7 @@ class SidecarSupervisor implements SidecarHandle {
   async start(): Promise<SidecarSocket> {
     const endpoint = await this.runtime.resolveEndpoint(this.cfg);
     const socket = await this.connectEndpointWithRetry(endpoint);
+    this.retries = 0;
     this.reconnectScheduled = false;
     if (this.socket instanceof SupervisorSocket) {
       this.socket.bind(socket);
@@ -330,6 +331,10 @@ class SidecarSupervisor implements SidecarHandle {
     this.retries += 1;
     this.reconnectScheduled = true;
     this.runtime.scheduleRestart(backoffMs, () => {
+      if (this.shuttingDown) {
+        this.reconnectScheduled = false;
+        return;
+      }
       void this.start().catch((error) => {
         this.reconnectScheduled = false;
         const message = error instanceof Error ? error.message : String(error);

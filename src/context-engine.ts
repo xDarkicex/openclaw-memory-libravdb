@@ -466,7 +466,10 @@ function escapeMemoryFactText(text: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+    .replaceAll("'", "&#39;")
+    .replaceAll("\r", "&#13;")
+    .replaceAll("\n", "&#10;")
+    .replaceAll("\t", "&#9;");
 }
 
 function buildExactRecallFact(result: SearchResult, token: string): string {
@@ -522,6 +525,7 @@ export function buildContextEngineFactory(
   logger: LoggerLike = console,
 ) {
   let cachedIdentity: ResolvedIdentity | null = null;
+  let cachedSessionKey: string | undefined;
 
   function resolveUserId(args?: {
     userIdOverride?: string;
@@ -531,13 +535,15 @@ export function buildContextEngineFactory(
     const fwUserId = args?.userIdOverride?.trim();
     if (fwUserId) return fwUserId;
 
-    if (!cachedIdentity) {
+    const sessionKey = args?.sessionKey?.trim() || undefined;
+    if (!cachedIdentity || cachedSessionKey !== sessionKey) {
       cachedIdentity = resolveIdentity({
         configUserId: cfg.userId,
         identityPath: cfg.identityPath,
-        sessionKey: args?.sessionKey,
+        sessionKey,
         logger,
       });
+      cachedSessionKey = sessionKey;
     }
     return cachedIdentity.userId;
   }

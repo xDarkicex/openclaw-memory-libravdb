@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { GrpcKernelClient } from "../../src/grpc-client.js";
+import { GrpcKernelClient, resolveGrpcTarget } from "../../src/grpc-client.js";
 
 type MetadataProbe = {
   secret?: string;
@@ -15,6 +15,21 @@ function createMetadataProbe(secret?: string, nonceHex?: string): MetadataProbe 
     { secret, nonceHex },
   ) as MetadataProbe;
 }
+
+test("resolveGrpcTarget strips tcp prefix for grpc-js host targets", () => {
+  assert.equal(resolveGrpcTarget("tcp:127.0.0.1:37421"), "127.0.0.1:37421");
+});
+
+test("resolveGrpcTarget preserves unix scheme for grpc-js UDS resolver", () => {
+  assert.equal(
+    resolveGrpcTarget("unix:/home/user/.clawdb/run/libravdb.sock"),
+    "unix:/home/user/.clawdb/run/libravdb.sock",
+  );
+});
+
+test("resolveGrpcTarget leaves ordinary grpc targets unchanged", () => {
+  assert.equal(resolveGrpcTarget("localhost:37421"), "localhost:37421");
+});
 
 test("gRPC auth metadata signs the server nonce with the shared secret", () => {
   const client = createMetadataProbe("test-secret", "00112233445566778899aabbccddeeff");

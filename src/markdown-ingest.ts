@@ -595,17 +595,18 @@ function matchesGlob(value: string, pattern: string): boolean {
 }
 
 function looksLikeObsidianNote(filePath: string, text: string): boolean {
-  if (!text.startsWith("---\n")) {
+  const frontmatterStart = parseFrontmatterStart(text);
+  if (frontmatterStart == null) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatterEnd = findFrontmatterEnd(text, 4);
-  if (frontmatterEnd < 0) {
+  const parsed = findFrontmatterEnd(text, frontmatterStart);
+  if (!parsed) {
     return hasInlineObsidianTag(text);
   }
 
-  const frontmatter = text.slice(4, frontmatterEnd);
-  const lines = frontmatter.split("\n");
+  const frontmatter = text.slice(frontmatterStart, parsed.position);
+  const lines = frontmatter.split(/\r?\n/);
   for (const line of lines) {
     const trimmed = line.trimStart();
     if (
@@ -618,23 +619,33 @@ function looksLikeObsidianNote(filePath: string, text: string): boolean {
     }
   }
 
-  return hasInlineObsidianTag(text.slice(frontmatterEnd + 4));
+  return hasInlineObsidianTag(text.slice(parsed.bodyOffset));
 }
 
-function findFrontmatterEnd(text: string, offset: number): number {
+function parseFrontmatterStart(text: string): number | null {
+  if (text.startsWith("---\n")) {
+    return 4;
+  }
+  if (text.startsWith("---\r\n")) {
+    return 5;
+  }
+  return null;
+}
+
+function findFrontmatterEnd(text: string, offset: number): { position: number; bodyOffset: number } | null {
   for (let i = offset; i < text.length - 3; i++) {
     if (text.charCodeAt(i) !== 45 || text.charCodeAt(i + 1) !== 45 || text.charCodeAt(i + 2) !== 45) {
       continue;
     }
     const next = text.charCodeAt(i + 3);
     if (next === 10) {
-      return i;
+      return { position: i, bodyOffset: i + 4 };
     }
     if (next === 13 && text.charCodeAt(i + 4) === 10) {
-      return i;
+      return { position: i, bodyOffset: i + 5 };
     }
   }
-  return -1;
+  return null;
 }
 
 function hasInlineObsidianTag(text: string): boolean {
@@ -649,10 +660,8 @@ function hasInlineObsidianTag(text: string): boolean {
     if (inFence) {
       continue;
     }
-    if (trimmed.startsWith("#")) {
-      continue;
-    }
-    if (/(^|[^A-Za-z0-9_])#([A-Za-z][A-Za-z0-9/_-]*)\b/.test(line)) {
+    const searchable = trimmed.replace(/^#{1,6}\s+/, "");
+    if (/(^|[^A-Za-z0-9_])#([A-Za-z][A-Za-z0-9/_-]*)\b/.test(searchable)) {
       return true;
     }
   }

@@ -69,6 +69,12 @@ function normalizeSearchTextResponse(bytes: Uint8Array): SearchTextResponse {
     if (!item.metadata || typeof item.metadata !== "object" || Array.isArray(item.metadata)) {
       item.metadata = {};
     }
+    if (typeof item.text !== "string") {
+      item.text = "";
+    }
+    if (typeof item.score !== "number" || !Number.isFinite(item.score)) {
+      item.score = 0;
+    }
   }
   return response;
 }

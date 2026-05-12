@@ -56,6 +56,10 @@ export class IngestQueue {
     this.rpcCall = rpcCall;
     this.logger = logger;
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    if (!(this.options.chunkTokens > 0)) {
+      this.logger.warn?.(`[libravdb] chunkTokens ${this.options.chunkTokens} is invalid; using default ${DEFAULT_OPTIONS.chunkTokens}`);
+      this.options.chunkTokens = DEFAULT_OPTIONS.chunkTokens;
+    }
   }
 
   async enqueueIngest(
@@ -120,6 +124,11 @@ export class IngestQueue {
 
 function splitIntoChunks(text: string, maxTokens: number): Array<{ text: string; ordinal: number }> {
   // Approximate: 4 chars per token for typical English text
+  // Guard: zero/negative budget would make maxChars <= 0, causing an infinite
+  // loop because the offset never advances past an empty slice.
+  if (!(maxTokens > 0)) {
+    return [{ text, ordinal: 0 }];
+  }
   const maxChars = maxTokens * 4;
   if (text.length <= maxChars) {
     return [{ text, ordinal: 0 }];
