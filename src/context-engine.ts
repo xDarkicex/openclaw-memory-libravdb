@@ -534,10 +534,15 @@ function ensureReplaySafeUserTurn(
     "LibraVDB assemble produced no replay-safe user turn; reinjecting the latest user message for provider compatibility.",
   );
   const messages = [fallbackUser, ...assembled.messages];
+  const baseEstimatedTokens = Math.max(
+    0,
+    assembled.estimatedTokens,
+    approximateMessagesTokens(assembled.messages),
+  );
   return {
     ...assembled,
     messages,
-    estimatedTokens: Math.max(assembled.estimatedTokens, approximateMessagesTokens(messages)),
+    estimatedTokens: baseEstimatedTokens + approximateMessageTokens(fallbackUser),
   };
 }
 

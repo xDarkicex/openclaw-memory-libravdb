@@ -160,9 +160,12 @@ test("assemble passes correct configuration mapping and returns expected payload
   assert.equal(params.emitDebug, true);
 
   // Verify inbound response handling
-  assert.equal(assembled.estimatedTokens, 150);
+  assert.equal(assembled.estimatedTokens, 164);
   assert.equal(assembled.systemPromptAddition, "<recalled_memories>static memory data</recalled_memories>");
-  assert.deepEqual(assembled.messages, [{ role: "assistant", content: "Mocked recalled context" }]);
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "what do you remember?" },
+    { role: "assistant", content: "Mocked recalled context" },
+  ]);
   assert.equal(assembled.debug?.recoveryTriggerFired, true);
 });
 

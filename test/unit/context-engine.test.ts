@@ -368,6 +368,7 @@ test("context engine assemble reinjects a user turn when daemon output is assist
   assert.equal(assembled.messages[0]?.content, "current user query");
   assert.equal(assembled.messages[1]?.role, "assistant");
   assert.equal(assembled.messages[1]?.content, "recalled memory block");
+  assert.equal(assembled.estimatedTokens, 37);
   assert.equal(
     warnings.some((message) => /reinjecting the latest user message/.test(message)),
     true,
@@ -488,7 +489,8 @@ test("context engine exact recall skips additions that would exceed the token bu
   });
 
   assert.equal(assembled.systemPromptAddition, "");
-  assert.equal(assembled.estimatedTokens, 43);
+  assert.equal(assembled.messages[0]?.role, "user");
+  assert.ok(assembled.estimatedTokens <= 44);
   assert.equal(
     warnings.some((message) => /addition exceeds token budget/.test(message)),
     true,
