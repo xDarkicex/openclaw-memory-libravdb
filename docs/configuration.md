@@ -98,6 +98,10 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | `markdownIngestionObsidianExclude` | string[] | — | Obsidian glob exclude patterns |
 | `markdownIngestionObsidianDebounceMs` | number | `150` | Obsidian debounce window |
 
+Configured markdown roots are ignored unless the matching enable flag is set to
+`true`. Set `markdownIngestionEnabled: true` for generic roots and
+`markdownIngestionObsidianEnabled: true` for Obsidian vault roots.
+
 ## Dream promotion
 
 | Key | Type | Default | Notes |
