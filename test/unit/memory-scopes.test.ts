@@ -28,6 +28,7 @@ test("validateNamespace rejects invalid collection names", () => {
   assert.equal(validateNamespace("user-1"), "user-1");
   assert.equal(validateNamespace("session-key:abc"), "session-key:abc");
   assert.equal(validateNamespace("agent-id:my-agent"), "agent-id:my-agent");
+  assert.equal(validateNamespace("computment@COMPUTMENT#1fb3bb24"), "computment@COMPUTMENT#1fb3bb24");
   assert.equal(validateNamespace("a"), "a");
 
   // Invalid names

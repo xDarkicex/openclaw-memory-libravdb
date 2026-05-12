@@ -1,9 +1,9 @@
 const SESSION_KEY_NAMESPACE_PREFIX = "session-key:";
 const AGENT_ID_NAMESPACE_PREFIX = "agent-id:";
 
-/** Valid collection names: alphanumeric, underscores, hyphens, dots, colons, at-signs.
+/** Valid collection names: alphanumeric, underscores, hyphens, dots, colons, at-signs, hashes.
  *  Must start with a letter. Max 128 characters. */
-const COLLECTION_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_.:@-]{0,127}$/;
+const COLLECTION_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_.:@#-]{0,127}$/;
 
 /** Validate and return a collection-safe namespace.
  *  Throws on invalid characters or length. */
