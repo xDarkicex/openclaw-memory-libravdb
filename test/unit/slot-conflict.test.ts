@@ -10,11 +10,30 @@ import {
 } from "../../src/index.js";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
+type InstrumentedApi = OpenClawPluginApi & {
+  registrations: {
+    memoryCapabilities: string[];
+    contextEngines: string[];
+    embeddingProviders: string[];
+    runtimeLifecycles: string[];
+    services: string[];
+    hooks: string[];
+  };
+};
+
 /** Builds a fake OpenClawPluginApi for register(). */
 function makeFakeApi(overrides: {
   registrationMode?: string;
   slotsMemory?: string;
-} = {}): OpenClawPluginApi {
+} = {}): InstrumentedApi {
+  const registrations: InstrumentedApi["registrations"] = {
+    memoryCapabilities: [],
+    contextEngines: [],
+    embeddingProviders: [],
+    runtimeLifecycles: [],
+    services: [],
+    hooks: [],
+  };
   return {
     id: "test-plugin",
     name: "Test",
@@ -34,16 +53,49 @@ function makeFakeApi(overrides: {
       warn(_msg: string) {},
       info(_msg: string) {},
     },
-    registerMemoryCapability(_id: string, _cap: unknown) {},
-    registerContextEngine(_id: string, _factory: () => unknown) {},
-    on(_event: string, _handler: unknown) {},
-  } as unknown as OpenClawPluginApi;
+    registerMemoryCapability(id: string, _cap: unknown) {
+      registrations.memoryCapabilities.push(id);
+    },
+    registerContextEngine(id: string, _factory: () => unknown) {
+      registrations.contextEngines.push(id);
+    },
+    registerMemoryEmbeddingProvider(provider: { id?: string }) {
+      registrations.embeddingProviders.push(provider.id ?? "");
+    },
+    registerRuntimeLifecycle(lifecycle: { id?: string }) {
+      registrations.runtimeLifecycles.push(lifecycle.id ?? "");
+    },
+    registerService(service: { id?: string }) {
+      registrations.services.push(service.id ?? "");
+    },
+    on(event: string, _handler: unknown) {
+      registrations.hooks.push(event);
+    },
+    registrations,
+  } as unknown as InstrumentedApi;
 }
 
 // slot: "libravdb-memory" — no conflict, should not throw
 test("slot check — ours: register succeeds", () => {
   const api = makeFakeApi({ slotsMemory: "libravdb-memory" });
   assert.doesNotThrow(() => register(api), "should not throw when slot is libravdb-memory");
+  assert.deepEqual(api.registrations.memoryCapabilities, [MEMORY_ID]);
+  assert.deepEqual(api.registrations.contextEngines, [MEMORY_ID]);
+  assert.deepEqual(api.registrations.embeddingProviders, [
+    "libravdb-bundled",
+    "libravdb-onnx",
+  ]);
+  assert.deepEqual(api.registrations.services, [
+    "libravdb-markdown-ingestion",
+    "libravdb-dream-promotion",
+  ]);
+  assert.deepEqual(api.registrations.runtimeLifecycles, ["libravdb-shutdown"]);
+  assert.deepEqual(api.registrations.hooks, [
+    "before_reset",
+    "session_end",
+    "agent_end",
+    "gateway_stop",
+  ]);
 });
 
 // slot: another plugin — should throw with slot name in message
@@ -65,12 +117,24 @@ test("slot check — other plugin: register throws", () => {
 test("slot check — unset: register succeeds", () => {
   const api = makeFakeApi({ slotsMemory: undefined });
   assert.doesNotThrow(() => register(api), "should not throw when slot is unset");
+  assert.deepEqual(api.registrations.memoryCapabilities, []);
+  assert.deepEqual(api.registrations.contextEngines, []);
+  assert.deepEqual(api.registrations.embeddingProviders, []);
+  assert.deepEqual(api.registrations.services, []);
+  assert.deepEqual(api.registrations.runtimeLifecycles, []);
+  assert.deepEqual(api.registrations.hooks, []);
 });
 
-// slot: "none" — memory disabled, should not throw
+// slot: "none" — memory disabled, should not throw or register hooks
 test("slot check — 'none': register succeeds", () => {
   const api = makeFakeApi({ slotsMemory: "none" });
   assert.doesNotThrow(() => register(api), "should not throw when slot is 'none'");
+  assert.deepEqual(api.registrations.memoryCapabilities, []);
+  assert.deepEqual(api.registrations.contextEngines, []);
+  assert.deepEqual(api.registrations.embeddingProviders, []);
+  assert.deepEqual(api.registrations.services, []);
+  assert.deepEqual(api.registrations.runtimeLifecycles, []);
+  assert.deepEqual(api.registrations.hooks, []);
 });
 
 // registrationMode: "full" — registration proceeds

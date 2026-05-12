@@ -73,13 +73,20 @@ export function register(api: OpenClawPluginApi) {
   // Exclusive slot check: refuse to register if another plugin owns the memory slot.
   // plugins.slots.memory is the only configurable slot; context engine exclusivity
   // is enforced by the registry at runtime (no config surface for it).
-  // "none" means memory is disabled, not a conflict, allow registration.
+  // "none" or an unset slot means memory is disabled, not a conflict.
   const memSlot = api.config?.plugins?.slots?.memory;
   if (memSlot && memSlot !== MEMORY_ID && memSlot !== "none") {
     throw new Error(
       `[libravdb-memory] plugins.slots.memory is "${memSlot}". ` +
         `Set it to "libravdb-memory" before enabling this plugin.`,
     );
+  }
+  if (memSlot !== MEMORY_ID) {
+    logger.info?.(
+      `[libravdb-memory] plugins.slots.memory is ${memSlot ?? "(unset)"}; ` +
+        `skipping memory and context-engine hooks.`,
+    );
+    return;
   }
 
   // Migrated from three legacy calls to a single registerMemoryCapability.
