@@ -303,6 +303,14 @@ function truncateContentToTokenBudget(content: unknown, tokenBudget: number): st
   return normalized.slice(normalized.length - maxChars);
 }
 
+function truncateSystemPromptAdditionToTokenBudget(value: string, tokenBudget: number): string {
+  if (tokenBudget <= 0) return "";
+  const maxChars = Math.max(1, tokenBudget * APPROX_CHARS_PER_TOKEN);
+  if (value.length <= maxChars) return value;
+  // System additions are head-structured: preserve XML/preamble/instructions.
+  return value.slice(0, maxChars);
+}
+
 function trimMessagesToBudget(
   messages: OpenClawCompatibleMessage[],
   tokenBudget: number,
@@ -546,13 +554,14 @@ function ensureReplaySafeUserTurn(
   if (typeof tokenBudget === "number" && Number.isFinite(tokenBudget) && tokenBudget > 0) {
     const effectiveBudget = resolveEffectiveAssembleBudget(tokenBudget);
     const fallbackCost = approximateMessageTokens(fallbackUser);
+    const systemPromptTokens = approximateTokenCount(assembled.systemPromptAddition);
     const fullMessages = [fallbackUser, ...assembled.messages];
-    const fullApproxTokens = fallbackCost + approximateMessagesTokens(assembled.messages);
+    const fullApproxTokens = systemPromptTokens + fallbackCost + approximateMessagesTokens(assembled.messages);
     if (baseEstimatedTokens + fallbackCost <= effectiveBudget && fullApproxTokens <= effectiveBudget) {
       return {
         ...assembled,
         messages: fullMessages,
-        estimatedTokens: baseEstimatedTokens + fallbackCost,
+        estimatedTokens: Math.max(baseEstimatedTokens + fallbackCost, fullApproxTokens),
       };
     }
 
@@ -560,6 +569,7 @@ function ensureReplaySafeUserTurn(
       const truncated = truncateContentToTokenBudget(fallbackUser.content, Math.max(1, effectiveBudget - 8));
       return {
         ...assembled,
+        systemPromptAddition: "",
         messages: truncated ? [{ ...fallbackUser, content: truncated }] : [],
         estimatedTokens: Math.min(
           effectiveBudget,
@@ -568,13 +578,23 @@ function ensureReplaySafeUserTurn(
       };
     }
 
-    const remainingBudget = Math.max(0, effectiveBudget - fallbackCost);
-    const trimmedMessages = trimMessagesToBudget(assembled.messages, remainingBudget);
+    const remainingBudget = effectiveBudget - fallbackCost;
+    const systemPromptAddition =
+      systemPromptTokens > remainingBudget
+        ? truncateSystemPromptAdditionToTokenBudget(assembled.systemPromptAddition, remainingBudget)
+        : assembled.systemPromptAddition;
+    const trimmedSystemPromptTokens = approximateTokenCount(systemPromptAddition);
+    const messageBudget = Math.max(0, remainingBudget - trimmedSystemPromptTokens);
+    const trimmedMessages = trimMessagesToBudget(assembled.messages, messageBudget);
     const messages = [fallbackUser, ...trimmedMessages];
     return {
       ...assembled,
+      systemPromptAddition,
       messages,
-      estimatedTokens: Math.min(effectiveBudget, fallbackCost + approximateMessagesTokens(trimmedMessages)),
+      estimatedTokens: Math.min(
+        effectiveBudget,
+        fallbackCost + trimmedSystemPromptTokens + approximateMessagesTokens(trimmedMessages),
+      ),
     };
   }
 

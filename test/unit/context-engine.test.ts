@@ -401,6 +401,37 @@ test("context engine assemble preserves reinjected user turn during budget clamp
   assert.ok(assembled.estimatedTokens <= 44);
 });
 
+test("context engine assemble budgets system prompt when preserving reinjected user turn", async () => {
+  const rpc = new FakeRpc();
+  rpc.assembleResponse = {
+    messages: [{ role: "assistant", content: "x".repeat(100) }],
+    estimatedTokens: 999,
+    systemPromptAddition: `<context>\n${"s".repeat(500)}`,
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn() {},
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "current user query")],
+    prompt: "current user query",
+    tokenBudget: 300,
+  });
+
+  const approxPromptTokens = Math.ceil(assembled.systemPromptAddition.length / 4);
+  const approxUserTokens = Math.ceil(String(assembled.messages[0]?.content ?? "").length / 4) + 8;
+
+  assert.equal(assembled.messages.length, 1);
+  assert.equal(assembled.messages[0]?.role, "user");
+  assert.equal(assembled.messages[0]?.content, "current user query");
+  assert.ok(approxPromptTokens + approxUserTokens <= 44);
+  assert.ok(assembled.estimatedTokens <= 44);
+});
+
 test("context engine assemble injects exact factual recall for marker tokens", async () => {
   const rpc = new FakeRpc();
   const marker = "CROSS_SESSION_MEMORY_MARKER_1234567890";
