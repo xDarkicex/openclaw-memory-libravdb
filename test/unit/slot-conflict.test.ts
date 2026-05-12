@@ -113,16 +113,27 @@ test("slot check — other plugin: register throws", () => {
   );
 });
 
-// slot: undefined — nobody owns it, should not throw
-test("slot check — unset: register succeeds", () => {
+// slot: undefined — nobody owns it, should warn but still register
+test("slot check — unset: register succeeds with warning", () => {
   const api = makeFakeApi({ slotsMemory: undefined });
   assert.doesNotThrow(() => register(api), "should not throw when slot is unset");
-  assert.deepEqual(api.registrations.memoryCapabilities, []);
-  assert.deepEqual(api.registrations.contextEngines, []);
-  assert.deepEqual(api.registrations.embeddingProviders, []);
-  assert.deepEqual(api.registrations.services, []);
-  assert.deepEqual(api.registrations.runtimeLifecycles, []);
-  assert.deepEqual(api.registrations.hooks, []);
+  assert.deepEqual(api.registrations.memoryCapabilities, [MEMORY_ID]);
+  assert.deepEqual(api.registrations.contextEngines, [MEMORY_ID]);
+  assert.deepEqual(api.registrations.embeddingProviders, [
+    "libravdb-bundled",
+    "libravdb-onnx",
+  ]);
+  assert.deepEqual(api.registrations.services, [
+    "libravdb-markdown-ingestion",
+    "libravdb-dream-promotion",
+  ]);
+  assert.deepEqual(api.registrations.runtimeLifecycles, ["libravdb-shutdown"]);
+  assert.deepEqual(api.registrations.hooks, [
+    "before_reset",
+    "session_end",
+    "agent_end",
+    "gateway_stop",
+  ]);
 });
 
 // slot: "none" — memory disabled, should not throw or register hooks
