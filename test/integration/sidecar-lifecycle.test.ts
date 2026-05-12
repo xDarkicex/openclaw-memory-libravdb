@@ -161,6 +161,24 @@ test("sidecar crash mid-session reconnects within the restart window", async () 
   assert.equal(handle.isDegraded(), false);
 });
 
+test("sidecar does not reconnect from a scheduled restart after shutdown", async () => {
+  const runtime = createRuntime({});
+  const logger = createMemoryLogger();
+  const handle = await startSidecar({ rpcTimeoutMs: 50, maxRetries: 2 }, logger, runtime.runtime);
+
+  runtime.sockets[0]?.emitClose();
+  await flushAsyncWork();
+
+  assert.equal(runtime.scheduled.length, 1);
+
+  await handle.shutdown();
+  runtime.scheduled[0]?.restart();
+  await flushAsyncWork();
+
+  assert.equal(runtime.sockets.length, 1);
+  assert.equal(handle.isDegraded(), false);
+});
+
 test("sidecar runtime socket errors reject pending RPCs and recover after restart", async () => {
   const runtime = createRuntime({});
   const logger = createMemoryLogger();
