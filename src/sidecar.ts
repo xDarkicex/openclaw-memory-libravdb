@@ -18,6 +18,7 @@ export interface SidecarRuntime {
   resolveEndpoint(cfg: PluginConfig): string | Promise<string>;
   createSocket(endpoint: string): SidecarSocket;
   scheduleRestart(delayMs: number, restart: () => void): void;
+  stabilityWindowMs?: number;
 }
 
 class PlaceholderSocket implements SidecarSocket {
@@ -269,10 +270,16 @@ class SidecarSupervisor implements SidecarHandle {
 
   private scheduleStabilityReset(): void {
     this.clearStabilityTimer();
+    const windowMs = this.runtime.stabilityWindowMs ?? CONNECTION_STABILITY_WINDOW_MS;
+    if (windowMs <= 0) {
+      this.retries = 0;
+      return;
+    }
     this.stabilityTimer = setTimeout(() => {
       this.stabilityTimer = null;
       this.retries = 0;
-    }, CONNECTION_STABILITY_WINDOW_MS);
+      this.logger.info?.("[libravdb] sidecar connection stable; retry counter reset");
+    }, windowMs);
     this.stabilityTimer.unref?.();
   }
 
