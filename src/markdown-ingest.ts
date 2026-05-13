@@ -533,6 +533,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
       return "unchanged";
     }
+    if (!consumeIngestBudget(ingestBudget)) {
+      return "deferred";
+    }
 
     const bytes = await this.safeReadFile(filePath);
     if (!bytes) {
@@ -561,9 +564,6 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       this.fileStates.delete(sourceDoc);
       this.snapshotDirty = true;
       return "skipped";
-    }
-    if (!consumeIngestBudget(ingestBudget)) {
-      return "deferred";
     }
     await this.ingestMarkdownDocument(sourceDoc, text, rootState.root, relativePath, fileHash, stat.size, stat.mtimeMs);
     this.setFileState(sourceDoc, {

@@ -39,12 +39,14 @@ class FakeRpcClient {
 
 class FakeFsApi {
   callbacks = new Map<string, Array<(event: string, filename: string | Buffer | null) => void>>();
+  readFileCalls: string[] = [];
 
   async readdir(dir: string) {
     return await fsp.readdir(dir, { withFileTypes: true });
   }
 
   async readFile(file: string) {
+    this.readFileCalls.push(file);
     return await fsp.readFile(file);
   }
 
@@ -583,6 +585,7 @@ test("markdown ingestion batches fresh files and resumes deferred scans", async 
   }
 
   const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
   const infoMessages: string[] = [];
   const handle = createMarkdownIngestionHandle(
     {
@@ -595,16 +598,19 @@ test("markdown ingestion batches fresh files and resumes deferred scans", async 
     },
     async () => rpc,
     { error() {}, warn() {}, info: (message: string) => infoMessages.push(message) },
+    fsApi as never,
   );
 
   await handle.start();
 
   assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 2);
+  assert.equal(fsApi.readFileCalls.length, 2);
   assert.equal(infoMessages.some((message) => message.includes("ingested=2") && message.includes("deferred=1")), true);
 
   await delay(75);
 
   assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 3);
+  assert.equal(fsApi.readFileCalls.length, 3);
   assert.equal(infoMessages.some((message) => message.includes("ingested=1") && message.includes("unchanged=2")), true);
 
   await handle.stop();
