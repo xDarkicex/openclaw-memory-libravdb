@@ -615,3 +615,43 @@ test("markdown ingestion batches fresh files and resumes deferred scans", async 
 
   await handle.stop();
 });
+
+test("markdown ingestion byte budget defers reads for oversized batches", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-byte-batch-"));
+  const paths = ["alpha.md", "bravo.md", "charlie.md"].map((name) => path.join(tempRoot, name));
+  for (const filePath of paths) {
+    await fsp.writeFile(filePath, "123456789\n");
+  }
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const infoMessages: string[] = [];
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+      markdownIngestionMaxFilesPerScan: 0,
+      markdownIngestionMaxBytesPerScan: 20,
+      markdownIngestionBatchDelayMs: 50,
+    },
+    async () => rpc,
+    { error() {}, warn() {}, info: (message: string) => infoMessages.push(message) },
+    fsApi as never,
+  );
+
+  await handle.start();
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 2);
+  assert.equal(fsApi.readFileCalls.length, 2);
+  assert.equal(infoMessages.some((message) => message.includes("ingested=2") && message.includes("deferred=1")), true);
+
+  await delay(75);
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 3);
+  assert.equal(fsApi.readFileCalls.length, 3);
+  assert.equal(infoMessages.some((message) => message.includes("ingested=1") && message.includes("unchanged=2")), true);
+
+  await handle.stop();
+});

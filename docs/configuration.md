@@ -93,6 +93,7 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | `markdownIngestionExclude` | string[] | — | Glob patterns to exclude |
 | `markdownIngestionDebounceMs` | number | `150` | Debounce window for file change events |
 | `markdownIngestionMaxFilesPerScan` | number | `4` | Maximum changed/new files to ingest per scan; `0` disables the cap |
+| `markdownIngestionMaxBytesPerScan` | number | `1048576` | Maximum changed/new bytes to read and ingest per scan; `0` disables the cap; one oversized file is still allowed per scan |
 | `markdownIngestionBatchDelayMs` | number | `1000` | Delay before continuing a scan with deferred files |
 | `markdownIngestionObsidianEnabled` | boolean | `false` | Watch Obsidian vault roots |
 | `markdownIngestionObsidianRoots` | string[] | — | Obsidian vault directories |
@@ -100,6 +101,7 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | `markdownIngestionObsidianExclude` | string[] | — | Obsidian glob exclude patterns |
 | `markdownIngestionObsidianDebounceMs` | number | `150` | Obsidian debounce window |
 | `markdownIngestionObsidianMaxFilesPerScan` | number | `4` | Maximum changed/new Obsidian files to ingest per scan; `0` disables the cap |
+| `markdownIngestionObsidianMaxBytesPerScan` | number | `1048576` | Maximum changed/new Obsidian bytes to read and ingest per scan; `0` disables the cap; falls back to `markdownIngestionMaxBytesPerScan` when unset |
 | `markdownIngestionObsidianBatchDelayMs` | number | `1000` | Delay before continuing an Obsidian scan with deferred files |
 
 Configured markdown roots are ignored unless the matching enable flag is set to

@@ -10,6 +10,7 @@ import { IngestQueue } from "./ingest-queue.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_MAX_FILES_PER_SCAN = 4;
+const DEFAULT_MAX_BYTES_PER_SCAN = 1024 * 1024;
 const DEFAULT_BATCH_DELAY_MS = 1000;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
 const MARKDOWN_INGEST_VERSION = 3;
@@ -82,6 +83,7 @@ interface GenericMarkdownSourceConfig {
   debounceMs?: number;
   snapshotPath?: string;
   maxFilesPerScan?: number;
+  maxBytesPerScan?: number;
   batchDelayMs?: number;
 }
 
@@ -103,6 +105,8 @@ type SyncMarkdownResult = "ingested" | "unchanged" | "deferred" | "deleted" | "s
 interface IngestBudget {
   maxFiles: number;
   usedFiles: number;
+  maxBytes: number;
+  usedBytes: number;
 }
 
 interface MarkdownSnapshotFile {
@@ -153,6 +157,7 @@ export function createMarkdownIngestionHandle(
           debounceMs: cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
           snapshotPath: resolveMarkdownSnapshotPath("generic", cfg.markdownIngestionSnapshotPath),
           maxFilesPerScan: cfg.markdownIngestionMaxFilesPerScan,
+          maxBytesPerScan: cfg.markdownIngestionMaxBytesPerScan,
           batchDelayMs: cfg.markdownIngestionBatchDelayMs,
         },
         getRpc,
@@ -174,6 +179,7 @@ export function createMarkdownIngestionHandle(
           debounceMs: cfg.markdownIngestionObsidianDebounceMs ?? cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
           snapshotPath: resolveMarkdownSnapshotPath("obsidian", cfg.markdownIngestionObsidianSnapshotPath),
           maxFilesPerScan: cfg.markdownIngestionObsidianMaxFilesPerScan ?? cfg.markdownIngestionMaxFilesPerScan,
+          maxBytesPerScan: cfg.markdownIngestionObsidianMaxBytesPerScan ?? cfg.markdownIngestionMaxBytesPerScan,
           batchDelayMs: cfg.markdownIngestionObsidianBatchDelayMs ?? cfg.markdownIngestionBatchDelayMs,
         },
         getRpc,
@@ -234,6 +240,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly logger: LoggerLike;
   private readonly snapshotPath: string;
   private readonly maxFilesPerScan: number;
+  private readonly maxBytesPerScan: number;
   private readonly batchDelayMs: number;
   private readonly states = new Map<string, RootState>();
   private readonly fileStates = new Map<string, FileState>();
@@ -257,6 +264,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     this.logger = logger;
     this.snapshotPath = config.snapshotPath ?? resolveMarkdownSnapshotPath(kind);
     this.maxFilesPerScan = normalizeMarkdownMaxFilesPerScan(config.maxFilesPerScan);
+    this.maxBytesPerScan = normalizeMarkdownMaxBytesPerScan(config.maxBytesPerScan);
     this.batchDelayMs = normalizeMarkdownBatchDelayMs(config.batchDelayMs);
     this.tokenizerId = DEFAULT_TOKENIZER_ID;
     this.coreDoc = true;
@@ -337,7 +345,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     let scheduleContinuation = false;
     const scan = (async () => {
       const stats = createScanStats();
-      const ingestBudget = createIngestBudget(this.maxFilesPerScan);
+      const ingestBudget = createIngestBudget(this.maxFilesPerScan, this.maxBytesPerScan);
       const startedAt = Date.now();
       try {
         const currentFiles = new Set<string>();
@@ -533,7 +541,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
       return "unchanged";
     }
-    if (!consumeIngestBudget(ingestBudget)) {
+    if (!consumeIngestBudget(ingestBudget, stat.size)) {
       return "deferred";
     }
 
@@ -711,18 +719,20 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 }
 
-function createIngestBudget(maxFiles: number): IngestBudget {
-  return { maxFiles, usedFiles: 0 };
+function createIngestBudget(maxFiles: number, maxBytes: number): IngestBudget {
+  return { maxFiles, usedFiles: 0, maxBytes, usedBytes: 0 };
 }
 
-function consumeIngestBudget(budget: IngestBudget): boolean {
-  if (!Number.isFinite(budget.maxFiles)) {
-    return true;
+function consumeIngestBudget(budget: IngestBudget, fileSize: number): boolean {
+  const normalizedFileSize = Number.isFinite(fileSize) ? Math.max(0, Math.floor(fileSize)) : 0;
+  if (Number.isFinite(budget.maxFiles) && budget.usedFiles >= budget.maxFiles) {
+    return false;
   }
-  if (budget.usedFiles >= budget.maxFiles) {
+  if (Number.isFinite(budget.maxBytes) && budget.usedBytes > 0 && budget.usedBytes + normalizedFileSize > budget.maxBytes) {
     return false;
   }
   budget.usedFiles++;
+  budget.usedBytes += normalizedFileSize;
   return true;
 }
 
@@ -791,6 +801,19 @@ function normalizeMarkdownMaxFilesPerScan(value?: number): number {
   }
   if (!Number.isFinite(value) || value < 0) {
     return DEFAULT_MAX_FILES_PER_SCAN;
+  }
+  if (value === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(1, Math.floor(value));
+}
+
+function normalizeMarkdownMaxBytesPerScan(value?: number): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_BYTES_PER_SCAN;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_MAX_BYTES_PER_SCAN;
   }
   if (value === 0) {
     return Number.POSITIVE_INFINITY;

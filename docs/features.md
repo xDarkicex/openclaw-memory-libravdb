@@ -56,6 +56,7 @@ Relevant config fields:
 | `markdownIngestionExclude` | Optional exclude globs for generic roots. |
 | `markdownIngestionDebounceMs` | Watch debounce window, default `150`. |
 | `markdownIngestionMaxFilesPerScan` | Caps changed/new generic files per scan, default `4`; `0` disables the cap. |
+| `markdownIngestionMaxBytesPerScan` | Caps changed/new generic bytes read and ingested per scan, default `1048576`; `0` disables the cap; one oversized file is still allowed per scan. |
 | `markdownIngestionBatchDelayMs` | Delay before continuing deferred generic scans, default `1000`. |
 | `markdownIngestionObsidianEnabled` | Enables Obsidian ingestion when vault roots exist. |
 | `markdownIngestionObsidianRoots` | Obsidian vault roots to watch. |
@@ -63,6 +64,7 @@ Relevant config fields:
 | `markdownIngestionObsidianExclude` | Optional exclude globs for Obsidian roots. |
 | `markdownIngestionObsidianDebounceMs` | Obsidian watch debounce window, default `150`. |
 | `markdownIngestionObsidianMaxFilesPerScan` | Caps changed/new Obsidian files per scan, default `4`; `0` disables the cap. |
+| `markdownIngestionObsidianMaxBytesPerScan` | Caps changed/new Obsidian bytes read and ingested per scan, default `1048576`; `0` disables the cap; falls back to `markdownIngestionMaxBytesPerScan` when unset. |
 | `markdownIngestionObsidianBatchDelayMs` | Delay before continuing deferred Obsidian scans, default `1000`. |
 
 By default, the Obsidian adapter auto-ingests notes that look like memory notes,

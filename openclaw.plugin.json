@@ -218,6 +218,12 @@
         "default": 4,
         "description": "Maximum changed/new generic markdown files to ingest per scan. Set 0 for unlimited."
       },
+      "markdownIngestionMaxBytesPerScan": {
+        "type": "number",
+        "minimum": 0,
+        "default": 1048576,
+        "description": "Maximum changed/new generic markdown bytes to read and ingest per scan. Set 0 for unlimited; one oversized file is still allowed per scan."
+      },
       "markdownIngestionBatchDelayMs": {
         "type": "number",
         "minimum": 0,
@@ -229,6 +235,12 @@
         "minimum": 0,
         "default": 4,
         "description": "Maximum changed/new Obsidian markdown files to ingest per scan. Set 0 for unlimited."
+      },
+      "markdownIngestionObsidianMaxBytesPerScan": {
+        "type": "number",
+        "minimum": 0,
+        "default": 1048576,
+        "description": "Maximum changed/new Obsidian markdown bytes to read and ingest per scan. Falls back to markdownIngestionMaxBytesPerScan when unset. Set 0 for unlimited; one oversized file is still allowed per scan."
       },
       "markdownIngestionObsidianBatchDelayMs": {
         "type": "number",
