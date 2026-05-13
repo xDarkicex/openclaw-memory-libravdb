@@ -585,3 +585,36 @@ test("afterTurn does not trigger predictive compaction without authoritative cur
   );
   assert.equal(rpc.getLastCall("compact_session"), null);
 });
+
+test("afterTurn triggers predictive compaction from oversized forwarded messages", async () => {
+  const rpc = new StaticContractRpc();
+  rpc.mockResponses.set("compact_session", { didCompact: true });
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    compactionThresholdFraction: 0.8,
+  };
+
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
+
+  await context.afterTurn({
+    sessionId: "test-session",
+    userId: "test-user",
+    messages: [
+      { role: "user", content: "please run the tool" },
+      { role: "assistant", content: "x".repeat(4000) },
+    ],
+    prePromptMessageCount: 1,
+    tokenBudget: 1000,
+    runtimeContext: { currentTokenCount: Number.NaN },
+  });
+
+  assert.deepEqual(
+    rpc.calls.map((call) => call.method),
+    ["after_turn_kernel", "compact_session"],
+  );
+
+  const compactParams = rpc.getLastCall("compact_session");
+  assert.ok(compactParams, "Expected compact_session to be called");
+  assert.ok(compactParams.currentTokenCount >= 800);
+  assert.equal(compactParams.targetSize, 799);
+});

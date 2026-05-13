@@ -419,6 +419,23 @@ function resolvePredictiveCompactionTokenCount(args: {
   );
 }
 
+function resolveAfterTurnPredictiveCompactionTokenCount(args: {
+  currentTokenCount?: number;
+  messages: OpenClawCompatibleMessage[];
+}): number | undefined {
+  const currentTokenCount = normalizeCurrentTokenCount(args.currentTokenCount);
+  const forwardedMessageTokens = normalizeCurrentTokenCount(
+    approximateMessagesTokens(args.messages),
+  );
+  if (currentTokenCount == null) {
+    return forwardedMessageTokens;
+  }
+  if (forwardedMessageTokens == null) {
+    return currentTokenCount;
+  }
+  return Math.max(currentTokenCount, forwardedMessageTokens);
+}
+
 export function normalizeKernelMessage(message: {
   role: string;
   content: unknown;
@@ -785,16 +802,21 @@ export function buildContextEngineFactory(
 
   async function performAfterTurnPredictiveCompaction(args: {
     sessionId: string;
+    messages: OpenClawCompatibleMessage[];
     tokenBudget?: number;
     currentTokenCount?: number;
   }): Promise<void> {
     const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
-    const predictiveTargetSize = resolvePredictiveCompactionTarget({
+    const currentContextTokens = resolveAfterTurnPredictiveCompactionTokenCount({
       currentTokenCount: args.currentTokenCount,
+      messages: args.messages,
+    });
+    const predictiveTargetSize = resolvePredictiveCompactionTarget({
+      currentTokenCount: currentContextTokens,
       threshold: dynamicCompactThreshold,
     });
     if (
-      args.currentTokenCount == null ||
+      currentContextTokens == null ||
       dynamicCompactThreshold == null ||
       predictiveTargetSize == null
     ) {
@@ -804,7 +826,7 @@ export function buildContextEngineFactory(
       logger,
       phase: "afterTurn",
       sessionId: args.sessionId,
-      currentTokenCount: args.currentTokenCount,
+      currentTokenCount: currentContextTokens,
       threshold: dynamicCompactThreshold,
       targetSize: predictiveTargetSize,
       tokenBudget: args.tokenBudget,
@@ -814,13 +836,13 @@ export function buildContextEngineFactory(
       targetSize: predictiveTargetSize,
       tokenBudget: args.tokenBudget,
       force: true,
-      currentTokenCount: args.currentTokenCount,
+      currentTokenCount: currentContextTokens,
     });
     logPredictiveCompactionOutcome({
       logger,
       phase: "afterTurn",
       sessionId: args.sessionId,
-      currentTokenCount: args.currentTokenCount,
+      currentTokenCount: currentContextTokens,
       threshold: dynamicCompactThreshold,
       targetSize: predictiveTargetSize,
       tokenBudget: args.tokenBudget,
@@ -1075,6 +1097,7 @@ export function buildContextEngineFactory(
           });
           await performAfterTurnPredictiveCompaction({
             sessionId,
+            messages,
             tokenBudget: args.tokenBudget,
             currentTokenCount,
           });
@@ -1090,6 +1113,7 @@ export function buildContextEngineFactory(
         });
         await performAfterTurnPredictiveCompaction({
           sessionId,
+          messages,
           tokenBudget: args.tokenBudget,
           currentTokenCount,
         });
