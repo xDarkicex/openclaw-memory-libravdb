@@ -212,6 +212,30 @@
       "markdownIngestionObsidianSnapshotPath": {
         "type": "string"
       },
+      "markdownIngestionMaxFilesPerScan": {
+        "type": "number",
+        "minimum": 0,
+        "default": 4,
+        "description": "Maximum changed/new generic markdown files to ingest per scan. Set 0 for unlimited."
+      },
+      "markdownIngestionBatchDelayMs": {
+        "type": "number",
+        "minimum": 0,
+        "default": 1000,
+        "description": "Delay before continuing a generic markdown scan when files were deferred by markdownIngestionMaxFilesPerScan."
+      },
+      "markdownIngestionObsidianMaxFilesPerScan": {
+        "type": "number",
+        "minimum": 0,
+        "default": 4,
+        "description": "Maximum changed/new Obsidian markdown files to ingest per scan. Set 0 for unlimited."
+      },
+      "markdownIngestionObsidianBatchDelayMs": {
+        "type": "number",
+        "minimum": 0,
+        "default": 1000,
+        "description": "Delay before continuing an Obsidian scan when files were deferred by markdownIngestionObsidianMaxFilesPerScan."
+      },
       "dreamPromotionEnabled": {
         "type": "boolean",
         "default": false

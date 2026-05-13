@@ -92,11 +92,15 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | `markdownIngestionInclude` | string[] | — | Glob patterns to include |
 | `markdownIngestionExclude` | string[] | — | Glob patterns to exclude |
 | `markdownIngestionDebounceMs` | number | `150` | Debounce window for file change events |
+| `markdownIngestionMaxFilesPerScan` | number | `4` | Maximum changed/new files to ingest per scan; `0` disables the cap |
+| `markdownIngestionBatchDelayMs` | number | `1000` | Delay before continuing a scan with deferred files |
 | `markdownIngestionObsidianEnabled` | boolean | `false` | Watch Obsidian vault roots |
 | `markdownIngestionObsidianRoots` | string[] | — | Obsidian vault directories |
 | `markdownIngestionObsidianInclude` | string[] | — | Obsidian glob include patterns |
 | `markdownIngestionObsidianExclude` | string[] | — | Obsidian glob exclude patterns |
 | `markdownIngestionObsidianDebounceMs` | number | `150` | Obsidian debounce window |
+| `markdownIngestionObsidianMaxFilesPerScan` | number | `4` | Maximum changed/new Obsidian files to ingest per scan; `0` disables the cap |
+| `markdownIngestionObsidianBatchDelayMs` | number | `1000` | Delay before continuing an Obsidian scan with deferred files |
 
 Configured markdown roots are ignored unless the matching enable flag is set to
 `true`. Set `markdownIngestionEnabled: true` for generic roots and

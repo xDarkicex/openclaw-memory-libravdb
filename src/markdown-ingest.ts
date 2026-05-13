@@ -9,6 +9,8 @@ import { formatError } from "./format-error.js";
 import { IngestQueue } from "./ingest-queue.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
+const DEFAULT_MAX_FILES_PER_SCAN = 4;
+const DEFAULT_BATCH_DELAY_MS = 1000;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
 const MARKDOWN_INGEST_VERSION = 3;
 const HASH_BACKEND = "wasm-fnv1a64";
@@ -79,6 +81,8 @@ interface GenericMarkdownSourceConfig {
   exclude?: string[];
   debounceMs?: number;
   snapshotPath?: string;
+  maxFilesPerScan?: number;
+  batchDelayMs?: number;
 }
 
 interface ScanStats {
@@ -89,11 +93,17 @@ interface ScanStats {
   filesSkipped: number;
   filesUnchanged: number;
   filesIngested: number;
+  filesDeferred: number;
   filesDeleted: number;
   syncErrors: number;
 }
 
-type SyncMarkdownResult = "ingested" | "unchanged" | "deleted" | "skipped";
+type SyncMarkdownResult = "ingested" | "unchanged" | "deferred" | "deleted" | "skipped";
+
+interface IngestBudget {
+  maxFiles: number;
+  usedFiles: number;
+}
 
 interface MarkdownSnapshotFile {
   version: number;
@@ -142,6 +152,8 @@ export function createMarkdownIngestionHandle(
           exclude: cfg.markdownIngestionExclude,
           debounceMs: cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
           snapshotPath: resolveMarkdownSnapshotPath("generic", cfg.markdownIngestionSnapshotPath),
+          maxFilesPerScan: cfg.markdownIngestionMaxFilesPerScan,
+          batchDelayMs: cfg.markdownIngestionBatchDelayMs,
         },
         getRpc,
         logger,
@@ -161,6 +173,8 @@ export function createMarkdownIngestionHandle(
           exclude: cfg.markdownIngestionObsidianExclude,
           debounceMs: cfg.markdownIngestionObsidianDebounceMs ?? cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
           snapshotPath: resolveMarkdownSnapshotPath("obsidian", cfg.markdownIngestionObsidianSnapshotPath),
+          maxFilesPerScan: cfg.markdownIngestionObsidianMaxFilesPerScan ?? cfg.markdownIngestionMaxFilesPerScan,
+          batchDelayMs: cfg.markdownIngestionObsidianBatchDelayMs ?? cfg.markdownIngestionBatchDelayMs,
         },
         getRpc,
         logger,
@@ -219,6 +233,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly getRpc: RpcGetterLike;
   private readonly logger: LoggerLike;
   private readonly snapshotPath: string;
+  private readonly maxFilesPerScan: number;
+  private readonly batchDelayMs: number;
   private readonly states = new Map<string, RootState>();
   private readonly fileStates = new Map<string, FileState>();
   private readonly activeScans = new Set<Promise<void>>();
@@ -240,6 +256,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     this.getRpc = getRpc;
     this.logger = logger;
     this.snapshotPath = config.snapshotPath ?? resolveMarkdownSnapshotPath(kind);
+    this.maxFilesPerScan = normalizeMarkdownMaxFilesPerScan(config.maxFilesPerScan);
+    this.batchDelayMs = normalizeMarkdownBatchDelayMs(config.batchDelayMs);
     this.tokenizerId = DEFAULT_TOKENIZER_ID;
     this.coreDoc = true;
   }
@@ -316,24 +334,27 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     rootState.scanState.scanning = true;
+    let scheduleContinuation = false;
     const scan = (async () => {
       const stats = createScanStats();
+      const ingestBudget = createIngestBudget(this.maxFilesPerScan);
       const startedAt = Date.now();
       try {
         const currentFiles = new Set<string>();
-        await this.walkDirectory(rootState, rootState.root, currentFiles, stats);
+        await this.walkDirectory(rootState, rootState.root, currentFiles, stats, ingestBudget);
         if (!this.stopping) {
           await this.pruneDeletedFiles(rootState, currentFiles, stats);
           rootState.knownFiles = currentFiles;
           await this.saveSnapshotIfDirty();
           this.logScanStats(rootState.root, stats, Date.now() - startedAt);
+          scheduleContinuation = stats.filesDeferred > 0;
         }
       } finally {
         rootState.scanState.scanning = false;
-        if (rootState.scanState.dirty) {
+        if (rootState.scanState.dirty || scheduleContinuation) {
           rootState.scanState.dirty = false;
           if (!this.stopping) {
-            this.scheduleRootScan(rootState);
+            this.scheduleRootScan(rootState, scheduleContinuation ? this.batchDelayMs : undefined);
           }
         }
       }
@@ -347,7 +368,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
   }
 
-  private scheduleRootScan(rootState: RootState): void {
+  private scheduleRootScan(rootState: RootState, delayMs = this.debounceMs): void {
     if (!this.started || this.stopping) {
       return;
     }
@@ -363,10 +384,16 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       void this.scanRoot(rootState.root).catch((error) => {
         this.logger.warn?.(`[markdown-ingest] root scan failed for ${rootState.root}: ${formatError(error)}`);
       });
-    }, this.debounceMs);
+    }, delayMs);
   }
 
-  private async walkDirectory(rootState: RootState, dir: string, currentFiles: Set<string>, stats: ScanStats): Promise<void> {
+  private async walkDirectory(
+    rootState: RootState,
+    dir: string,
+    currentFiles: Set<string>,
+    stats: ScanStats,
+    ingestBudget: IngestBudget,
+  ): Promise<void> {
     if (this.shouldPruneDirectory(rootState.root, dir)) {
       stats.directoriesPruned++;
       return;
@@ -392,7 +419,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       const child = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await this.walkDirectory(rootState, child, currentFiles, stats);
+        await this.walkDirectory(rootState, child, currentFiles, stats, ingestBudget);
         continue;
       }
       if (!entry.isFile() || !isMarkdownFile(entry.name)) {
@@ -406,7 +433,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       stats.filesIncluded++;
       currentFiles.add(child);
       try {
-        const result = await this.syncMarkdownFile(rootState, child);
+        const result = await this.syncMarkdownFile(rootState, child, ingestBudget);
         recordSyncResult(stats, result);
       } catch (error) {
         stats.syncErrors++;
@@ -491,7 +518,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
   }
 
-  private async syncMarkdownFile(rootState: RootState, filePath: string): Promise<SyncMarkdownResult> {
+  private async syncMarkdownFile(rootState: RootState, filePath: string, ingestBudget: IngestBudget): Promise<SyncMarkdownResult> {
     const sourceDoc = filePath;
     const relativePath = toPosixPath(path.relative(rootState.root, filePath));
     const stat = await this.safeStat(filePath);
@@ -534,6 +561,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       this.fileStates.delete(sourceDoc);
       this.snapshotDirty = true;
       return "skipped";
+    }
+    if (!consumeIngestBudget(ingestBudget)) {
+      return "deferred";
     }
     await this.ingestMarkdownDocument(sourceDoc, text, rootState.root, relativePath, fileHash, stat.size, stat.mtimeMs);
     this.setFileState(sourceDoc, {
@@ -676,9 +706,24 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
 
   private logScanStats(root: string, stats: ScanStats, durationMs: number): void {
     this.logger.info?.(
-      `[markdown-ingest] ${this.kind} scan complete root=${root} dirs=${stats.directoriesScanned} prunedDirs=${stats.directoriesPruned} markdown=${stats.markdownFilesSeen} included=${stats.filesIncluded} skipped=${stats.filesSkipped} unchanged=${stats.filesUnchanged} ingested=${stats.filesIngested} deleted=${stats.filesDeleted} errors=${stats.syncErrors} durationMs=${durationMs}`,
+      `[markdown-ingest] ${this.kind} scan complete root=${root} dirs=${stats.directoriesScanned} prunedDirs=${stats.directoriesPruned} markdown=${stats.markdownFilesSeen} included=${stats.filesIncluded} skipped=${stats.filesSkipped} unchanged=${stats.filesUnchanged} ingested=${stats.filesIngested} deferred=${stats.filesDeferred} deleted=${stats.filesDeleted} errors=${stats.syncErrors} durationMs=${durationMs}`,
     );
   }
+}
+
+function createIngestBudget(maxFiles: number): IngestBudget {
+  return { maxFiles, usedFiles: 0 };
+}
+
+function consumeIngestBudget(budget: IngestBudget): boolean {
+  if (!Number.isFinite(budget.maxFiles)) {
+    return true;
+  }
+  if (budget.usedFiles >= budget.maxFiles) {
+    return false;
+  }
+  budget.usedFiles++;
+  return true;
 }
 
 function createScanStats(): ScanStats {
@@ -690,6 +735,7 @@ function createScanStats(): ScanStats {
     filesSkipped: 0,
     filesUnchanged: 0,
     filesIngested: 0,
+    filesDeferred: 0,
     filesDeleted: 0,
     syncErrors: 0,
   };
@@ -700,6 +746,8 @@ function recordSyncResult(stats: ScanStats, result: SyncMarkdownResult): void {
     stats.filesIngested++;
   } else if (result === "unchanged") {
     stats.filesUnchanged++;
+  } else if (result === "deferred") {
+    stats.filesDeferred++;
   } else if (result === "deleted") {
     stats.filesDeleted++;
   } else {
@@ -735,6 +783,29 @@ function resolveMarkdownSnapshotPath(kind: string, configuredPath?: string): str
   }
   const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(os.homedir(), ".openclaw");
   return path.join(stateDir, `libravdb-markdown-ingest-${kind}.json`);
+}
+
+function normalizeMarkdownMaxFilesPerScan(value?: number): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_FILES_PER_SCAN;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_MAX_FILES_PER_SCAN;
+  }
+  if (value === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(1, Math.floor(value));
+}
+
+function normalizeMarkdownBatchDelayMs(value?: number): number {
+  if (value === undefined) {
+    return DEFAULT_BATCH_DELAY_MS;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_BATCH_DELAY_MS;
+  }
+  return Math.floor(value);
 }
 
 function isMarkdownIngestionEnabled(cfg: PluginConfig, roots: string[]): boolean {

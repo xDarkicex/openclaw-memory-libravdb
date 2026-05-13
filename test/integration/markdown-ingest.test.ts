@@ -574,3 +574,38 @@ test("markdown ingestion persists snapshots across adapter restarts", async () =
 
   await secondHandle.stop();
 });
+
+test("markdown ingestion batches fresh files and resumes deferred scans", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-batch-"));
+  const paths = ["alpha.md", "bravo.md", "charlie.md"].map((name) => path.join(tempRoot, name));
+  for (const filePath of paths) {
+    await fsp.writeFile(filePath, `# ${path.basename(filePath)}\n\nThis fresh file should be paced.`);
+  }
+
+  const rpc = new FakeRpcClient();
+  const infoMessages: string[] = [];
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+      markdownIngestionMaxFilesPerScan: 2,
+      markdownIngestionBatchDelayMs: 0,
+    },
+    async () => rpc,
+    { error() {}, warn() {}, info: (message: string) => infoMessages.push(message) },
+  );
+
+  await handle.start();
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 2);
+  assert.equal(infoMessages.some((message) => message.includes("ingested=2") && message.includes("deferred=1")), true);
+
+  await delay(25);
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 3);
+  assert.equal(infoMessages.some((message) => message.includes("ingested=1") && message.includes("unchanged=2")), true);
+
+  await handle.stop();
+});

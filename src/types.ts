@@ -51,6 +51,10 @@ export interface PluginConfig {
   markdownIngestionDebounceMs?: number;
   markdownIngestionSnapshotPath?: string;
   markdownIngestionObsidianSnapshotPath?: string;
+  markdownIngestionMaxFilesPerScan?: number;
+  markdownIngestionBatchDelayMs?: number;
+  markdownIngestionObsidianMaxFilesPerScan?: number;
+  markdownIngestionObsidianBatchDelayMs?: number;
   dreamPromotionEnabled?: boolean;
   dreamPromotionDiaryPath?: string;
   dreamPromotionUserId?: string;

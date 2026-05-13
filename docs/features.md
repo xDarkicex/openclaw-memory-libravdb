@@ -55,11 +55,15 @@ Relevant config fields:
 | `markdownIngestionInclude` | Optional include globs for generic roots. |
 | `markdownIngestionExclude` | Optional exclude globs for generic roots. |
 | `markdownIngestionDebounceMs` | Watch debounce window, default `150`. |
+| `markdownIngestionMaxFilesPerScan` | Caps changed/new generic files per scan, default `4`; `0` disables the cap. |
+| `markdownIngestionBatchDelayMs` | Delay before continuing deferred generic scans, default `1000`. |
 | `markdownIngestionObsidianEnabled` | Enables Obsidian ingestion when vault roots exist. |
 | `markdownIngestionObsidianRoots` | Obsidian vault roots to watch. |
 | `markdownIngestionObsidianInclude` | Optional include globs for Obsidian roots. |
 | `markdownIngestionObsidianExclude` | Optional exclude globs for Obsidian roots. |
 | `markdownIngestionObsidianDebounceMs` | Obsidian watch debounce window, default `150`. |
+| `markdownIngestionObsidianMaxFilesPerScan` | Caps changed/new Obsidian files per scan, default `4`; `0` disables the cap. |
+| `markdownIngestionObsidianBatchDelayMs` | Delay before continuing deferred Obsidian scans, default `1000`. |
 
 By default, the Obsidian adapter auto-ingests notes that look like memory notes,
 using frontmatter tags or inline tags such as `#project`. The stock OpenClaw
