@@ -14,6 +14,7 @@ export interface GrpcClientOptions {
   endpoint: string;
   secret?: string;
   timeoutMs?: number;
+  tlsCaPath?: string;
 }
 
 export function resolveGrpcTarget(endpoint: string): string {
@@ -30,10 +31,16 @@ export function resolveGrpcCredentialMode(endpoint: string): "insecure" | "tls" 
   return isLoopbackHost(host) ? "insecure" : "tls";
 }
 
-function resolveGrpcCredentials(endpoint: string): grpc.ChannelCredentials {
-  return resolveGrpcCredentialMode(endpoint) === "insecure"
-    ? grpc.credentials.createInsecure()
-    : grpc.credentials.createSsl();
+export function resolveGrpcCredentials(endpoint: string, tlsCaPath?: string): grpc.ChannelCredentials {
+  if (resolveGrpcCredentialMode(endpoint) === "insecure") {
+    return grpc.credentials.createInsecure();
+  }
+  if (tlsCaPath) {
+    const fs = require("fs");
+    const rootCerts = fs.readFileSync(tlsCaPath);
+    return grpc.credentials.createSsl(rootCerts, null, null);
+  }
+  return grpc.credentials.createSsl();
 }
 
 function extractGrpcHost(target: string): string {
@@ -75,7 +82,7 @@ export class GrpcKernelClient {
 
     const target = resolveGrpcTarget(options.endpoint);
 
-    this.client = new kernelService(target, resolveGrpcCredentials(options.endpoint));
+    this.client = new kernelService(target, resolveGrpcCredentials(options.endpoint, options.tlsCaPath));
   }
 
   private getMetadata(signed = true): grpc.Metadata {

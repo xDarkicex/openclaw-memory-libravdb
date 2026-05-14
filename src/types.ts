@@ -91,6 +91,7 @@ export interface PluginConfig {
   maxRetries?: number;
   logLevel?: "debug" | "info" | "warn" | "error";
   grpcEndpoint?: string;
+  grpcEndpointTlsCa?: string;  // path to CA cert PEM file for remote TLS verification
 }
 
 export interface SearchResult {

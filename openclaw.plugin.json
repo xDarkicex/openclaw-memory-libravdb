@@ -46,6 +46,10 @@
         "type": "string",
         "description": "Optional gRPC kernel endpoint for hosts using the daemon kernel transport."
       },
+      "grpcEndpointTlsCa": {
+        "type": "string",
+        "description": "Path to a CA certificate PEM file for verifying the daemon's TLS certificate. Only needed for self-signed or private CA certificates. Not required when using a publicly trusted certificate (Let's Encrypt, cert-manager, etc)."
+      },
       "authoredHardBudgetFraction": {
         "type": "number",
         "minimum": 0,
