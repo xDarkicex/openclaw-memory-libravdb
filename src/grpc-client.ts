@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as fs from "fs";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 
@@ -36,8 +37,15 @@ export function resolveGrpcCredentials(endpoint: string, tlsCaPath?: string): gr
     return grpc.credentials.createInsecure();
   }
   if (tlsCaPath) {
-    const fs = require("fs");
-    const rootCerts = fs.readFileSync(tlsCaPath);
+    let rootCerts: Buffer;
+    try {
+      rootCerts = fs.readFileSync(tlsCaPath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `LibraVDB: failed to load TLS CA certificate from "${tlsCaPath}": ${msg}`,
+      );
+    }
     return grpc.credentials.createSsl(rootCerts, null, null);
   }
   return grpc.credentials.createSsl();
