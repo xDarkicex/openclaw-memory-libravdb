@@ -780,6 +780,27 @@ export function buildContextEngineFactory(
     };
   }
 
+  function isGrpcAuthConfigured(): boolean {
+    return (
+      typeof process.env.LIBRAVDB_AUTH_SECRET === "string" &&
+      process.env.LIBRAVDB_AUTH_SECRET.trim().length > 0
+    ) || (
+      typeof process.env.LIBRAVDB_AUTH_SECRET_FILE === "string" &&
+      process.env.LIBRAVDB_AUTH_SECRET_FILE.trim().length > 0
+    );
+  }
+
+  function buildGrpcAuthInitializationError(error: unknown): Error {
+    const code = typeof (error as { code?: unknown } | undefined)?.code === "number" ||
+      typeof (error as { code?: unknown } | undefined)?.code === "string"
+      ? ` code=${String((error as { code: unknown }).code)}`
+      : "";
+    return new Error(
+      `LibraVDB gRPC auth initialization failed${code}; ` +
+      `check LIBRAVDB_AUTH_SECRET and daemon auth configuration`,
+    );
+  }
+
   async function runCompaction(args: {
     sessionId: string;
     force?: boolean;
@@ -880,7 +901,10 @@ export function buildContextEngineFactory(
             clientCapabilities: [{ name: "grpc", version: "1.0" }]
           });
         } catch (error) {
-          // Proceed even if initialize session fails or doesn't return nonce if secret optional
+          if (isGrpcAuthConfigured()) {
+            throw buildGrpcAuthInitializationError(error);
+          }
+          // Proceed when the kernel does not require auth and the init call is unavailable.
         }
         return await kernel.bootstrapSession({
           sessionId,

@@ -95,6 +95,87 @@ test("context engine uses gRPC kernel on cold bootstrap without falling back to 
   assert.equal(calls[1]?.params.userId, "fixed-user");
 });
 
+test("context engine fails closed with sanitized error when configured gRPC auth initialization fails", async () => {
+  const savedSecret = process.env.LIBRAVDB_AUTH_SECRET;
+  const savedSecretFile = process.env.LIBRAVDB_AUTH_SECRET_FILE;
+  try {
+    process.env.LIBRAVDB_AUTH_SECRET = "super-secret-test-value";
+    delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+    const kernel = {
+      initializeSession: async () => {
+        throw Object.assign(new Error("raw failure includes super-secret-test-value"), { code: 16 });
+      },
+      bootstrapSession: async () => {
+        throw new Error("bootstrap should not run after auth init failure");
+      },
+    };
+    const { runtime, getRpcCalls } = makeKernelFirstRuntime(kernel);
+    const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
+
+    await assert.rejects(
+      () => engine.bootstrap({ sessionId: "s1", sessionKey: "sk1" }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /gRPC auth initialization failed/);
+        assert.match(error.message, /code=16/);
+        assert.doesNotMatch(error.message, /super-secret-test-value/);
+        assert.doesNotMatch(error.message, /raw failure/);
+        return true;
+      },
+    );
+    assert.equal(getRpcCalls(), 0);
+  } finally {
+    if (savedSecret === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET = savedSecret;
+    }
+    if (savedSecretFile === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET_FILE = savedSecretFile;
+    }
+  }
+});
+
+test("context engine still allows optional gRPC initialization failure when auth is not configured", async () => {
+  const savedSecret = process.env.LIBRAVDB_AUTH_SECRET;
+  const savedSecretFile = process.env.LIBRAVDB_AUTH_SECRET_FILE;
+  try {
+    delete process.env.LIBRAVDB_AUTH_SECRET;
+    delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+    const calls: string[] = [];
+    const kernel = {
+      initializeSession: async () => {
+        calls.push("initializeSession");
+        throw new Error("optional init unavailable");
+      },
+      bootstrapSession: async () => {
+        calls.push("bootstrapSession");
+        return { ok: true };
+      },
+    };
+    const { runtime, getRpcCalls } = makeKernelFirstRuntime(kernel);
+    const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
+
+    await engine.bootstrap({ sessionId: "s1", sessionKey: "sk1" });
+
+    assert.deepEqual(calls, ["initializeSession", "bootstrapSession"]);
+    assert.equal(getRpcCalls(), 0);
+  } finally {
+    if (savedSecret === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET = savedSecret;
+    }
+    if (savedSecretFile === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET_FILE = savedSecretFile;
+    }
+  }
+});
+
 test("context engine falls back to RPC when kernel lookup fails during bootstrap", async () => {
   const rpc = new FakeRpc();
   const warnings: string[] = [];
