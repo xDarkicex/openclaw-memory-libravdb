@@ -28,6 +28,35 @@ test("manifest and package metadata satisfy checklist structure", async () => {
   assert.match(hookMd, /name:\s*libravdb-memory/);
 });
 
+test("manifest schema includes runtime-consumed context tuning keys", async () => {
+  const manifest = JSON.parse(await readFile(path.join(repoRoot, "openclaw.plugin.json"), "utf8"));
+  const properties = manifest.configSchema.properties as Record<string, { type?: string }>;
+  const tuningKeys = [
+    "continuityMinTurns",
+    "continuityTailBudgetTokens",
+    "continuityPriorContextTokens",
+    "section7CoarseTopK",
+    "section7SecondPassTopK",
+    "section7Theta1",
+    "section7Kappa",
+    "section7HopEta",
+    "section7HopThreshold",
+    "section7AuthorityRecencyLambda",
+    "section7AuthorityRecencyWeight",
+    "section7AuthorityFrequencyWeight",
+    "section7AuthorityAuthoredWeight",
+    "section7AuthoritySalienceWeight",
+    "section7RecencyAccessLambda",
+    "recoveryFloorScore",
+    "recoveryMinTopK",
+    "recoveryMinConfidenceMean",
+  ];
+
+  for (const key of tuningKeys) {
+    assert.equal(properties[key]?.type, "number", `${key} must be accepted by configSchema`);
+  }
+});
+
 test("source checklist invariants are present in host code", async () => {
   const indexTs = await readFile(path.join(repoRoot, "src/index.ts"), "utf8");
   const memoryProviderTs = await readFile(path.join(repoRoot, "src/memory-provider.ts"), "utf8");

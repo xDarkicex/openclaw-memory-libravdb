@@ -12,11 +12,13 @@ type ErrorHandler = (error: Error) => void;
 const STARTUP_CONNECT_MAX_RETRIES = 5;
 const STARTUP_CONNECT_BASE_DELAY_MS = 100;
 const STARTUP_CONNECT_MAX_TOTAL_WAIT_MS = 2000;
+const CONNECTION_STABILITY_WINDOW_MS = 15_000;
 
 export interface SidecarRuntime {
   resolveEndpoint(cfg: PluginConfig): string | Promise<string>;
   createSocket(endpoint: string): SidecarSocket;
   scheduleRestart(delayMs: number, restart: () => void): void;
+  stabilityWindowMs?: number;
 }
 
 class PlaceholderSocket implements SidecarSocket {
@@ -232,6 +234,7 @@ class SidecarSupervisor implements SidecarHandle {
   private degraded = false;
   private shuttingDown = false;
   private reconnectScheduled = false;
+  private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
   public socket: SidecarSocket;
 
   constructor(
@@ -245,8 +248,8 @@ class SidecarSupervisor implements SidecarHandle {
   async start(): Promise<SidecarSocket> {
     const endpoint = await this.runtime.resolveEndpoint(this.cfg);
     const socket = await this.connectEndpointWithRetry(endpoint);
-    this.retries = 0;
     this.reconnectScheduled = false;
+    this.scheduleStabilityReset();
     if (this.socket instanceof SupervisorSocket) {
       this.socket.bind(socket);
     } else {
@@ -261,7 +264,30 @@ class SidecarSupervisor implements SidecarHandle {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.clearStabilityTimer();
     this.socket.destroy();
+  }
+
+  private scheduleStabilityReset(): void {
+    this.clearStabilityTimer();
+    const windowMs = this.runtime.stabilityWindowMs ?? CONNECTION_STABILITY_WINDOW_MS;
+    if (windowMs <= 0) {
+      this.retries = 0;
+      return;
+    }
+    this.stabilityTimer = setTimeout(() => {
+      this.stabilityTimer = null;
+      this.retries = 0;
+      this.logger.info?.("[libravdb] sidecar connection stable; retry counter reset");
+    }, windowMs);
+    this.stabilityTimer.unref?.();
+  }
+
+  private clearStabilityTimer(): void {
+    if (this.stabilityTimer) {
+      clearTimeout(this.stabilityTimer);
+      this.stabilityTimer = null;
+    }
   }
 
   private async connectEndpointWithRetry(endpoint: string): Promise<SidecarSocket> {
@@ -320,6 +346,8 @@ class SidecarSupervisor implements SidecarHandle {
       return;
     }
 
+    this.clearStabilityTimer();
+
     const maxRetries = this.cfg.maxRetries ?? 3;
     if (this.retries >= maxRetries) {
       this.logger.error("[libravdb] sidecar retries exhausted; degraded mode");
@@ -331,6 +359,10 @@ class SidecarSupervisor implements SidecarHandle {
     this.retries += 1;
     this.reconnectScheduled = true;
     this.runtime.scheduleRestart(backoffMs, () => {
+      if (this.shuttingDown) {
+        this.reconnectScheduled = false;
+        return;
+      }
       void this.start().catch((error) => {
         this.reconnectScheduled = false;
         const message = error instanceof Error ? error.message : String(error);
@@ -369,6 +401,31 @@ export function isTcpEndpoint(endpoint: string): boolean {
   return endpoint.startsWith("tcp:");
 }
 
+export function parseTcpEndpoint(endpoint: string): { host: string; port: number } | null {
+  if (!isTcpEndpoint(endpoint)) {
+    return null;
+  }
+  const address = endpoint.slice("tcp:".length).trim();
+  const separator = address.lastIndexOf(":");
+  if (separator <= 0 || separator === address.length - 1) {
+    return null;
+  }
+
+  let host = address.slice(0, separator).trim();
+  const port = Number(address.slice(separator + 1).trim());
+  if (host.startsWith("[") || host.endsWith("]")) {
+    if (!host.startsWith("[") || !host.endsWith("]")) {
+      return null;
+    }
+    host = host.slice(1, -1).trim();
+  }
+
+  if (host.length === 0 || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    return null;
+  }
+  return { host, port };
+}
+
 export function resolveEndpoint(cfg: PluginConfig): string {
   const endpoint = resolveConfiguredEndpoint(cfg);
   return endpoint.replace(/^unix:/, "");
@@ -379,12 +436,13 @@ export function resolveConfiguredEndpoint(cfg: PluginConfig): string {
   if (!value || value === "auto") {
     return defaultEndpoint();
   }
-  if (!isConfiguredEndpoint(value)) {
+  const endpoint = normalizeConfiguredEndpoint(value);
+  if (!endpoint) {
     throw new Error(
       `LibraVDB sidecarPath must be a daemon endpoint like unix:/path/to/libravdb.sock or tcp:127.0.0.1:37421. Executable paths are no longer supported.`,
     );
   }
-  return value;
+  return endpoint;
 }
 
 export function daemonProvisioningHint(): string {
@@ -397,8 +455,8 @@ export function defaultEndpoint(
   pathExists: (path: string) => boolean = fs.existsSync,
 ): string {
   // Honour the daemon's own env var first (set by Homebrew LaunchAgent / systemd unit).
-  const envEndpoint = process.env.LIBRAVDB_RPC_ENDPOINT?.trim();
-  if (envEndpoint && isConfiguredEndpoint(envEndpoint)) {
+  const envEndpoint = normalizeConfiguredEndpoint(process.env.LIBRAVDB_RPC_ENDPOINT);
+  if (envEndpoint) {
     return envEndpoint;
   }
 
@@ -406,10 +464,11 @@ export function defaultEndpoint(
     return "tcp:127.0.0.1:37421";
   }
 
+  const joinSocketPath = path.posix.join;
   const sockName = "libravdb.sock";
   const candidateDirs = [
     // User-local (npm plugin convention)
-    homeDir?.trim() ? path.join(homeDir, ".libravdbd", "run") : null,
+    homeDir?.trim() ? joinSocketPath(homeDir, ".libravdbd", "run") : null,
     // Homebrew (Apple Silicon) — matches the Homebrew formula LaunchAgent
     "/opt/homebrew/var/libravdbd/run",
     // Homebrew (Intel Mac) / manual Linux installs
@@ -417,7 +476,7 @@ export function defaultEndpoint(
   ].filter((d): d is string => d !== null);
 
   for (const dir of candidateDirs) {
-    const sockPath = path.join(dir, sockName);
+    const sockPath = joinSocketPath(dir, sockName);
     try {
       if (pathExists(sockPath)) {
         return `unix:${sockPath}`;
@@ -429,9 +488,9 @@ export function defaultEndpoint(
 
   // Fallback to the original user-local path so error messages stay familiar.
   const baseDir = homeDir?.trim()
-    ? path.join(homeDir, ".libravdbd", "run")
-    : path.join(".", ".libravdbd", "run");
-  return `unix:${path.join(baseDir, sockName)}`;
+    ? joinSocketPath(homeDir, ".libravdbd", "run")
+    : joinSocketPath(".", ".libravdbd", "run");
+  return `unix:${joinSocketPath(baseDir, sockName)}`;
 }
 
 export function buildSidecarEnv(cfg: PluginConfig): Record<string, string> {
@@ -506,15 +565,11 @@ function createDefaultRuntime(): SidecarRuntime {
     },
     createSocket(endpoint) {
       if (isTcpEndpoint(endpoint)) {
-        const address = endpoint.slice("tcp:".length);
-        const separator = address.lastIndexOf(":");
-        if (separator <= 0) {
+        const parsed = parseTcpEndpoint(endpoint);
+        if (!parsed) {
           throw new Error(`Invalid TCP sidecar endpoint: ${endpoint}`);
         }
-        return net.connect({
-          host: address.slice(0, separator),
-          port: Number(address.slice(separator + 1)),
-        }) as unknown as SidecarSocket;
+        return net.connect(parsed) as unknown as SidecarSocket;
       }
       return net.connect(endpoint) as unknown as SidecarSocket;
     },
@@ -561,17 +616,19 @@ function isConfiguredEndpoint(value?: string): boolean {
   if (value.startsWith("unix:")) {
     return value.slice("unix:".length).trim().length > 0;
   }
-  if (!value.startsWith("tcp:")) {
-    return false;
+  return parseTcpEndpoint(value) !== null;
+}
+
+function normalizeConfiguredEndpoint(value?: string): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === "auto") {
+    return null;
   }
-  const address = value.slice("tcp:".length);
-  const separator = address.lastIndexOf(":");
-  if (separator <= 0 || separator === address.length - 1) {
-    return false;
+  if (trimmed.startsWith("unix:")) {
+    const socketPath = trimmed.slice("unix:".length).trim();
+    return socketPath ? `unix:${socketPath}` : null;
   }
-  const host = address.slice(0, separator).trim();
-  const port = Number(address.slice(separator + 1));
-  return host.length > 0 && Number.isInteger(port) && port > 0 && port <= 65535;
+  return isConfiguredEndpoint(trimmed) ? trimmed : null;
 }
 
 export { PlaceholderSocket };
@@ -585,15 +642,12 @@ export async function probeSidecarEndpoint(cfg: PluginConfig): Promise<string | 
   try {
     await new Promise<void>((resolve, reject) => {
       if (isTcpEndpoint(endpoint)) {
-        const address = endpoint.slice("tcp:".length);
-        const separator = address.lastIndexOf(":");
-        if (separator <= 0) {
+        const parsed = parseTcpEndpoint(endpoint);
+        if (!parsed) {
           reject(new Error("invalid tcp endpoint"));
           return;
         }
-        const host = address.slice(0, separator);
-        const port = Number(address.slice(separator + 1));
-        const socket = net.connect({ host, port }, () => {
+        const socket = net.connect(parsed, () => {
           socket.destroy();
           resolve();
         });

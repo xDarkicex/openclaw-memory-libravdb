@@ -98,12 +98,16 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | `markdownIngestionObsidianExclude` | string[] | — | Obsidian glob exclude patterns |
 | `markdownIngestionObsidianDebounceMs` | number | `150` | Obsidian debounce window |
 
+Configured markdown roots are ignored unless the matching enable flag is set to
+`true`. Set `markdownIngestionEnabled: true` for generic roots and
+`markdownIngestionObsidianEnabled: true` for Obsidian vault roots.
+
 ## Dream promotion
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `dreamPromotionEnabled` | boolean | `false` | Enable dream diary promotion |
-| `dreamPromotionDiaryPath` | string | — | Path to dream diary markdown file |
+| `dreamPromotionDiaryPath` | string | — | Path to dream diary markdown file under the operator home directory or `OPENCLAW_STATE_DIR` |
 | `dreamPromotionUserId` | string | — | User ID for dream collection scoping |
 | `dreamPromotionDebounceMs` | number | `150` | Debounce window for dream diary changes |
 

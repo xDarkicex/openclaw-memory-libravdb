@@ -130,6 +130,23 @@ test("assemble passes correct configuration mapping and returns expected payload
     tokenBudgetFraction: 0.8,
     useSessionRecallProjection: true,
     continuityMinTurns: 4,
+    continuityTailBudgetTokens: 640,
+    continuityPriorContextTokens: 320,
+    section7CoarseTopK: 24,
+    section7SecondPassTopK: 6,
+    section7Theta1: 0.74,
+    section7Kappa: 2.5,
+    section7HopEta: 0.31,
+    section7HopThreshold: 0.52,
+    section7AuthorityRecencyLambda: 0.002,
+    section7AuthorityRecencyWeight: 0.4,
+    section7AuthorityFrequencyWeight: 0.3,
+    section7AuthorityAuthoredWeight: 0.2,
+    section7AuthoritySalienceWeight: 0.40,
+    section7RecencyAccessLambda: 0.00001,
+    recoveryFloorScore: 0.12,
+    recoveryMinTopK: 5,
+    recoveryMinConfidenceMean: 0.42,
   };
 
   const context = buildContextEngineFactory(async () => rpc as never, cfg);
@@ -156,8 +173,24 @@ test("assemble passes correct configuration mapping and returns expected payload
   assert.equal(params.config.tokenBudgetFraction, 0.8);
   assert.equal(params.config.useSessionRecallProjection, true);
   assert.equal(params.config.continuityMinTurns, 4);
-  assert.equal(params.config.compactThreshold, 800);
-  assert.equal(params.emitDebug, true);
+  assert.equal(params.config.continuityTailBudgetTokens, 640);
+  assert.equal(params.config.continuityPriorContextTokens, 320);
+  assert.equal(params.config.section7CoarseTopK, 24);
+  assert.equal(params.config.section7SecondPassTopK, 6);
+  assert.equal(params.config.section7Theta1, 0.74);
+  assert.equal(params.config.section7Kappa, 2.5);
+  assert.equal(params.config.section7HopEta, 0.31);
+  assert.equal(params.config.section7HopThreshold, 0.52);
+  assert.equal(params.config.section7AuthorityRecencyLambda, 0.002);
+  assert.equal(params.config.section7AuthorityRecencyWeight, 0.4);
+  assert.equal(params.config.section7AuthorityFrequencyWeight, 0.3);
+  assert.equal(params.config.section7AuthorityAuthoredWeight, 0.2);
+  assert.equal(params.config.section7AuthoritySalienceWeight, 0.40);
+  assert.equal(params.config.section7RecencyAccessLambda, 0.00001);
+  assert.equal(params.config.recoveryFloorScore, 0.12);
+  assert.equal(params.config.recoveryMinTopK, 5);
+  assert.equal(params.config.recoveryMinConfidenceMean, 0.42);
+  assert.equal(params.config.emitDebug, true);
 
   // Verify inbound response handling
   assert.equal(assembled.estimatedTokens, 150);
@@ -465,6 +498,35 @@ test("afterTurn forwards only post-prompt messages and strips prePromptMessageCo
   assert.deepEqual(params.messages, [mockMessages[1]]);
 });
 
+test("afterTurn forwards latest message when prePromptMessageCount consumes all messages", async () => {
+  const rpc = new StaticContractRpc();
+  const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
+  const logger = createMemoryLogger();
+
+  const context = buildContextEngineFactory(async () => rpc as never, cfg, logger);
+
+  const mockMessages = [
+    { role: "assistant", content: "final answer that should still persist" },
+  ];
+
+  await context.afterTurn({
+    sessionId: "test-session",
+    userId: "test-user",
+    messages: mockMessages,
+    prePromptMessageCount: 1,
+    isHeartbeat: false,
+  });
+
+  const params = rpc.getLastCall("after_turn_kernel");
+  assert.ok(params, "Expected after_turn_kernel to be called");
+  assert.equal("prePromptMessageCount" in params, false, "prePromptMessageCount must not leak to daemon");
+  assert.deepEqual(params.messages, mockMessages);
+  assert.ok(
+    logger.warns.some((message) => /forwarding latest message for compatibility/.test(message)),
+    "boundary fallback should emit an operator warning",
+  );
+});
+
 test("afterTurn forwards all messages when prePromptMessageCount is absent", async () => {
   const rpc = new StaticContractRpc();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
@@ -555,4 +617,37 @@ test("afterTurn does not trigger predictive compaction without authoritative cur
     ["after_turn_kernel"],
   );
   assert.equal(rpc.getLastCall("compact_session"), null);
+});
+
+test("afterTurn triggers predictive compaction from oversized forwarded messages", async () => {
+  const rpc = new StaticContractRpc();
+  rpc.mockResponses.set("compact_session", { didCompact: true });
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    compactionThresholdFraction: 0.8,
+  };
+
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
+
+  await context.afterTurn({
+    sessionId: "test-session",
+    userId: "test-user",
+    messages: [
+      { role: "user", content: "please run the tool" },
+      { role: "assistant", content: "x".repeat(4000) },
+    ],
+    prePromptMessageCount: 1,
+    tokenBudget: 1000,
+    runtimeContext: { currentTokenCount: Number.NaN },
+  });
+
+  assert.deepEqual(
+    rpc.calls.map((call) => call.method),
+    ["after_turn_kernel", "compact_session"],
+  );
+
+  const compactParams = rpc.getLastCall("compact_session");
+  assert.ok(compactParams, "Expected compact_session to be called");
+  assert.ok(compactParams.currentTokenCount >= 800);
+  assert.equal(compactParams.targetSize, 799);
 });

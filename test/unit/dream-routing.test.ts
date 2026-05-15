@@ -50,4 +50,7 @@ test("dream routing ignores ordinary memory queries", () => {
 test("dream routing resolves the dedicated dream collection name", () => {
   assert.equal(resolveDreamCollection("u1"), "dream:u1");
   assert.equal(resolveDreamCollection("  session-key:abc  "), "dream:session-key:abc");
+  assert.throws(() => resolveDreamCollection(""), /Invalid collection namespace/);
+  assert.throws(() => resolveDreamCollection("has spaces"), /Invalid collection namespace/);
+  assert.throws(() => resolveDreamCollection("a".repeat(123)), /Invalid collection namespace/);
 });

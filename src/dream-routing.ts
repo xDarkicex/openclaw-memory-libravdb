@@ -1,3 +1,5 @@
+import { validateNamespace } from "./memory-scopes.js";
+
 const DREAM_COLLECTION_PREFIX = "dream:";
 
 const DREAM_PATTERN_RULES: Array<{ label: string; patterns: RegExp[] }> = [
@@ -58,5 +60,6 @@ export function detectDreamQuerySignal(queryText: string): DreamQuerySignal {
 }
 
 export function resolveDreamCollection(userId: string): string {
-  return `${DREAM_COLLECTION_PREFIX}${userId.trim()}`;
+  const namespace = validateNamespace(userId.trim());
+  return validateNamespace(`${DREAM_COLLECTION_PREFIX}${namespace}`);
 }

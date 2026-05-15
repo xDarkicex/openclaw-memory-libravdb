@@ -105,11 +105,12 @@ Automatic diary watching:
 Manual run:
 
 ```bash
-openclaw memory dream-promote --user-id <userId> --dream-file /path/to/DREAMS.md
+openclaw memory dream-promote --user-id <userId> --dream-file ~/DREAMS.md
 ```
 
-The manual command and watcher both use the same sidecar promotion RPC, so
-admission gates and provenance metadata are identical.
+Dream diary files must live under the operator's home directory or the configured
+`OPENCLAW_STATE_DIR`. The manual command and watcher both use the same sidecar
+promotion RPC, so admission gates and provenance metadata are identical.
 
 ## Memory CLI
 
@@ -126,7 +127,7 @@ CLI API.
 | `openclaw memory flush --user-id <userId>` | Delete one durable user namespace after confirmation. |
 | `openclaw memory flush --session-key <sessionKey>` | Delete a namespace derived from a session key after confirmation. |
 | `openclaw memory journal --limit 50` | Inspect bounded lifecycle hints recorded by the sidecar. |
-| `openclaw memory dream-promote --user-id <userId> --dream-file <path>` | Promote vetted dream diary bullets. |
+| `openclaw memory dream-promote --user-id <userId> --dream-file <path>` | Promote vetted dream diary bullets from a file under the operator home directory or `OPENCLAW_STATE_DIR`. |
 
 Use `--yes` with `flush` only when you intentionally want to skip the
 confirmation prompt.
