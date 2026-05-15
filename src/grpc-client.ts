@@ -22,6 +22,19 @@ export function resolveGrpcTarget(endpoint: string): string {
   return endpoint.startsWith("tcp:") ? endpoint.substring(4) : endpoint;
 }
 
+/**
+ * Selects gRPC credential mode based on endpoint address class.
+ *
+ * - Unix socket endpoints → plaintext (local-only transport)
+ * - Loopback addresses (localhost, 127.0.0.1, ::1) → plaintext
+ * - All other TCP and DNS targets → TLS
+ *
+ * resolveGrpcCredentials uses this classification to return the
+ * appropriate grpc.ChannelCredentials. Pass tlsCaPath to load a
+ * custom CA certificate PEM file for self-signed or private CA
+ * deployments. Omit tlsCaPath for publicly trusted certificates
+ * (Let's Encrypt, cert-manager) — the system CA pool is used.
+ */
 export function resolveGrpcCredentialMode(endpoint: string): "insecure" | "tls" {
   const target = resolveGrpcTarget(endpoint).trim();
   if (target.startsWith("unix:")) {
