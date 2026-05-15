@@ -983,7 +983,7 @@ export function buildContextEngineFactory(
           emitDebug: true,
         });
         const assembled = normalizeAssembleResult(resp);
-        const enforced = enforceTokenBudgetInvariant(
+        let enforced = enforceTokenBudgetInvariant(
           await augmentWithExactRecall(assembled, {
             queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
             userId,
@@ -996,10 +996,19 @@ export function buildContextEngineFactory(
         predictiveContextCache.delete(sessionId);
         if (predictions.length > 0) {
           const injection = buildPredictiveContextSystemPromptAddition(predictions);
-          enforced.systemPromptAddition = appendSystemPromptAddition(
-            enforced.systemPromptAddition,
-            injection,
-          );
+          if (injection.trim().length > 0) {
+            enforced = enforceTokenBudgetInvariant(
+              {
+                ...enforced,
+                systemPromptAddition: appendSystemPromptAddition(
+                  enforced.systemPromptAddition,
+                  injection,
+                ),
+                estimatedTokens: enforced.estimatedTokens + approximateTokenCount(injection),
+              },
+              args.tokenBudget,
+            );
+          }
         }
         return enforced;
       } catch (error) {

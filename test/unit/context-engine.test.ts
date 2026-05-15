@@ -341,6 +341,47 @@ test("context engine assemble drops messages when system prompt leaves no wrappe
   assert.ok(assembled.estimatedTokens <= 44);
 });
 
+test("context engine clamps predictive context additions against the token budget", async () => {
+  const rpc = new FakeRpc();
+  rpc.assembleResponse = {
+    messages: [
+      { role: "assistant", content: "this message should be dropped after predictive context is added" },
+    ],
+    estimatedTokens: 0,
+    systemPromptAddition: "x".repeat(100),
+  };
+  rpc.afterTurnResponse = {
+    ok: true,
+    turnCount: 1,
+    predictions: [
+      {
+        id: "prediction-1",
+        text: "y".repeat(1200),
+        reason: "continuity",
+      },
+    ],
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" });
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "remember this")],
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "continue")],
+    prompt: "continue",
+    tokenBudget: 300,
+  });
+
+  assert.equal(assembled.messages.length, 0);
+  assert.ok(assembled.systemPromptAddition.length < 100 + 1200);
+  assert.ok(assembled.estimatedTokens <= 44);
+});
+
 test("context engine exact recall skips additions that would exceed the token budget", async () => {
   const client = new FakeClient();
   const marker = "BUDGET_SESSION_MEMORY_MARKER_1234567890";
