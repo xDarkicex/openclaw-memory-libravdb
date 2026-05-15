@@ -58,6 +58,7 @@ export function createPluginRuntime(
     }
     if (!started) {
       started = (async () => {
+        validateGrpcKernelConfig(cfg, logger);
         const sidecar = await startSidecar(cfg, logger);
         const rpc = new RpcClient(sidecar.socket, {
           timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
@@ -77,25 +78,6 @@ export function createPluginRuntime(
         if (cfg.grpcEndpoint) {
           try {
             const secret = loadSecretFromEnv();
-            if (
-              cfg.grpcEndpointTlsMode !== undefined &&
-              !isTlsModeValid(cfg.grpcEndpointTlsMode)
-            ) {
-              throw new Error(
-                `LibraVDB: invalid grpcEndpointTlsMode "${cfg.grpcEndpointTlsMode}" — ` +
-                `must be "auto", "tls", or "insecure"`,
-              );
-            }
-            if (
-              cfg.grpcEndpointTlsMode === "insecure" &&
-              cfg.grpcEndpointTlsCa
-            ) {
-              // logger is provided by the host and may not have all methods
-              logger.warn?.(
-                `LibraVDB: grpcEndpointTlsCa is set but grpcEndpointTlsMode ` +
-                `is "insecure" — the CA file will not be used`,
-              );
-            }
             kernel = new GrpcKernelClient({
               endpoint: cfg.grpcEndpoint,
               secret,
@@ -167,6 +149,30 @@ export function createPluginRuntime(
       }
     },
   };
+}
+
+export function validateGrpcKernelConfig(cfg: PluginConfig, logger: LoggerLike): void {
+  if (!cfg.grpcEndpoint) {
+    return;
+  }
+  if (
+    cfg.grpcEndpointTlsMode !== undefined &&
+    !isTlsModeValid(cfg.grpcEndpointTlsMode)
+  ) {
+    throw new Error(
+      `LibraVDB: invalid grpcEndpointTlsMode "${cfg.grpcEndpointTlsMode}" — ` +
+      `must be "auto", "tls", or "insecure"`,
+    );
+  }
+  if (
+    cfg.grpcEndpointTlsMode === "insecure" &&
+    cfg.grpcEndpointTlsCa
+  ) {
+    logger.warn?.(
+      `LibraVDB: grpcEndpointTlsCa is set but grpcEndpointTlsMode ` +
+      `is "insecure" — the CA file will not be used`,
+    );
+  }
 }
 
 function loadSecretFromEnv(): string | undefined {

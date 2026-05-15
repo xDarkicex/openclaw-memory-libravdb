@@ -57,6 +57,7 @@
           "tls",
           "insecure"
         ],
+        "default": "auto",
         "description": "gRPC credential mode. auto (default): loopback and unix socket use plaintext, remote addresses use TLS. tls: always use TLS regardless of address. insecure: always use plaintext (use with service mesh or tunnel that handles TLS externally)."
       },
       "authoredHardBudgetFraction": {

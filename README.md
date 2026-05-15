@@ -86,7 +86,7 @@ gate threshold, and the loaded embedding profile.
 
 Runtime requirements:
 
-- OpenClaw `>= 2026.3.22`
+- OpenClaw `>= 2026.4.11`
 - Node.js `>= 22`
 - a separately installed `libravdbd` service
 
@@ -209,7 +209,7 @@ service checkout. For the full source workflow, read [Development](./docs/develo
 - npm package: `@xdarkicex/openclaw-memory-libravdb`
 - OpenClaw plugin id: `libravdb-memory`
 - plugin kind: `memory`, `context-engine`
-- minimum OpenClaw host version: `>= 2026.3.22`
+- minimum OpenClaw host version: `>= 2026.4.11`
 - default data path: `$HOME/.libravdbd/data_nomic-embed-text-v1_5.libravdb`
 - default macOS/Linux endpoint: `unix:$HOME/.libravdbd/run/libravdb.sock`
 - default Windows endpoint: `tcp:127.0.0.1:37421`

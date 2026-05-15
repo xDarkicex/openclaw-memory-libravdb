@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { enrichStartupError, resolveStartupHealthTimeoutMs } from "../../src/plugin-runtime.js";
+import {
+  enrichStartupError,
+  resolveStartupHealthTimeoutMs,
+  validateGrpcKernelConfig,
+} from "../../src/plugin-runtime.js";
 
 test("enrichStartupError adds provisioning guidance for daemon startup failures", () => {
   const err = enrichStartupError("LibraVDB daemon failed health check", "embedder running in deterministic fallback mode");
@@ -21,43 +25,36 @@ test("resolveStartupHealthTimeoutMs uses the normal RPC timeout when it is highe
   assert.equal(resolveStartupHealthTimeoutMs({ rpcTimeoutMs: 1000 }), 2000);
 });
 
-test("invalid grpcEndpointTlsMode throws with the bad value", async () => {
-  const { createPluginRuntime } = await import("../../src/plugin-runtime.js");
-  const runtime = createPluginRuntime({
-    grpcEndpoint: "tcp:127.0.0.1:50051",
-    grpcEndpointTlsMode: "mtls" as any,
-  });
-  await assert.rejects(
-    () => runtime.getKernel(),
+test("invalid grpcEndpointTlsMode throws with the bad value", () => {
+  assert.throws(
+    () => validateGrpcKernelConfig({
+      grpcEndpoint: "tcp:127.0.0.1:50051",
+      grpcEndpointTlsMode: "mtls" as any,
+    }, console),
     /invalid grpcEndpointTlsMode.*mtls/,
   );
 });
 
-test("insecure mode with tlsCaPath logs warning about CA not being used", async () => {
+test("omitted grpcEndpointTlsMode is valid for auto credential selection", () => {
+  assert.doesNotThrow(() => validateGrpcKernelConfig({
+    grpcEndpoint: "tcp:127.0.0.1:50051",
+  }, console));
+});
+
+test("insecure mode with tlsCaPath logs warning about CA not being used", () => {
   const warnings: string[] = [];
-  const origWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    const msg = args.join(" ");
-    if (msg.includes("grpcEndpointTlsCa") || msg.includes("insecure")) {
-      warnings.push(msg);
-    }
+  const logger = {
+    error() {},
+    warn(message: string) {
+      warnings.push(message);
+    },
   };
-  try {
-    const { createPluginRuntime } = await import("../../src/plugin-runtime.js");
-    const runtime = createPluginRuntime({
-      grpcEndpoint: "tcp:127.0.0.1:50051",
-      grpcEndpointTlsMode: "insecure",
-      grpcEndpointTlsCa: "/etc/certs/ca.pem",
-    });
-    try {
-      await runtime.getKernel();
-    } catch {
-      // gRPC init may fail — we only care about the warning
-    }
-    assert.equal(warnings.length, 1, "should have logged one CA/insecure warning");
-    assert.match(warnings[0], /grpcEndpointTlsCa/);
-    assert.match(warnings[0], /insecure/);
-  } finally {
-    console.warn = origWarn;
-  }
+  validateGrpcKernelConfig({
+    grpcEndpoint: "tcp:127.0.0.1:50051",
+    grpcEndpointTlsMode: "insecure",
+    grpcEndpointTlsCa: "/etc/certs/ca.pem",
+  }, logger);
+  assert.equal(warnings.length, 1, "should have logged one CA/insecure warning");
+  assert.match(warnings[0], /grpcEndpointTlsCa/);
+  assert.match(warnings[0], /insecure/);
 });
