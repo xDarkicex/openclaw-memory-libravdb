@@ -20,3 +20,50 @@ test("resolveStartupHealthTimeoutMs uses the normal RPC timeout when it is highe
   assert.equal(resolveStartupHealthTimeoutMs({ rpcTimeoutMs: 5000 }), 5000);
   assert.equal(resolveStartupHealthTimeoutMs({ rpcTimeoutMs: 1000 }), 2000);
 });
+
+test("invalid grpcEndpointTlsMode logs error with the bad value", async () => {
+  const errors: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    const msg = args.join(" ");
+    if (msg.includes("invalid grpcEndpointTlsMode")) errors.push(msg);
+  };
+  try {
+    const { createPluginRuntime } = await import("../../src/plugin-runtime.js");
+    const runtime = createPluginRuntime({
+      grpcEndpoint: "tcp:127.0.0.1:50051",
+      grpcEndpointTlsMode: "mtls" as any,
+    });
+    // Trigger ensureStarted
+    await runtime.getKernel();
+    assert.equal(errors.length, 1, "should have logged one invalid grpcEndpointTlsMode error");
+    assert.match(errors[0], /mtls/);
+  } finally {
+    console.warn = origWarn;
+  }
+});
+
+test("insecure mode with tlsCaPath logs warning about CA not being used", async () => {
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    const msg = args.join(" ");
+    if (msg.includes("grpcEndpointTlsCa") || msg.includes("insecure")) {
+      warnings.push(msg);
+    }
+  };
+  try {
+    const { createPluginRuntime } = await import("../../src/plugin-runtime.js");
+    const runtime = createPluginRuntime({
+      grpcEndpoint: "tcp:127.0.0.1:50051",
+      grpcEndpointTlsMode: "insecure",
+      grpcEndpointTlsCa: "/etc/certs/ca.pem",
+    });
+    await runtime.getKernel();
+    assert.equal(warnings.length, 1, "should have logged one CA/insecure warning");
+    assert.match(warnings[0], /grpcEndpointTlsCa/);
+    assert.match(warnings[0], /insecure/);
+  } finally {
+    console.warn = origWarn;
+  }
+});

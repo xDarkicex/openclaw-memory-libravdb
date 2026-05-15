@@ -72,6 +72,25 @@ export function createPluginRuntime(
         if (cfg.grpcEndpoint) {
           try {
             const secret = loadSecretFromEnv();
+            const VALID_TLS_MODES = ["auto", "tls", "insecure"] as const;
+            if (
+              cfg.grpcEndpointTlsMode !== undefined &&
+              !VALID_TLS_MODES.includes(cfg.grpcEndpointTlsMode as any)
+            ) {
+              throw new Error(
+                `LibraVDB: invalid grpcEndpointTlsMode "${cfg.grpcEndpointTlsMode}" — ` +
+                `must be "auto", "tls", or "insecure"`,
+              );
+            }
+            if (
+              cfg.grpcEndpointTlsMode === "insecure" &&
+              cfg.grpcEndpointTlsCa
+            ) {
+              console.warn(
+                `LibraVDB: grpcEndpointTlsCa is set but grpcEndpointTlsMode ` +
+                `is "insecure" — the CA file will not be used`,
+              );
+            }
             kernel = new GrpcKernelClient({
               endpoint: cfg.grpcEndpoint,
               secret,
