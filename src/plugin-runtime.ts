@@ -58,6 +58,43 @@ export function createPluginRuntime(
     }
     if (!started) {
       started = (async () => {
+        if (cfg.grpcEndpoint) {
+          if (
+            cfg.grpcEndpointTlsMode !== undefined &&
+            !isTlsModeValid(cfg.grpcEndpointTlsMode)
+          ) {
+            throw new Error(
+              `LibraVDB: invalid grpcEndpointTlsMode "${cfg.grpcEndpointTlsMode}" — ` +
+              `must be "auto", "tls", or "insecure"`,
+            );
+          }
+
+          const hasClientCert = cfg.grpcEndpointTlsClientCert !== undefined;
+          const hasClientKey = cfg.grpcEndpointTlsClientKey !== undefined;
+          if (hasClientCert !== hasClientKey) {
+            throw new Error(
+              "LibraVDB: grpcEndpointTlsClientCert and " +
+              "grpcEndpointTlsClientKey must both be set or both be omitted",
+            );
+          }
+
+          if (cfg.grpcEndpointTlsMode === "insecure") {
+            if (cfg.grpcEndpointTlsCa) {
+              logger.warn?.(
+                `LibraVDB: grpcEndpointTlsCa is set but grpcEndpointTlsMode ` +
+                `is "insecure" — the CA file will not be used`,
+              );
+            }
+            if (cfg.grpcEndpointTlsClientCert) {
+              logger.warn?.(
+                `LibraVDB: grpcEndpointTlsClientCert is set but ` +
+                `grpcEndpointTlsMode is "insecure" — client certificate ` +
+                `will not be sent`,
+              );
+            }
+          }
+        }
+
         const sidecar = await startSidecar(cfg, logger);
         const rpc = new RpcClient(sidecar.socket, {
           timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
@@ -75,37 +112,21 @@ export function createPluginRuntime(
         }
         let kernel: GrpcKernelClient | null = null;
         if (cfg.grpcEndpoint) {
-          try {
             const secret = loadSecretFromEnv();
-            if (
-              cfg.grpcEndpointTlsMode !== undefined &&
-              !isTlsModeValid(cfg.grpcEndpointTlsMode)
-            ) {
-              throw new Error(
-                `LibraVDB: invalid grpcEndpointTlsMode "${cfg.grpcEndpointTlsMode}" — ` +
-                `must be "auto", "tls", or "insecure"`,
-              );
+            try {
+              kernel = new GrpcKernelClient({
+                endpoint: cfg.grpcEndpoint,
+                secret,
+                timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
+                tlsCaPath: cfg.grpcEndpointTlsCa,
+                tlsMode: cfg.grpcEndpointTlsMode,
+                tlsClientCertPath: cfg.grpcEndpointTlsClientCert,
+                tlsClientKeyPath: cfg.grpcEndpointTlsClientKey,
+              });
+            } catch (error) {
+              // Only gRPC init errors land here — config validation already threw above
+              logger.warn?.(`LibraVDB: failed to initialize gRPC kernel client: ${formatError(error)}`);
             }
-            if (
-              cfg.grpcEndpointTlsMode === "insecure" &&
-              cfg.grpcEndpointTlsCa
-            ) {
-              // logger is provided by the host and may not have all methods
-              logger.warn?.(
-                `LibraVDB: grpcEndpointTlsCa is set but grpcEndpointTlsMode ` +
-                `is "insecure" — the CA file will not be used`,
-              );
-            }
-            kernel = new GrpcKernelClient({
-              endpoint: cfg.grpcEndpoint,
-              secret,
-              timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
-              tlsCaPath: cfg.grpcEndpointTlsCa,
-              tlsMode: cfg.grpcEndpointTlsMode,
-            });
-          } catch (error) {
-            logger.warn?.(`LibraVDB: failed to initialize gRPC kernel client: ${formatError(error)}`);
-          }
         }
 
         return { rpc, sidecar, kernel };

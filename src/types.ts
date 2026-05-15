@@ -92,6 +92,17 @@ export interface PluginConfig {
   logLevel?: "debug" | "info" | "warn" | "error";
   grpcEndpoint?: string;
   grpcEndpointTlsCa?: string;  // path to CA cert PEM file for remote TLS verification
+  /** Path to a client certificate PEM file for mTLS.
+   * The file must contain a PEM-encoded X.509 certificate. Leaf first;
+   * intermediates may follow in the same file. Required when the daemon
+   * requires a client certificate (mTLS). Must be paired with
+   * grpcEndpointTlsClientKey. */
+  grpcEndpointTlsClientCert?: string;
+  /** Path to the client private key PEM file.
+   * Must correspond to the leaf certificate in grpcEndpointTlsClientCert.
+   * Accepts RSA (PKCS#1/PKCS#8), ECDSA (P-256/P-384/P-521), Ed25519.
+   * Required when grpcEndpointTlsClientCert is set. */
+  grpcEndpointTlsClientKey?: string;
   /** Controls gRPC credential mode.
    * "auto" (default) — loopback and unix → plaintext, remote → TLS.
    * "tls"            — always use TLS regardless of address.

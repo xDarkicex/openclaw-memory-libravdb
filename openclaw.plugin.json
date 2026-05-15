@@ -50,6 +50,14 @@
         "type": "string",
         "description": "Path to a CA certificate PEM file for verifying the daemon's TLS certificate. Only needed for self-signed or private CA certificates. Not required when using a publicly trusted certificate (Let's Encrypt, cert-manager, etc)."
       },
+      "grpcEndpointTlsClientCert": {
+        "type": "string",
+        "description": "Path to a PEM-encoded X.509 client certificate for mTLS. Required when the daemon requires a client certificate. Must be paired with grpcEndpointTlsClientKey."
+      },
+      "grpcEndpointTlsClientKey": {
+        "type": "string",
+        "description": "Path to the client private key PEM file. Required when grpcEndpointTlsClientCert is set. Accepts RSA, ECDSA (P-256/P-384/P-521), Ed25519 keys."
+      },
       "grpcEndpointTlsMode": {
         "type": "string",
         "enum": [

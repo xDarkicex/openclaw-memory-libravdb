@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import * as fs from "fs";
+import fs from "node:fs";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 
@@ -16,7 +16,9 @@ export interface GrpcClientOptions {
   secret?: string;
   timeoutMs?: number;
   tlsCaPath?: string;
-  tlsMode?: "auto" | "tls" | "insecure"; // exported type: use VALID_TLS_MODES from plugin-runtime for deriving new types
+  tlsMode?: "auto" | "tls" | "insecure";
+  tlsClientCertPath?: string;
+  tlsClientKeyPath?: string;
 }
 
 export function resolveGrpcTarget(endpoint: string): string {
@@ -53,12 +55,15 @@ export function resolveGrpcCredentials(
   endpoint: string,
   tlsCaPath?: string,
   tlsMode?: "auto" | "tls" | "insecure",
+  tlsClientCertPath?: string,
+  tlsClientKeyPath?: string,
 ): grpc.ChannelCredentials {
   if (resolveGrpcCredentialMode(endpoint, tlsMode) === "insecure") {
     return grpc.credentials.createInsecure();
   }
+  // tlsMode is "tls" or "auto"/undefined resolved to "tls"
+  let rootCerts: Buffer | null = null;
   if (tlsCaPath) {
-    let rootCerts: Buffer;
     try {
       rootCerts = fs.readFileSync(tlsCaPath);
     } catch (err) {
@@ -67,9 +72,37 @@ export function resolveGrpcCredentials(
         `LibraVDB: failed to load TLS CA certificate from "${tlsCaPath}": ${msg}`,
       );
     }
-    return grpc.credentials.createSsl(rootCerts, null, null);
   }
-  return grpc.credentials.createSsl();
+  // Client certificate and key must both be present or both absent
+  const hasCert = tlsClientCertPath !== undefined;
+  const hasKey = tlsClientKeyPath !== undefined;
+  if (hasCert !== hasKey) {
+    throw new Error(
+      "LibraVDB: grpcEndpointTlsClientCert and grpcEndpointTlsClientKey " +
+      "must both be set or both be omitted",
+    );
+  }
+  let clientKey: Buffer | null = null;
+  let clientCert: Buffer | null = null;
+  if (tlsClientCertPath && tlsClientKeyPath) {
+    try {
+      clientCert = fs.readFileSync(tlsClientCertPath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `LibraVDB: failed to load TLS client certificate from "${tlsClientCertPath}": ${msg}`,
+      );
+    }
+    try {
+      clientKey = fs.readFileSync(tlsClientKeyPath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `LibraVDB: failed to load TLS client key from "${tlsClientKeyPath}": ${msg}`,
+      );
+    }
+  }
+  return grpc.credentials.createSsl(rootCerts, clientKey, clientCert);
 }
 
 function extractGrpcHost(target: string): string {
@@ -111,7 +144,13 @@ export class GrpcKernelClient {
 
     const target = resolveGrpcTarget(options.endpoint);
 
-    this.client = new kernelService(target, resolveGrpcCredentials(options.endpoint, options.tlsCaPath, options.tlsMode));
+    this.client = new kernelService(target, resolveGrpcCredentials(
+      options.endpoint,
+      options.tlsCaPath,
+      options.tlsMode,
+      options.tlsClientCertPath,
+      options.tlsClientKeyPath,
+    ));
   }
 
   private getMetadata(signed = true): grpc.Metadata {

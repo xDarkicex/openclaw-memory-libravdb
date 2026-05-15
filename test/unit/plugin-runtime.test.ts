@@ -61,3 +61,57 @@ test("insecure mode with tlsCaPath logs warning about CA not being used", async 
     console.warn = origWarn;
   }
 });
+
+test("validation throws when grpcEndpointTlsClientCert is set but grpcEndpointTlsClientKey is omitted", async () => {
+  const { createPluginRuntime } = await import("../../src/plugin-runtime.js");
+  const runtime = createPluginRuntime({
+    grpcEndpoint: "tcp:127.0.0.1:50051",
+    grpcEndpointTlsClientCert: "/etc/certs/client.crt",
+  });
+  await assert.rejects(
+    () => runtime.getKernel(),
+    /grpcEndpointTlsClientCert and grpcEndpointTlsClientKey must both be set or both be omitted/,
+  );
+});
+
+test("validation throws when grpcEndpointTlsClientKey is set but grpcEndpointTlsClientCert is omitted", async () => {
+  const { createPluginRuntime } = await import("../../src/plugin-runtime.js");
+  const runtime = createPluginRuntime({
+    grpcEndpoint: "tcp:127.0.0.1:50051",
+    grpcEndpointTlsClientKey: "/etc/certs/client.key",
+  });
+  await assert.rejects(
+    () => runtime.getKernel(),
+    /grpcEndpointTlsClientCert and grpcEndpointTlsClientKey must both be set or both be omitted/,
+  );
+});
+
+test("warning fires when grpcEndpointTlsClientCert is set and grpcEndpointTlsMode is 'insecure'", async () => {
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    const msg = args.join(" ");
+    if (msg.includes("grpcEndpointTlsClientCert") || msg.includes("insecure")) {
+      warnings.push(msg);
+    }
+  };
+  try {
+    const { createPluginRuntime } = await import("../../src/plugin-runtime.js");
+    const runtime = createPluginRuntime({
+      grpcEndpoint: "tcp:127.0.0.1:50051",
+      grpcEndpointTlsMode: "insecure",
+      grpcEndpointTlsClientCert: "/etc/certs/client.crt",
+      grpcEndpointTlsClientKey: "/etc/certs/client.key",
+    });
+    try {
+      await runtime.getKernel();
+    } catch {
+      // gRPC init may fail — we only care about the warning
+    }
+    assert.equal(warnings.length, 1, "should have logged one client cert/insecure warning");
+    assert.match(warnings[0], /grpcEndpointTlsClientCert/);
+    assert.match(warnings[0], /insecure/);
+  } finally {
+    console.warn = origWarn;
+  }
+});
