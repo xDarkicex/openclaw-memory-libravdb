@@ -132,6 +132,41 @@ test("resolveGrpcCredentials passes key+cert buffers to createSsl", (t) => {
   ]);
 });
 
+test("resolveGrpcCredentials passes CA root with key+cert buffers to createSsl", (t) => {
+  const caBuffer = Buffer.from("CA_DATA");
+  const certBuffer = Buffer.from("CERT_DATA");
+  const keyBuffer = Buffer.from("KEY_DATA");
+  const returned = { mocked: true } as unknown as grpcType.ChannelCredentials;
+
+  t.mock.method(fs, "readFileSync", (filePath: fsType.PathOrFileDescriptor) => {
+    if (filePath === "/certs/ca.pem") return caBuffer;
+    if (filePath === "/certs/client.crt") return certBuffer;
+    if (filePath === "/certs/client.key") return keyBuffer;
+    throw new Error(`unexpected read: ${String(filePath)}`);
+  });
+  const createSslMock = t.mock.method(
+    grpc.credentials,
+    "createSsl",
+    () => returned,
+  );
+
+  const creds = resolveGrpcCredentials(
+    "tcp:192.0.2.10:37421",
+    "/certs/ca.pem",
+    "tls",
+    "/certs/client.crt",
+    "/certs/client.key",
+  );
+
+  assert.equal(creds, returned);
+  assert.equal(createSslMock.mock.callCount(), 1);
+  assert.deepEqual(createSslMock.mock.calls[0]?.arguments, [
+    caBuffer,
+    keyBuffer,
+    certBuffer,
+  ]);
+});
+
 test("resolveGrpcCredentials throws when only tlsClientCertPath is set", () => {
   assert.throws(
     () => resolveGrpcCredentials(
