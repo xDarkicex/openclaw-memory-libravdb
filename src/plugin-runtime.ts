@@ -77,6 +77,7 @@ export function createPluginRuntime(
               secret,
               timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
               tlsCaPath: cfg.grpcEndpointTlsCa,
+              tlsMode: cfg.grpcEndpointTlsMode,
             });
           } catch (error) {
             logger.warn?.(`LibraVDB: failed to initialize gRPC kernel client: ${formatError(error)}`);

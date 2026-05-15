@@ -12,8 +12,9 @@ CPU when a provider is unavailable.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `sidecarPath` | string | `auto` | `"auto"` probes standard socket paths; set `unix:/path` or `tcp:host:port` to override |
-| `grpcEndpoint` | string | — | gRPC kernel endpoint. Unix socket and loopback targets use plaintext. Non-local targets use TLS automatically. |
+| `grpcEndpoint` | string | — | gRPC kernel endpoint. See `grpcEndpointTlsMode` for credential control. |
 | `grpcEndpointTlsCa` | string | — | Path to CA certificate PEM file. Only needed for self-signed or private CA certs. Omit when using Let's Encrypt or cert-manager. |
+| `grpcEndpointTlsMode` | string | `"auto"` | gRPC credential mode. `"auto"`: loopback/unix → plaintext, remote → TLS. `"tls"`: always TLS. `"insecure"`: always plaintext. |
 | `rpcTimeoutMs` | number | `30000` | Per-call timeout for service RPC (ms) |
 | `dbPath` | string | auto-named | Explicit DB path; when set bypasses model-specific naming |
 
@@ -26,6 +27,14 @@ The plugin selects credentials automatically based on the endpoint:
 | `unix:/path/to/sock` | Plaintext (local) |
 | `tcp:127.0.0.1:port` / `tcp:localhost:port` / `[::1]:port` | Plaintext (loopback) |
 | Any other TCP or DNS target | TLS |
+
+Use `grpcEndpointTlsMode` to override the default behavior:
+
+| Value | When to use |
+|---|---|
+| `"auto"` (default) | Standard operation — plugin heuristic matches daemon TLS setting automatically. |
+| `"tls"` | Daemon has TLS enabled on loopback or unix socket (rare; use when the daemon's `LIBRAVDB_GRPC_TLS_*` env vars are set on a local address). |
+| `"insecure"` | Service mesh or TLS-terminating tunnel handles encryption externally; both sides are plaintext. |
 
 **Default (local daemon):** No TLS configuration needed.
 Unix socket and loopback endpoints are always plaintext regardless
@@ -46,6 +55,16 @@ Set `grpcEndpointTlsCa` to the path of the CA certificate PEM file:
 ```
 The daemon must be configured with matching TLS cert and key via
 `LIBRAVDB_GRPC_TLS_CERT` and `LIBRAVDB_GRPC_TLS_KEY`.
+
+**Local daemon with TLS enabled:**
+If the daemon has `LIBRAVDB_GRPC_TLS_CERT`/`LIBRAVDB_GRPC_TLS_KEY` set on a loopback
+address, explicitly set `grpcEndpointTlsMode: "tls"` to match:
+```json
+{
+  "grpcEndpoint": "tcp:127.0.0.1:9090",
+  "grpcEndpointTlsMode": "tls"
+}
+```
 
 ## Embedding
 

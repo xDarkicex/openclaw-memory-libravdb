@@ -35,13 +35,33 @@ test("resolveGrpcCredentialMode uses TLS for non-local grpc targets", () => {
   assert.equal(resolveGrpcCredentialMode("dns:///libravdb.example.com:443"), "tls");
 });
 
+test("resolveGrpcCredentialMode tlsMode 'tls' overrides address heuristic", () => {
+  assert.equal(resolveGrpcCredentialMode("tcp:127.0.0.1:37421", "tls"), "tls");
+  assert.equal(resolveGrpcCredentialMode("unix:/home/user/.clawdb/run/libravdb.sock", "tls"), "tls");
+});
+
+test("resolveGrpcCredentialMode tlsMode 'insecure' overrides address heuristic", () => {
+  assert.equal(resolveGrpcCredentialMode("tcp:192.0.2.10:37421", "insecure"), "insecure");
+  assert.equal(resolveGrpcCredentialMode("libravdb.example.com:443", "insecure"), "insecure");
+});
+
+test("resolveGrpcCredentialMode tlsMode 'auto' uses address heuristic", () => {
+  assert.equal(resolveGrpcCredentialMode("tcp:127.0.0.1:37421", "auto"), "insecure");
+  assert.equal(resolveGrpcCredentialMode("tcp:192.0.2.10:37421", "auto"), "tls");
+});
+
+test("resolveGrpcCredentialMode undefined tlsMode defaults to auto (heuristic)", () => {
+  assert.equal(resolveGrpcCredentialMode("tcp:127.0.0.1:37421", undefined), "insecure");
+  assert.equal(resolveGrpcCredentialMode("tcp:192.0.2.10:37421", undefined), "tls");
+});
+
 test("resolveGrpcCredentials returns createInsecure for loopback targets", () => {
-  const creds = resolveGrpcCredentials("tcp:127.0.0.1:37421") as any;
+  const creds = resolveGrpcCredentials("tcp:127.0.0.1:37421", undefined, "auto") as any;
   assert.match(creds.constructor.name, /Insecure/i);
 });
 
 test("resolveGrpcCredentials returns createSsl() without root certs for remote targets", () => {
-  const creds = resolveGrpcCredentials("tcp:192.0.2.10:37421") as any;
+  const creds = resolveGrpcCredentials("tcp:192.0.2.10:37421", undefined, "auto") as any;
   assert.match(creds.constructor.name, /Ssl|Secure/i);
 });
 
@@ -51,7 +71,7 @@ test("resolveGrpcCredentials uses provided CA PEM file for remote TLS verificati
   let creds: any;
   let threw = false;
   try {
-    creds = resolveGrpcCredentials("tcp:192.0.2.10:37421", "/nonexistent/ca.pem");
+    creds = resolveGrpcCredentials("tcp:192.0.2.10:37421", "/nonexistent/ca.pem", "auto");
   } catch {
     threw = true;
   }
@@ -60,4 +80,14 @@ test("resolveGrpcCredentials uses provided CA PEM file for remote TLS verificati
   // We verify both by checking the return path: without tlsCaPath it returns creds,
   // with a bad tlsCaPath it should throw from fs.readFileSync before reaching grpc.
   assert.equal(threw, true, "fs.readFileSync should throw for nonexistent CA PEM path");
+});
+
+test("resolveGrpcCredentials tlsMode 'insecure' always returns createInsecure", () => {
+  const creds = resolveGrpcCredentials("tcp:192.0.2.10:37421", undefined, "insecure") as any;
+  assert.match(creds.constructor.name, /Insecure/i);
+});
+
+test("resolveGrpcCredentials tlsMode 'tls' on loopback returns SSL creds", () => {
+  const creds = resolveGrpcCredentials("tcp:127.0.0.1:37421", undefined, "tls") as any;
+  assert.match(creds.constructor.name, /Ssl|Secure/i);
 });

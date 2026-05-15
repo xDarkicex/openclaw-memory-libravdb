@@ -50,6 +50,11 @@
         "type": "string",
         "description": "Path to a CA certificate PEM file for verifying the daemon's TLS certificate. Only needed for self-signed or private CA certificates. Not required when using a publicly trusted certificate (Let's Encrypt, cert-manager, etc)."
       },
+      "grpcEndpointTlsMode": {
+        "type": "string",
+        "enum": ["auto", "tls", "insecure"],
+        "description": "gRPC credential mode. auto (default): loopback and unix socket use plaintext, remote addresses use TLS. tls: always use TLS regardless of address. insecure: always use plaintext (use with service mesh or tunnel that handles TLS externally)."
+      },
       "authoredHardBudgetFraction": {
         "type": "number",
         "minimum": 0,

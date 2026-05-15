@@ -16,6 +16,7 @@ export interface GrpcClientOptions {
   secret?: string;
   timeoutMs?: number;
   tlsCaPath?: string;
+  tlsMode?: "auto" | "tls" | "insecure";
 }
 
 export function resolveGrpcTarget(endpoint: string): string {
@@ -35,18 +36,25 @@ export function resolveGrpcTarget(endpoint: string): string {
  * deployments. Omit tlsCaPath for publicly trusted certificates
  * (Let's Encrypt, cert-manager) — the system CA pool is used.
  */
-export function resolveGrpcCredentialMode(endpoint: string): "insecure" | "tls" {
+export function resolveGrpcCredentialMode(
+  endpoint: string,
+  tlsMode?: "auto" | "tls" | "insecure",
+): "insecure" | "tls" {
+  if (tlsMode === "tls") return "tls";
+  if (tlsMode === "insecure") return "insecure";
+  // "auto" or undefined — address-based heuristic
   const target = resolveGrpcTarget(endpoint).trim();
-  if (target.startsWith("unix:")) {
-    return "insecure";
-  }
-
+  if (target.startsWith("unix:")) return "insecure";
   const host = extractGrpcHost(target);
   return isLoopbackHost(host) ? "insecure" : "tls";
 }
 
-export function resolveGrpcCredentials(endpoint: string, tlsCaPath?: string): grpc.ChannelCredentials {
-  if (resolveGrpcCredentialMode(endpoint) === "insecure") {
+export function resolveGrpcCredentials(
+  endpoint: string,
+  tlsCaPath?: string,
+  tlsMode?: "auto" | "tls" | "insecure",
+): grpc.ChannelCredentials {
+  if (resolveGrpcCredentialMode(endpoint, tlsMode) === "insecure") {
     return grpc.credentials.createInsecure();
   }
   if (tlsCaPath) {
@@ -103,7 +111,7 @@ export class GrpcKernelClient {
 
     const target = resolveGrpcTarget(options.endpoint);
 
-    this.client = new kernelService(target, resolveGrpcCredentials(options.endpoint, options.tlsCaPath));
+    this.client = new kernelService(target, resolveGrpcCredentials(options.endpoint, options.tlsCaPath, options.tlsMode));
   }
 
   private getMetadata(signed = true): grpc.Metadata {
