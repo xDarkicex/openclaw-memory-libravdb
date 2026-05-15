@@ -90,7 +90,7 @@ export function createPluginRuntime(
               cfg.grpcEndpointTlsMode === "insecure" &&
               cfg.grpcEndpointTlsCa
             ) {
-              console.warn(
+              logger.warn?.(
                 `LibraVDB: grpcEndpointTlsCa is set but grpcEndpointTlsMode ` +
                 `is "insecure" — the CA file will not be used`,
               );
