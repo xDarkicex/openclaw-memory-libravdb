@@ -9,6 +9,11 @@ export type RpcGetter = () => Promise<RpcClient>;
 export const DEFAULT_RPC_TIMEOUT_MS = 30000;
 export const STARTUP_HEALTH_TIMEOUT_MS = 2000;
 
+const VALID_TLS_MODES = ["auto", "tls", "insecure"] as const;
+type ValidTlsMode = typeof VALID_TLS_MODES[number];
+const isTlsModeValid = (m: string): m is ValidTlsMode =>
+  VALID_TLS_MODES.includes(m as ValidTlsMode);
+
 export function resolveStartupHealthTimeoutMs(cfg: PluginConfig): number {
   return Math.max(STARTUP_HEALTH_TIMEOUT_MS, cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS);
 }
@@ -72,10 +77,9 @@ export function createPluginRuntime(
         if (cfg.grpcEndpoint) {
           try {
             const secret = loadSecretFromEnv();
-            const VALID_TLS_MODES = ["auto", "tls", "insecure"] as const;
             if (
               cfg.grpcEndpointTlsMode !== undefined &&
-              !VALID_TLS_MODES.includes(cfg.grpcEndpointTlsMode as any)
+              !isTlsModeValid(cfg.grpcEndpointTlsMode)
             ) {
               throw new Error(
                 `LibraVDB: invalid grpcEndpointTlsMode "${cfg.grpcEndpointTlsMode}" — ` +
