@@ -335,6 +335,7 @@ class SidecarSupervisor implements SidecarHandle {
         this.reconnectScheduled = false;
         const message = error instanceof Error ? error.message : String(error);
         this.logger.error(`[libravdb] sidecar reconnect failed: ${message}`);
+        void this.handleExit(1);
       });
     });
   }

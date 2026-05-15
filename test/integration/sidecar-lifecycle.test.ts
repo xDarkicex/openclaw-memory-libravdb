@@ -139,6 +139,25 @@ function createRuntime(config: {
   return { runtime, sockets, endpoints, scheduled };
 }
 
+function createFailingConnectSocket(errorCode: string): SidecarSocket {
+  return {
+    setEncoding() {},
+    on() {},
+    once(event, handler) {
+      if (event === "error") {
+        queueMicrotask(() =>
+          (handler as (error: Error) => void)(
+            Object.assign(new Error(errorCode), { code: errorCode }),
+          ),
+        );
+      }
+    },
+    off() {},
+    write() {},
+    destroy() {},
+  };
+}
+
 test("sidecar crash mid-session reconnects within the restart window", async () => {
   const runtime = createRuntime({});
   const logger = createMemoryLogger();
@@ -159,6 +178,49 @@ test("sidecar crash mid-session reconnects within the restart window", async () 
   assert.equal(runtime.sockets.length, 2);
   await assert.doesNotReject(() => rpc.call("health", {}));
   assert.equal(handle.isDegraded(), false);
+});
+
+test("sidecar reconnect failures keep retrying until the retry budget is exhausted", async () => {
+  const runtime = createRuntime({});
+  const logger = createMemoryLogger();
+  let connectAttempts = 0;
+  let reconnectFailuresRemaining = 2;
+
+  runtime.runtime.createSocket = (endpoint) => {
+    connectAttempts += 1;
+    if (connectAttempts > 1 && reconnectFailuresRemaining > 0) {
+      reconnectFailuresRemaining -= 1;
+      return createFailingConnectSocket("EACCES");
+    }
+    const socket = new ControlledSocket(endpoint);
+    runtime.sockets.push(socket);
+    return socket;
+  };
+
+  const handle = await startSidecar({ rpcTimeoutMs: 50, maxRetries: 3 }, logger, runtime.runtime);
+  const rpc = new RpcClient(handle.socket, { timeoutMs: 50 });
+
+  runtime.sockets[0]?.emitClose();
+  await flushAsyncWork();
+
+  assert.equal(runtime.scheduled.length, 1);
+  runtime.scheduled[0]?.restart();
+  await flushAsyncWork();
+
+  assert.equal(runtime.scheduled.length, 2);
+  assert.equal(runtime.scheduled[1]?.delayMs, 1000);
+  runtime.scheduled[1]?.restart();
+  await flushAsyncWork();
+
+  assert.equal(runtime.scheduled.length, 3);
+  assert.equal(runtime.scheduled[2]?.delayMs, 2000);
+  runtime.scheduled[2]?.restart();
+  await flushAsyncWork();
+
+  assert.equal(reconnectFailuresRemaining, 0);
+  assert.equal(runtime.sockets.length, 2);
+  assert.equal(handle.isDegraded(), false);
+  await assert.doesNotReject(() => rpc.call("health", {}));
 });
 
 test("sidecar runtime socket errors reject pending RPCs and recover after restart", async () => {
@@ -183,9 +245,21 @@ test("sidecar runtime socket errors reject pending RPCs and recover after restar
   assert.equal(handle.isDegraded(), false);
 });
 
-test("sidecar enters degraded mode after exhausting retry budget", async () => {
+test("sidecar enters degraded mode after exhausting failed reconnect retry budget", async () => {
   const runtime = createRuntime({});
   const logger = createMemoryLogger();
+  let connectAttempts = 0;
+
+  runtime.runtime.createSocket = (endpoint) => {
+    connectAttempts += 1;
+    if (connectAttempts > 1) {
+      return createFailingConnectSocket("EACCES");
+    }
+    const socket = new ControlledSocket(endpoint);
+    runtime.sockets.push(socket);
+    return socket;
+  };
+
   const handle = await startSidecar({ rpcTimeoutMs: 50, maxRetries: 1 }, logger, runtime.runtime);
 
   runtime.sockets[0]?.emitClose();
@@ -193,8 +267,6 @@ test("sidecar enters degraded mode after exhausting retry budget", async () => {
   assert.equal(runtime.scheduled.length, 1);
 
   runtime.scheduled[0]?.restart();
-  await flushAsyncWork();
-  runtime.sockets[1]?.emitClose();
   await flushAsyncWork();
 
   assert.equal(handle.isDegraded(), true);
