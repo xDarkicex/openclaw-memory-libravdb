@@ -54,7 +54,14 @@ test("before_reset hook forwards advisory reset context to the runtime", async (
 
 test("session_end hook forwards advisory end metadata to the runtime", async () => {
   const { runtime, hints } = createRuntimeRecorder();
-  const hook = createSessionEndHook(runtime);
+  const infos: string[] = [];
+  const hook = createSessionEndHook(runtime, {
+    error() {},
+    info(message: string) {
+      infos.push(message);
+    },
+    warn() {},
+  });
 
   await hook(
     {
@@ -90,4 +97,7 @@ test("session_end hook forwards advisory end metadata to the runtime", async () 
       nextSessionKey: "session-key-3",
     },
   ]);
+  assert.match(infos[0] ?? "", /LibraVDB session_end/);
+  assert.match(infos[0] ?? "", /sessionId=session-2/);
+  assert.match(infos[0] ?? "", /durationMs=4200/);
 });

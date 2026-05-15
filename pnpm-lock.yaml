@@ -7,10 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      openclaw:
-        specifier: '*'
-        version: 2026.4.11(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@napi-rs/canvas@0.1.97)(@types/express@5.0.6)(apache-arrow@18.1.0)(typescript@6.0.3)
     devDependencies:
       '@bufbuild/protobuf':
         specifier: 1.7.2
@@ -28,11 +24,14 @@ importers:
         specifier: ^20.11.0
         version: 20.19.39
       '@xdarkicex/libravdb-contracts':
-        specifier: ^0.0.6
-        version: 0.0.6
+        specifier: ^0.0.7
+        version: 0.0.7
       esbuild:
         specifier: ^0.27.0
         version: 0.27.7
+      openclaw:
+        specifier: 2026.4.11
+        version: 2026.4.11(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@napi-rs/canvas@0.1.97)(@types/express@5.0.6)(apache-arrow@18.1.0)(typescript@6.0.3)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -1493,8 +1492,8 @@ packages:
   '@wasm-audio-decoders/common@9.0.7':
     resolution: {integrity: sha512-WRaUuWSKV7pkttBygml/a6dIEpatq2nnZGFIoPTc5yPLkxL6Wk4YaslPM98OPQvWacvNZ+Py9xROGDtrFBDzag==}
 
-  '@xdarkicex/libravdb-contracts@0.0.6':
-    resolution: {integrity: sha512-sHB35LbZcJuRdNwDIixm2iK0aZ8fqY8T8XwE6SbdtQgLGm5DHk6ErYgDytLjKQVZirjlED6q4zdKEUPQyCv83A==}
+  '@xdarkicex/libravdb-contracts@0.0.7':
+    resolution: {integrity: sha512-VXS6fFZMNSROVbZaHeAjTj/KNOL0Xc010br7zetTo8JBloOuc0qZvUZvZxadydrZmXpHUUfi8DYvfB1WoJSZSw==}
     engines: {node: '>=22'}
 
   abbrev@1.1.1:
@@ -5274,7 +5273,7 @@ snapshots:
       '@eshaz/web-worker': 1.2.2
       simple-yenc: 1.0.4
 
-  '@xdarkicex/libravdb-contracts@0.0.6':
+  '@xdarkicex/libravdb-contracts@0.0.7':
     dependencies:
       '@bufbuild/protobuf': 1.7.2
 

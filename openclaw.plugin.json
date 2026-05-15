@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Persistent vector memory with three-tier hybrid scoring",
-  "version": "1.4.52",
+  "version": "1.4.80",
   "kind": [
     "memory",
     "context-engine"
@@ -63,6 +63,42 @@
       },
       "useSessionSummarySearchExperiment": {
         "type": "boolean"
+      },
+      "section7CoarseTopK": {
+        "type": "number"
+      },
+      "section7SecondPassTopK": {
+        "type": "number"
+      },
+      "section7Theta1": {
+        "type": "number"
+      },
+      "section7Kappa": {
+        "type": "number"
+      },
+      "section7HopEta": {
+        "type": "number"
+      },
+      "section7HopThreshold": {
+        "type": "number"
+      },
+      "section7AuthorityRecencyLambda": {
+        "type": "number"
+      },
+      "section7AuthorityRecencyWeight": {
+        "type": "number"
+      },
+      "section7AuthorityFrequencyWeight": {
+        "type": "number"
+      },
+      "section7AuthorityAuthoredWeight": {
+        "type": "number"
+      },
+      "section7AuthoritySalienceWeight": {
+        "type": "number"
+      },
+      "section7RecencyAccessLambda": {
+        "type": "number"
       },
       "embeddingRuntimePath": {
         "type": "string"
@@ -206,6 +242,12 @@
         "type": "number",
         "default": 150
       },
+      "markdownIngestionSnapshotPath": {
+        "type": "string"
+      },
+      "markdownIngestionObsidianSnapshotPath": {
+        "type": "string"
+      },
       "dreamPromotionEnabled": {
         "type": "boolean",
         "default": false
@@ -253,6 +295,24 @@
         "type": "number",
         "default": 2000,
         "description": "Auto-trigger compaction when the session accumulates this many tokens since the last compaction. Set to 0 to disable auto-compaction."
+      },
+      "continuityMinTurns": {
+        "type": "number"
+      },
+      "continuityTailBudgetTokens": {
+        "type": "number"
+      },
+      "continuityPriorContextTokens": {
+        "type": "number"
+      },
+      "recoveryFloorScore": {
+        "type": "number"
+      },
+      "recoveryMinTopK": {
+        "type": "number"
+      },
+      "recoveryMinConfidenceMean": {
+        "type": "number"
       },
       "ollamaUrl": {
         "type": "string"

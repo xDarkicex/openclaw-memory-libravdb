@@ -49,6 +49,8 @@ export interface PluginConfig {
   markdownIngestionInclude?: string[];
   markdownIngestionExclude?: string[];
   markdownIngestionDebounceMs?: number;
+  markdownIngestionSnapshotPath?: string;
+  markdownIngestionObsidianSnapshotPath?: string;
   dreamPromotionEnabled?: boolean;
   dreamPromotionDiaryPath?: string;
   dreamPromotionUserId?: string;
@@ -62,7 +64,6 @@ export interface PluginConfig {
   authoredHardBudgetFraction?: number;
   authoredSoftBudgetFraction?: number;
   elevatedGuidanceBudgetFraction?: number;
-  section7StartupTokenBudgetTokens?: number;
   continuityMinTurns?: number;
   continuityTailBudgetTokens?: number;
   continuityPriorContextTokens?: number;
@@ -79,10 +80,8 @@ export interface PluginConfig {
   section7AuthorityRecencyWeight?: number;
   section7AuthorityFrequencyWeight?: number;
   section7AuthorityAuthoredWeight?: number;
-  summaryExpansionConfidenceThreshold?: number;
-  summaryExpansionDepth?: number;
-  summaryExpansionTokenBudget?: number;
-  summaryExpansionPenaltyFactor?: number;
+  section7AuthoritySalienceWeight?: number;
+  section7RecencyAccessLambda?: number;
   recoveryFloorScore?: number;
   recoveryMinTopK?: number;
   recoveryMinConfidenceMean?: number;
@@ -158,4 +157,10 @@ export interface SidecarHandle {
 
 export interface RpcCallOptions {
   timeoutMs: number;
+}
+
+export interface PredictedContext {
+  id: string;
+  text: string;
+  reason: string;
 }

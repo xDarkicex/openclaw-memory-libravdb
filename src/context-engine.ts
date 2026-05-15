@@ -13,6 +13,7 @@ import {
   CompactSessionResponse,
 } from "@xdarkicex/libravdb-contracts";
 import { resolveIdentity, type ResolvedIdentity } from "./identity.js";
+import { resolveUserCollection } from "./memory-scopes.js";
 
 type KernelCompatibleMessage = {
   role: string;
@@ -178,6 +179,14 @@ function selectAfterTurnMessages<T>(
   }
   const start = Math.floor(prePromptMessageCount);
   if (start >= messages.length) {
+    if (messages.length > 0) {
+      logger?.warn?.(
+        `LibraVDB afterTurn prePromptMessageCount consumed all messages; ` +
+        `forwarding latest message for compatibility ` +
+        `prePromptMessageCount=${prePromptMessageCount} start=${start} totalMessages=${messages.length}`,
+      );
+      return messages.slice(-1);
+    }
     logger?.warn?.(
       `LibraVDB afterTurn prePromptMessageCount produced zero forwarded messages ` +
       `prePromptMessageCount=${prePromptMessageCount} start=${start} totalMessages=${messages.length}`,
@@ -297,6 +306,14 @@ function truncateContentToTokenBudget(content: unknown, tokenBudget: number): st
   return normalized.slice(normalized.length - maxChars);
 }
 
+function truncateSystemPromptAdditionToTokenBudget(value: string, tokenBudget: number): string {
+  if (tokenBudget <= 0) return "";
+  const maxChars = Math.max(1, tokenBudget * APPROX_CHARS_PER_TOKEN);
+  if (value.length <= maxChars) return value;
+  // System additions are head-structured: preserve XML/preamble/instructions.
+  return value.slice(0, maxChars);
+}
+
 function trimMessagesToBudget(
   messages: OpenClawCompatibleMessage[],
   tokenBudget: number,
@@ -322,7 +339,10 @@ function trimMessagesToBudget(
   }
 
   const last = messages[messages.length - 1]!;
-  const contentBudget = Math.max(1, tokenBudget - 8);
+  const contentBudget = tokenBudget - 8;
+  if (contentBudget <= 0) {
+    return [];
+  }
   const truncated = truncateContentToTokenBudget(last.content, contentBudget);
   if (!truncated) {
     return [];
@@ -341,18 +361,35 @@ function enforceTokenBudgetInvariant(
   const hardBudget = Math.max(1, Math.floor(tokenBudget));
   const effectiveBudget = resolveEffectiveAssembleBudget(hardBudget);
   const estimated = typeof result.estimatedTokens === "number" ? result.estimatedTokens : 0;
+  const systemPromptTokens = approximateTokenCount(result.systemPromptAddition);
   const approxFromMessages = approximateMessagesTokens(result.messages);
+  const approxTotal = systemPromptTokens + approxFromMessages;
 
-  if (estimated <= effectiveBudget && approxFromMessages <= effectiveBudget) {
+  if (estimated <= effectiveBudget && approxTotal <= effectiveBudget) {
     return result;
   }
 
-  const trimmedMessages = trimMessagesToBudget(result.messages, effectiveBudget);
+  if (systemPromptTokens >= effectiveBudget) {
+    const trimmedSystemPromptAddition = truncateSystemPromptAdditionToTokenBudget(
+      result.systemPromptAddition,
+      effectiveBudget,
+    );
+    const trimmedSystemPromptTokens = approximateTokenCount(trimmedSystemPromptAddition);
+    return {
+      ...result,
+      systemPromptAddition: trimmedSystemPromptAddition,
+      messages: [],
+      estimatedTokens: Math.min(effectiveBudget, trimmedSystemPromptTokens),
+    };
+  }
+
+  const messageBudget = Math.max(0, effectiveBudget - systemPromptTokens);
+  const trimmedMessages = trimMessagesToBudget(result.messages, messageBudget);
   const trimmedEstimate = approximateMessagesTokens(trimmedMessages);
   return {
     ...result,
     messages: trimmedMessages,
-    estimatedTokens: Math.min(effectiveBudget, trimmedEstimate),
+    estimatedTokens: Math.min(effectiveBudget, systemPromptTokens + trimmedEstimate),
   };
 }
 
@@ -381,6 +418,23 @@ function resolvePredictiveCompactionTokenCount(args: {
     normalizeCurrentTokenCount(args.currentTokenCount) ??
     approximateMessagesTokens(args.messages) + approximateTokenCount(args.prompt ?? "")
   );
+}
+
+function resolveAfterTurnPredictiveCompactionTokenCount(args: {
+  currentTokenCount?: number;
+  messages: OpenClawCompatibleMessage[];
+}): number | undefined {
+  const currentTokenCount = normalizeCurrentTokenCount(args.currentTokenCount);
+  const forwardedMessageTokens = normalizeCurrentTokenCount(
+    approximateMessagesTokens(args.messages),
+  );
+  if (currentTokenCount == null) {
+    return forwardedMessageTokens;
+  }
+  if (forwardedMessageTokens == null) {
+    return currentTokenCount;
+  }
+  return Math.max(currentTokenCount, forwardedMessageTokens);
 }
 
 export function normalizeKernelMessage(message: {
@@ -444,7 +498,9 @@ function isQuestionShapedRecallCandidate(text: string): boolean {
 }
 
 function rankExactRecallCandidate(result: SearchResult, token: string): number {
-  if (!result.text.includes(token)) return Number.NEGATIVE_INFINITY;
+  if (typeof result.text !== "string" || !result.text.includes(token)) {
+    return Number.NEGATIVE_INFINITY;
+  }
   let rank = result.score;
   if (/\bmeans\b/i.test(result.text)) rank += 100;
   if (/\b(remember|durable|fact)\b/i.test(result.text)) rank += 10;
@@ -466,7 +522,10 @@ function escapeMemoryFactText(text: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+    .replaceAll("'", "&#39;")
+    .replaceAll("\r", "&#13;")
+    .replaceAll("\n", "&#10;")
+    .replaceAll("\t", "&#9;");
 }
 
 function buildExactRecallFact(result: SearchResult, token: string): string {
@@ -521,6 +580,7 @@ export function buildContextEngineFactory(
   cfg: PluginConfig,
   logger: LoggerLike = console,
 ) {
+  const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
 
@@ -575,7 +635,6 @@ export function buildContextEngineFactory(
     continuityMinTurns: cfg.continuityMinTurns,
     continuityTailBudgetTokens: cfg.continuityTailBudgetTokens,
     continuityPriorContextTokens: cfg.continuityPriorContextTokens,
-    compactThreshold: getDynamicCompactThreshold(tokenBudget),
     compactSessionTokenBudget: cfg.compactSessionTokenBudget,
     section7Theta1: cfg.section7Theta1,
     section7Kappa: cfg.section7Kappa,
@@ -583,17 +642,24 @@ export function buildContextEngineFactory(
     section7HopThreshold: cfg.section7HopThreshold,
     section7CoarseTopK: cfg.section7CoarseTopK,
     section7SecondPassTopK: cfg.section7SecondPassTopK,
-    section7AuthorityRecencyLambda: cfg.section7AuthorityRecencyLambda,
+    // deprecated in libravdb-contracts — no daemon handler (daemon v1.4.68)
+    // section7AuthorityRecencyLambda: cfg.section7AuthorityRecencyLambda,
     section7AuthorityRecencyWeight: cfg.section7AuthorityRecencyWeight,
     section7AuthorityFrequencyWeight: cfg.section7AuthorityFrequencyWeight,
     section7AuthorityAuthoredWeight: cfg.section7AuthorityAuthoredWeight,
+    section7AuthoritySalienceWeight: cfg.section7AuthoritySalienceWeight,
+    section7RecencyAccessLambda: cfg.section7RecencyAccessLambda,
     recoveryFloorScore: cfg.recoveryFloorScore,
     recoveryMinTopK: cfg.recoveryMinTopK,
     recoveryMinConfidenceMean: cfg.recoveryMinConfidenceMean,
-    recencyLambdaSession: cfg.recencyLambdaSession,
+    // deprecated in libravdb-contracts — no daemon handler (daemon v1.4.68)
+    // recencyLambdaSession: cfg.recencyLambdaSession,
     recencyLambdaUser: cfg.recencyLambdaUser,
-    recencyLambdaGlobal: cfg.recencyLambdaGlobal,
+    // deprecated in libravdb-contracts — no daemon handler (daemon v1.4.68)
+    // recencyLambdaGlobal: cfg.recencyLambdaGlobal,
     ingestionGateThreshold: cfg.ingestionGateThreshold,
+    // deprecated in libravdb-contracts — no daemon handler (daemon v1.4.68)
+    // compactThreshold: getDynamicCompactThreshold(tokenBudget),
   });
 
   async function augmentWithExactRecall(
@@ -635,13 +701,13 @@ export function buildContextEngineFactory(
     for (const token of missingTokens) {
       try {
         const result = await rpc.call<{ results: SearchResult[] }>("search_text_collections", {
-          collections: [`user:${args.userId}`, "global"],
+          collections: [resolveUserCollection(args.userId), "global"],
           text: token,
           k: Math.max(EXACT_RECALL_SEARCH_K, cfg.topK ?? 0),
           excludeByCollection: {},
         });
         const hit = (result.results ?? [])
-          .filter((candidate) => isExactRecallFact(candidate.text, token))
+          .filter((candidate) => typeof candidate?.text === "string" && isExactRecallFact(candidate.text, token))
           .sort((a, b) => rankExactRecallCandidate(b, token) - rankExactRecallCandidate(a, token))[0];
         if (hit) {
           injectedFacts.push(buildExactRecallFact(hit, token));
@@ -744,16 +810,21 @@ export function buildContextEngineFactory(
 
   async function performAfterTurnPredictiveCompaction(args: {
     sessionId: string;
+    messages: OpenClawCompatibleMessage[];
     tokenBudget?: number;
     currentTokenCount?: number;
   }): Promise<void> {
     const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
-    const predictiveTargetSize = resolvePredictiveCompactionTarget({
+    const currentContextTokens = resolveAfterTurnPredictiveCompactionTokenCount({
       currentTokenCount: args.currentTokenCount,
+      messages: args.messages,
+    });
+    const predictiveTargetSize = resolvePredictiveCompactionTarget({
+      currentTokenCount: currentContextTokens,
       threshold: dynamicCompactThreshold,
     });
     if (
-      args.currentTokenCount == null ||
+      currentContextTokens == null ||
       dynamicCompactThreshold == null ||
       predictiveTargetSize == null
     ) {
@@ -763,7 +834,7 @@ export function buildContextEngineFactory(
       logger,
       phase: "afterTurn",
       sessionId: args.sessionId,
-      currentTokenCount: args.currentTokenCount,
+      currentTokenCount: currentContextTokens,
       threshold: dynamicCompactThreshold,
       targetSize: predictiveTargetSize,
       tokenBudget: args.tokenBudget,
@@ -773,13 +844,13 @@ export function buildContextEngineFactory(
       targetSize: predictiveTargetSize,
       tokenBudget: args.tokenBudget,
       force: true,
-      currentTokenCount: args.currentTokenCount,
+      currentTokenCount: currentContextTokens,
     });
     logPredictiveCompactionOutcome({
       logger,
       phase: "afterTurn",
       sessionId: args.sessionId,
-      currentTokenCount: args.currentTokenCount,
+      currentTokenCount: currentContextTokens,
       threshold: dynamicCompactThreshold,
       targetSize: predictiveTargetSize,
       tokenBudget: args.tokenBudget,
@@ -792,12 +863,13 @@ export function buildContextEngineFactory(
     info: { id: "libravdb-memory", name: "LibraVDB Memory", ownsCompaction: true },
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
+      const sessionId = requireSessionId(args.sessionId, "bootstrap");
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
       });
       logger.info?.(
-        `LibraVDB bootstrap sessionId=${args.sessionId} userId=${userId} ` +
+        `LibraVDB bootstrap sessionId=${sessionId} userId=${userId} ` +
         `sessionKey=${args.sessionKey ?? "(none)"}`,
       );
       const kernel = await getKernelOrNull("bootstrap");
@@ -811,7 +883,7 @@ export function buildContextEngineFactory(
           // Proceed even if initialize session fails or doesn't return nonce if secret optional
         }
         return await kernel.bootstrapSession({
-          sessionId: args.sessionId,
+          sessionId,
           sessionKey: args.sessionKey,
           userId,
         });
@@ -819,17 +891,19 @@ export function buildContextEngineFactory(
       const rpc = await runtime.getRpc();
       return await rpc.call("bootstrap_session_kernel", {
         ...args,
+        sessionId,
         userId,
       });
     },
     async ingest(args: { sessionId: string; sessionKey?: string; userId?: string; message: { role: string; content: unknown; id?: string }; isHeartbeat?: boolean }) {
+      const sessionId = requireSessionId(args.sessionId, "ingest");
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
       });
       const message = normalizeKernelMessage(args.message);
       logger.info?.(
-        `LibraVDB ingest sessionId=${args.sessionId} userId=${userId} ` +
+        `LibraVDB ingest sessionId=${sessionId} userId=${userId} ` +
         `role=${message.role} heartbeat=${args.isHeartbeat ?? false} ` +
         `contentLen=${message.content.length}`,
       );
@@ -837,7 +911,7 @@ export function buildContextEngineFactory(
         const kernel = await getKernelOrNull("ingest");
         if (kernel) {
           return await kernel.ingestMessage({
-            sessionId: args.sessionId,
+            sessionId,
             sessionKey: args.sessionKey,
             userId,
             message,
@@ -847,12 +921,13 @@ export function buildContextEngineFactory(
         const rpc = await runtime.getRpc();
         return await rpc.call("ingest_message_kernel", {
           ...args,
+          sessionId,
           userId,
           message,
         });
       } catch (error) {
         logger.warn?.(
-          `LibraVDB ingest failed sessionId=${args.sessionId}: ` +
+          `LibraVDB ingest failed sessionId=${sessionId}: ` +
           `${error instanceof Error ? error.message : String(error)}`,
         );
         throw error;
@@ -867,6 +942,7 @@ export function buildContextEngineFactory(
       prompt?: string;
       currentTokenCount?: number;
     }): Promise<OpenClawCompatibleAssembleResult> {
+      const sessionId = requireSessionId(args.sessionId, "assemble");
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -886,14 +962,14 @@ export function buildContextEngineFactory(
         logPredictiveCompactionAttempt({
           logger,
           phase: "assemble",
-          sessionId: args.sessionId,
+          sessionId,
           currentTokenCount: currentContextTokens,
           threshold: dynamicCompactThreshold,
           targetSize: predictiveTargetSize,
           tokenBudget: args.tokenBudget,
         });
         const compactionResult = await runCompaction({
-          sessionId: args.sessionId,
+          sessionId,
           targetSize: predictiveTargetSize,
           tokenBudget: args.tokenBudget,
           force: true,
@@ -902,7 +978,7 @@ export function buildContextEngineFactory(
         logPredictiveCompactionOutcome({
           logger,
           phase: "assemble",
-          sessionId: args.sessionId,
+          sessionId,
           currentTokenCount: currentContextTokens,
           threshold: dynamicCompactThreshold,
           targetSize: predictiveTargetSize,
@@ -922,7 +998,7 @@ export function buildContextEngineFactory(
       if (kernel) {
         try {
           const assembled = normalizeAssembleResult(await kernel.assembleContext({
-            sessionId: args.sessionId,
+            sessionId,
             sessionKey: args.sessionKey,
             userId,
             queryText: args.prompt ?? "",
@@ -935,7 +1011,7 @@ export function buildContextEngineFactory(
             await augmentWithExactRecall(assembled, {
               queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
               userId,
-              sessionId: args.sessionId,
+              sessionId,
               tokenBudget: args.tokenBudget,
             }),
             args.tokenBudget,
@@ -952,7 +1028,7 @@ export function buildContextEngineFactory(
       const rpc = await runtime.getRpc();
       try {
         const resp = await rpc.call<AssembleContextInternalResponse>("assemble_context_internal", {
-          sessionId: args.sessionId,
+          sessionId,
           sessionKey: args.sessionKey,
           userId,
           messages,
@@ -962,15 +1038,22 @@ export function buildContextEngineFactory(
           config: buildAssemblyConfig(args.tokenBudget),
         });
         const assembled = normalizeAssembleResult(resp);
-        return enforceTokenBudgetInvariant(
+        const enforced = enforceTokenBudgetInvariant(
           await augmentWithExactRecall(assembled, {
             queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
             userId,
-            sessionId: args.sessionId,
+            sessionId,
             tokenBudget: args.tokenBudget,
           }),
           args.tokenBudget,
         );
+        const predictions = predictiveContextCache.get(sessionId) || [];
+        predictiveContextCache.delete(sessionId);
+        if (predictions.length > 0) {
+          const injection = ["<predictive_context>", ...predictions.map((p) => p.text), "</predictive_context>"].join("\n");
+          enforced.systemPromptAddition = appendSystemPromptAddition(enforced.systemPromptAddition, injection);
+        }
+        return enforced;
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble sidecar failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
@@ -998,6 +1081,7 @@ export function buildContextEngineFactory(
       tokenBudget?: number;
       runtimeContext?: Record<string, unknown>;
     }) {
+      const sessionId = requireSessionId(args.sessionId, "afterTurn");
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -1006,7 +1090,7 @@ export function buildContextEngineFactory(
       const messages = normalizeKernelMessages(afterTurnMessages);
       const msgCount = messages.length;
       logger.info?.(
-        `LibraVDB afterTurn sessionId=${args.sessionId} userId=${userId} ` +
+        `LibraVDB afterTurn sessionId=${sessionId} userId=${userId} ` +
         `messageCount=${msgCount} totalMessages=${args.messages.length} ` +
         `prePromptMessageCount=${args.prePromptMessageCount ?? "unknown"} ` +
         `heartbeat=${args.isHeartbeat ?? false}`,
@@ -1020,36 +1104,46 @@ export function buildContextEngineFactory(
         );
         if (kernel) {
           const result = await kernel.afterTurn({
-            sessionId: args.sessionId,
+            sessionId,
             sessionKey: args.sessionKey,
             userId,
             messages,
             isHeartbeat: args.isHeartbeat,
           });
           await performAfterTurnPredictiveCompaction({
-            sessionId: args.sessionId,
+            sessionId,
+            messages,
             tokenBudget: args.tokenBudget,
             currentTokenCount,
           });
+          const predictions = (result as any).predictions;
+          if (Array.isArray(predictions) && predictions.length > 0) {
+            predictiveContextCache.set(sessionId, predictions);
+          }
           return result;
         }
         const rpc = await runtime.getRpc();
         const result = await rpc.call("after_turn_kernel", {
-          sessionId: args.sessionId,
+          sessionId,
           sessionKey: args.sessionKey,
           userId,
           messages,
           isHeartbeat: args.isHeartbeat,
         });
         await performAfterTurnPredictiveCompaction({
-          sessionId: args.sessionId,
+          sessionId,
+          messages,
           tokenBudget: args.tokenBudget,
           currentTokenCount,
         });
+        const predictions = (result as any).predictions;
+        if (Array.isArray(predictions) && predictions.length > 0) {
+          predictiveContextCache.set(sessionId, predictions);
+        }
         return result;
       } catch (error) {
         logger.warn?.(
-          `LibraVDB afterTurn failed sessionId=${args.sessionId}: ` +
+          `LibraVDB afterTurn failed sessionId=${sessionId}: ` +
           `${error instanceof Error ? error.message : String(error)}`,
         );
         throw error;

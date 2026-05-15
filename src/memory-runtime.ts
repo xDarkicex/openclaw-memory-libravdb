@@ -1,5 +1,5 @@
 import type { RpcGetter } from "./plugin-runtime.js";
-import { resolveDurableNamespace } from "./memory-scopes.js";
+import { resolveDurableNamespace, resolveUserCollection } from "./memory-scopes.js";
 import { resolveIdentity } from "./identity.js";
 import { detectDreamQuerySignal, resolveDreamCollection } from "./dream-routing.js";
 import type { PluginConfig, LoggerLike, SearchResult } from "./types.js";
@@ -67,6 +67,7 @@ function createMemorySearchManager(
 ) {
   let cachedStatus = initialStatus;
   let cachedIdentityUserId: string | null = null;
+  const returnedSearchPaths = new Set<string>();
 
   function getResolvedUserId(sessionKey: string | undefined): string {
     if (cachedIdentityUserId !== null) return cachedIdentityUserId;
@@ -133,9 +134,16 @@ function createMemorySearchManager(
       if (legacyCall) {
         return { results: legacyResults };
       }
-      return filteredResults.map(toMemorySearchResult);
+      const memoryResults = filteredResults.map(toMemorySearchResult);
+      for (const item of memoryResults) {
+        returnedSearchPaths.add(item.path);
+      }
+      return memoryResults;
     },
     async readFile(params: { relPath: string; from?: number; lines?: number }) {
+      if (!returnedSearchPaths.has(params.relPath)) {
+        throw new Error("LibraVDB memory path was not returned by this search manager");
+      }
       const located = await loadSearchResultText(getRpc, params.relPath);
       const fromLine = Math.max(1, params.from ?? 1);
       const lineCount = Math.max(1, params.lines ?? 200);
@@ -205,7 +213,7 @@ function resolveSearchCollections(cfg: PluginConfig, userId: string, sessionId?:
     return sessionId ? [resolveSessionSearchCollection(cfg, sessionId)] : [];
   }
 
-  const collections = [`user:${userId}`, "global"];
+  const collections = [resolveUserCollection(userId), "global"];
   if (!sessionId) {
     return collections;
   }
@@ -225,7 +233,16 @@ function resolveSessionSearchCollection(cfg: PluginConfig, sessionId: string): s
 }
 
 function firstString(...values: Array<string | undefined>): string | undefined {
-  return values.find((value) => typeof value === "string" && value.length > 0);
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+  return undefined;
 }
 
 function toMemorySearchResult(item: SearchResult) {

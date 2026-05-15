@@ -418,6 +418,91 @@ test("context engine exact recall checks existing facts per block", async () => 
   assert.ok(assembled.systemPromptAddition.includes(`${secondMarker} means Jay prefers the second path.`));
 });
 
+test("context engine assemble clamps system prompt additions within token budget", async () => {
+  const rpc = new FakeRpc();
+  rpc.assembleResponse = {
+    messages: [
+      { role: "assistant", content: "this message should be dropped because the system addition consumes the budget" },
+    ],
+    estimatedTokens: 0,
+    systemPromptAddition: "x".repeat(2000),
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn() {},
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "assemble with large system addition")],
+    prompt: "assemble with large system addition",
+    tokenBudget: 300,
+  });
+
+  assert.equal(assembled.messages.length, 0);
+  assert.equal(assembled.systemPromptAddition, "x".repeat(176));
+  assert.ok(assembled.estimatedTokens <= 44);
+});
+
+test("context engine assemble trims messages against remaining budget after system prompt additions", async () => {
+  const rpc = new FakeRpc();
+  rpc.assembleResponse = {
+    messages: [
+      { role: "assistant", content: "y".repeat(200) },
+    ],
+    estimatedTokens: 0,
+    systemPromptAddition: "x".repeat(100),
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn() {},
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "assemble with fitting system addition and oversized messages")],
+    prompt: "assemble with fitting system addition and oversized messages",
+    tokenBudget: 300,
+  });
+
+  assert.equal(assembled.systemPromptAddition, "x".repeat(100));
+  assert.equal(assembled.messages.length, 1);
+  assert.ok(String(assembled.messages[0]!.content).length < 200);
+  assert.ok(assembled.estimatedTokens <= 44);
+});
+
+test("context engine assemble drops messages when system prompt leaves no wrapper budget", async () => {
+  const rpc = new FakeRpc();
+  rpc.assembleResponse = {
+    messages: [
+      { role: "assistant", content: "y".repeat(200) },
+    ],
+    estimatedTokens: 0,
+    systemPromptAddition: "x".repeat(172),
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn() {},
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "assemble with nearly full system addition")],
+    prompt: "assemble with nearly full system addition",
+    tokenBudget: 300,
+  });
+
+  assert.equal(assembled.systemPromptAddition, "x".repeat(172));
+  assert.equal(assembled.messages.length, 0);
+  assert.ok(assembled.estimatedTokens <= 44);
+});
+
 test("context engine exact recall skips additions that would exceed the token budget", async () => {
   const rpc = new FakeRpc();
   const marker = "BUDGET_SESSION_MEMORY_MARKER_1234567890";
@@ -494,6 +579,38 @@ test("context engine assemble keeps daemon result when exact recall RPC acquisit
   assert.match(warnings[0] ?? "", /exact recall skipped/);
 });
 
+test("context engine exact recall rejects invalid user collections before probing", async () => {
+  const rpc = new FakeRpc();
+  const marker = "INVALID_USER_COLLECTION_MARKER_1234567890";
+  rpc.assembleResponse = {
+    messages: [{ role: "assistant", content: "base recalled context" }],
+    estimatedTokens: 24,
+    systemPromptAddition: "",
+  };
+  const warnings: string[] = [];
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "bad user" }, {
+    error() {},
+    info() {},
+    warn(message: string) { warnings.push(message); },
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `What does ${marker} mean?`)],
+    prompt: `What does ${marker} mean?`,
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [{ role: "assistant", content: "base recalled context" }]);
+  assert.equal(
+    rpc.calls.some((call) => call.method === "search_text_collections"),
+    false,
+    "invalid user collection should not be sent to the daemon",
+  );
+  assert.match(warnings[0] ?? "", /Invalid collection namespace/);
+});
+
 test("context engine exact recall skips empty-text search results", async () => {
   const rpc = new FakeRpc();
   const marker = "BROKEN_SESSION_MEMORY_MARKER_1234567890";
@@ -507,6 +624,41 @@ test("context engine exact recall skips empty-text search results", async () => 
       id: "empty-fact",
       score: 0,
       text: "",
+      metadata: { collection: "user:fixed-user" },
+    },
+  ];
+  const warnings: string[] = [];
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" }, {
+    error() {},
+    info() {},
+    warn(message: string) { warnings.push(message); },
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `What does ${marker} mean?`)],
+    prompt: `What does ${marker} mean?`,
+    tokenBudget: 4000,
+  });
+
+  assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(warnings.some((message) => /exact recall failed/.test(message)), false);
+});
+
+test("context engine exact recall ignores malformed non-string search result text", async () => {
+  const rpc = new FakeRpc();
+  const marker = "MALFORMED_SESSION_MEMORY_MARKER_1234567890";
+  rpc.assembleResponse = {
+    messages: [{ role: "user", content: `What does ${marker} mean?` }],
+    estimatedTokens: 24,
+    systemPromptAddition: "",
+  };
+  rpc.searchResults = [
+    {
+      id: "bad-fact",
+      score: 0.9,
+      text: undefined as unknown as string,
       metadata: { collection: "user:fixed-user" },
     },
   ];
@@ -696,29 +848,61 @@ test("identity is resolved and sessionKey forwarded when no config userId is set
 });
 
 // ---------------------------------------------------------------------------
-// sessionId is always passed through
+// sessionId validation
 // ---------------------------------------------------------------------------
 
-test("sessionId is non-empty in every lifecycle hook across bootstrap/ingest/afterTurn", async () => {
+test("sessionId is normalized in every context engine lifecycle hook", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { userId: "u1" };
   const engine = buildContextEngineFactory(fakeRuntime(rpc), cfg);
 
-  const sessionId = "conformance-session-1";
+  const sessionId = "  conformance-session-1  ";
   await engine.bootstrap({ sessionId, sessionKey: "sk" });
   await engine.ingest({ sessionId, sessionKey: "sk", message: makeMessage("user", "m1") });
+  await engine.assemble({ sessionId, sessionKey: "sk", messages: [makeMessage("user", "m1")], tokenBudget: 1000 });
   await engine.afterTurn({ sessionId, sessionKey: "sk", messages: [makeMessage("user", "m1")] });
 
   const lifecycleCalls = rpc.calls.filter(
     (c) => c.method === "bootstrap_session_kernel" ||
           c.method === "ingest_message_kernel" ||
+          c.method === "assemble_context_internal" ||
           c.method === "after_turn_kernel",
   );
-  assert.equal(lifecycleCalls.length, 3, "bootstrap, ingest, and afterTurn all fired");
+  assert.equal(lifecycleCalls.length, 4, "bootstrap, ingest, assemble, and afterTurn all fired");
   for (const call of lifecycleCalls) {
-    assert.equal(call.params.sessionId, sessionId);
+    assert.equal(call.params.sessionId, "conformance-session-1");
     assert.equal(call.params.sessionKey, "sk");
   }
+});
+
+test("context engine rejects blank sessionId before lifecycle RPCs", async () => {
+  const rpc = new FakeRpc();
+  const cfg: PluginConfig = { userId: "u1" };
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), cfg);
+
+  await assert.rejects(
+    () => engine.bootstrap({ sessionId: "   ", sessionKey: "sk" }),
+    /bootstrap requires a non-empty sessionId/,
+  );
+  await assert.rejects(
+    () => engine.ingest({ sessionId: "   ", sessionKey: "sk", message: makeMessage("user", "m1") }),
+    /ingest requires a non-empty sessionId/,
+  );
+  await assert.rejects(
+    () => engine.assemble({
+      sessionId: "   ",
+      sessionKey: "sk",
+      messages: [makeMessage("user", "m1")],
+      tokenBudget: 1000,
+    }),
+    /assemble requires a non-empty sessionId/,
+  );
+  await assert.rejects(
+    () => engine.afterTurn({ sessionId: "   ", sessionKey: "sk", messages: [makeMessage("user", "m1")] }),
+    /afterTurn requires a non-empty sessionId/,
+  );
+
+  assert.equal(rpc.calls.length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -793,4 +977,43 @@ test("resolveIdentity with noAutoPersist skips writing identity file", () => {
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("context engine exact recall escapes control characters inside injected memory facts", async () => {
+  const rpc = new FakeRpc();
+  const marker = "CONTROL_CHAR_MEMORY_MARKER_1234567890";
+  rpc.searchResults = [
+    {
+      id: "fact",
+      score: 0.9,
+      text: `${marker} means line1\nline2\rline3\ttab & <tag> "quoted" 'single'.`,
+      metadata: { collection: "user:fixed-user", role: "user" },
+    },
+  ];
+  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user", topK: 4 });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `What does ${marker} mean?`)],
+    prompt: `What does ${marker} mean?`,
+    tokenBudget: 4000,
+  });
+
+  const match = assembled.systemPromptAddition.match(
+    /<memory_fact source="exact_recalled">([\s\S]*?)<\/memory_fact>/,
+  );
+  assert.ok(match, "exact recall fact should be injected through the context engine");
+  const factText = match[1]!;
+
+  assert.equal(factText.includes("\n"), false, "memory fact text should not contain raw newline");
+  assert.equal(factText.includes("\r"), false, "memory fact text should not contain raw carriage return");
+  assert.equal(factText.includes("\t"), false, "memory fact text should not contain raw tab");
+  assert.ok(factText.includes("&#10;"), "newline should be escaped to XML char reference");
+  assert.ok(factText.includes("&#13;"), "carriage return should be escaped to XML char reference");
+  assert.ok(factText.includes("&#9;"), "tab should be escaped to XML char reference");
+  assert.ok(factText.includes("&amp;"), "ampersand should still be escaped");
+  assert.ok(factText.includes("&lt;tag&gt;"), "angle brackets should still be escaped");
+  assert.ok(factText.includes("&quot;quoted&quot;"), "double quotes should still be escaped");
+  assert.ok(factText.includes("&#39;single&#39;"), "single quotes should still be escaped");
 });

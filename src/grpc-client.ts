@@ -16,6 +16,42 @@ export interface GrpcClientOptions {
   timeoutMs?: number;
 }
 
+export function resolveGrpcTarget(endpoint: string): string {
+  return endpoint.startsWith("tcp:") ? endpoint.substring(4) : endpoint;
+}
+
+export function resolveGrpcCredentialMode(endpoint: string): "insecure" | "tls" {
+  const target = resolveGrpcTarget(endpoint).trim();
+  if (target.startsWith("unix:")) {
+    return "insecure";
+  }
+
+  const host = extractGrpcHost(target);
+  return isLoopbackHost(host) ? "insecure" : "tls";
+}
+
+function resolveGrpcCredentials(endpoint: string): grpc.ChannelCredentials {
+  return resolveGrpcCredentialMode(endpoint) === "insecure"
+    ? grpc.credentials.createInsecure()
+    : grpc.credentials.createSsl();
+}
+
+function extractGrpcHost(target: string): string {
+  const withoutDnsPrefix = target.startsWith("dns:///") ? target.slice("dns:///".length) : target;
+  if (withoutDnsPrefix.startsWith("[")) {
+    const closeBracket = withoutDnsPrefix.indexOf("]");
+    return closeBracket > 0 ? withoutDnsPrefix.slice(1, closeBracket) : withoutDnsPrefix;
+  }
+
+  const portSeparator = withoutDnsPrefix.lastIndexOf(":");
+  return portSeparator > 0 ? withoutDnsPrefix.slice(0, portSeparator) : withoutDnsPrefix;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
 export class GrpcKernelClient {
   private client: any;
   private readonly secret: string | undefined;
@@ -37,13 +73,9 @@ export class GrpcKernelClient {
     const protoDescriptor = grpc.loadPackageDefinition(packageDefinition) as any;
     const kernelService = protoDescriptor.intelligence_kernel.v1.IntelligenceKernel;
 
-    const target = options.endpoint.startsWith("tcp:") 
-      ? options.endpoint.substring(4) 
-      : options.endpoint.startsWith("unix:")
-        ? options.endpoint.substring(5)
-        : options.endpoint;
+    const target = resolveGrpcTarget(options.endpoint);
 
-    this.client = new kernelService(target, grpc.credentials.createInsecure());
+    this.client = new kernelService(target, resolveGrpcCredentials(options.endpoint));
   }
 
   private getMetadata(signed = true): grpc.Metadata {
@@ -52,8 +84,12 @@ export class GrpcKernelClient {
       if (!this.nonceHex) {
         throw new Error("call initializeSession before authenticated RPCs");
       }
-      const hmac = createHmac("sha256", Buffer.from(this.nonceHex, "hex"));
-      hmac.update(this.secret);
+      // Challenge-response: HMAC(secret, nonce) — the secret is the HMAC key,
+      // the server-issued nonce is the message. The previous implementation
+      // swapped these, computing HMAC(nonce, secret), which is cryptographically
+      // incorrect: the nonce is sent in the clear and must not be used as the key.
+      const hmac = createHmac("sha256", this.secret);
+      hmac.update(this.nonceHex);
       const signature = hmac.digest("hex");
       md.add("x-libravdb-auth", signature);
     }

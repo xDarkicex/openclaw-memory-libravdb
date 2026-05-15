@@ -5,6 +5,7 @@ import { registerMemoryCli } from "../../src/cli.js";
 import { registerMemoryCliMetadata } from "../../src/cli-descriptors.js";
 import { register } from "../../src/index.js";
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
+import type { PluginConfig } from "../../src/types.js";
 
 type RegisteredCli = {
   builder: (ctx: { program: FakeCommand }) => void;
@@ -87,6 +88,27 @@ function createRuntime(): PluginRuntime {
   };
 }
 
+function buildMemoryCommand(runtime: PluginRuntime, cfg: PluginConfig = {}): FakeCommand {
+  let registered: RegisteredCli | null = null;
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(api as never, runtime, cfg);
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  assert.ok(memory);
+  return memory;
+}
+
 test("CLI metadata registers the memory descriptor only when LibraVDB owns the memory slot", () => {
   const registered: RegisteredCli[] = [];
   const api = {
@@ -144,6 +166,8 @@ test("full CLI registration exposes standard memory commands and LibraVDB operat
   assert.ok(status);
   assert.ok(status.options.includes("--json"));
   assert.ok(status.options.includes("--agent <id>"));
+  assert.ok(status.options.includes("--index"));
+  assert.ok(status.options.includes("--force"));
 
   const search = memory.commands.find((command) => command.name() === "search");
   assert.ok(search);
@@ -162,6 +186,77 @@ test("full CLI registration exposes standard memory commands and LibraVDB operat
   assert.ok(dreamPromote);
   assert.ok(dreamPromote.requiredOptions.includes("--user-id <userId>"));
   assert.ok(dreamPromote.requiredOptions.includes("--dream-file <path>"));
+});
+
+test("flush command sends explicit user ids through the userId RPC field", async () => {
+  const rpcCalls: Array<{ method: string; params: unknown }> = [];
+  const memory = buildMemoryCommand({
+    async getRpc() {
+      return {
+        async call(method: string, params: unknown) {
+          rpcCalls.push({ method, params });
+          return {};
+        },
+      } as never;
+    },
+    getKernel: async () => null,
+    async emitLifecycleHint() {},
+    onShutdown() {},
+    async shutdown() {},
+  });
+
+  const flush = memory.commands.find((command) => command.name() === "flush");
+  assert.ok(flush?.handler);
+
+  const originalLog = console.log;
+  console.log = (() => undefined) as typeof console.log;
+  try {
+    await flush.handler?.({ userId: "  alice  ", yes: true });
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.deepEqual(rpcCalls, [
+    {
+      method: "flush_namespace",
+      params: { userId: "alice" },
+    },
+  ]);
+});
+
+test("export command keeps user ids separate from derived namespaces", async () => {
+  const rpcCalls: Array<{ method: string; params: unknown }> = [];
+  const memory = buildMemoryCommand({
+    async getRpc() {
+      return {
+        async call(method: string, params: unknown) {
+          rpcCalls.push({ method, params });
+          return { records: [] };
+        },
+      } as never;
+    },
+    getKernel: async () => null,
+    async emitLifecycleHint() {},
+    onShutdown() {},
+    async shutdown() {},
+  });
+
+  const exportCmd = memory.commands.find((command) => command.name() === "export");
+  assert.ok(exportCmd?.handler);
+
+  await exportCmd.handler?.({ userId: "  alice  " });
+  await exportCmd.handler?.({ sessionKey: "  session-1  " });
+
+  assert.deepEqual(rpcCalls, [
+    {
+      method: "export_memory",
+      params: { userId: "alice" },
+    },
+    {
+      method: "export_memory",
+      params: { namespace: "session-key:session-1" },
+    },
+  ]);
 });
 
 test("status command shuts the plugin runtime down after printing status", async () => {
@@ -224,6 +319,141 @@ test("status command shuts the plugin runtime down after printing status", async
     console.table = originalTable;
   }
 
+  assert.equal(shutdownCalls, 1);
+});
+
+test("status --index requires --force before rebuilding", async () => {
+  let registered: RegisteredCli | null = null;
+  let shutdownCalls = 0;
+  let getRpcCalls = 0;
+  const errors: string[] = [];
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        getRpcCalls += 1;
+        throw new Error("status --index without --force should not start RPC");
+      },
+      async getKernel() {
+        return null;
+      },
+      async emitLifecycleHint() {},
+      onShutdown() {},
+      async shutdown() {
+        shutdownCalls += 1;
+      },
+    },
+    {},
+    {
+      error(message: string) {
+        errors.push(message);
+      },
+    },
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const status = memory?.commands.find((command) => command.name() === "status");
+  assert.ok(status?.handler);
+
+  const previousExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await status.handler?.({ index: true });
+    assert.equal(process.exitCode, 1);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+
+  assert.equal(getRpcCalls, 0);
+  assert.equal(shutdownCalls, 1);
+  assert.match(errors[0] ?? "", /--force/);
+});
+
+test("status --index --force rebuilds before printing status", async () => {
+  let registered: RegisteredCli | null = null;
+  let shutdownCalls = 0;
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string, params: Record<string, unknown>) {
+            calls.push({ method, params });
+            if (method === "rebuild_index") {
+              return {
+                collectionsProcessed: 1,
+                recordsReindexed: 2,
+                collectionsRecreated: 0,
+                errors: [],
+              };
+            }
+            if (method === "status") {
+              return {
+                ok: true,
+                turnCount: 3,
+                memoryCount: 3,
+                lifecycleHintCount: 1,
+                gatingThreshold: 0.35,
+                abstractiveReady: true,
+                embeddingProfile: "all-minilm-l6-v2",
+                message: "ok",
+              };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      async getKernel() {
+        return null;
+      },
+      async emitLifecycleHint() {},
+      onShutdown() {},
+      async shutdown() {
+        shutdownCalls += 1;
+      },
+    },
+    {},
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const status = memory?.commands.find((command) => command.name() === "status");
+  assert.ok(status?.handler);
+
+  const originalTable = console.table;
+  console.table = (() => undefined) as typeof console.table;
+  try {
+    await status.handler?.({ index: true, force: true });
+  } finally {
+    console.table = originalTable;
+  }
+
+  assert.deepEqual(calls.map((call) => call.method), ["rebuild_index", "status"]);
+  assert.deepEqual(calls[0]?.params, { namespace: "" });
   assert.equal(shutdownCalls, 1);
 });
 
@@ -454,6 +684,75 @@ test("status --deep probes authored collection search health", async () => {
   assert.equal(shutdownCalls, 1);
 });
 
+test("status --deep reports invalid user collection without probing it", async () => {
+  let registered: RegisteredCli | null = null;
+  const rpcCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string, params: Record<string, unknown>) {
+            rpcCalls.push({ method, params });
+            if (method === "status") {
+              return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+            }
+            if (method === "search_text") {
+              return { results: [] };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      getKernel: async () => null,
+      async emitLifecycleHint() {},
+      onShutdown: async () => {},
+      async shutdown() {},
+    },
+    { userId: "bad user" },
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const status = memory?.commands.find((command) => command.name() === "status");
+  assert.ok(status?.handler);
+
+  const originalLog = console.log;
+  const previousExitCode = process.exitCode;
+  const logs: string[] = [];
+  let observedExitCode: string | number | undefined;
+  console.log = ((message?: unknown) => { logs.push(String(message)); }) as typeof console.log;
+  process.exitCode = undefined;
+  try {
+    await status.handler?.({ deep: true, json: true });
+    observedExitCode = process.exitCode;
+  } finally {
+    console.log = originalLog;
+    process.exitCode = previousExitCode;
+  }
+
+  const payload = JSON.parse(logs[0] ?? "{}");
+  assert.equal(payload.deep.ok, false);
+  assert.equal(payload.deep.probes[0]?.collection, "user:<invalid>");
+  assert.match(payload.deep.probes[0]?.error ?? "", /Invalid collection namespace/);
+  assert.deepEqual(
+    rpcCalls.filter((call) => call.method === "search_text").map((call) => call.params.collection),
+    ["authored:hard", "authored:soft", "authored:variant", "global"],
+  );
+  assert.equal(observedExitCode, 1);
+});
+
 test("status --deep includes authored probe rows in table output", async () => {
   let registered: RegisteredCli | null = null;
   const api = {
@@ -523,6 +822,73 @@ test("status --deep includes authored probe rows in table output", async () => {
   assert.equal(tables[0]?.["Probe authored:variant"], "ok (1 hits)");
   assert.equal(tables[0]?.["Probe user:default"], "ok (0 hits)");
   assert.equal(tables[0]?.["Probe global"], "ok (1 hits)");
+});
+
+test("index command uses an extended timeout for rebuild_index", async () => {
+  let registered: RegisteredCli | null = null;
+  let shutdownCalls = 0;
+  const rpcCalls: Array<{
+    method: string;
+    params: Record<string, unknown>;
+    options?: { timeoutMs?: number };
+  }> = [];
+  const api = {
+    config: selectedConfig,
+    registerCli(builder: unknown, opts: RegisteredCli["opts"]) {
+      registered = { builder: builder as RegisteredCli["builder"], opts };
+    },
+  };
+
+  registerMemoryCli(
+    api as never,
+    {
+      async getRpc() {
+        return {
+          async call(method: string, params: Record<string, unknown>, options?: { timeoutMs?: number }) {
+            rpcCalls.push({ method, params, options });
+            if (method === "rebuild_index") {
+              return {
+                collectionsProcessed: 1,
+                recordsReindexed: 2,
+                collectionsRecreated: 0,
+                errors: [],
+              };
+            }
+            throw new Error(`unexpected rpc method: ${method}`);
+          },
+        } as never;
+      },
+      getKernel: async () => null,
+      async emitLifecycleHint() {},
+      onShutdown: async () => {},
+      async shutdown() {
+        shutdownCalls += 1;
+      },
+    },
+    {},
+  );
+
+  assert.ok(registered);
+  const cli = registered as RegisteredCli;
+  const program = new FakeCommand("openclaw");
+  cli.builder({ program });
+
+  const memory = program.commands.find((command) => command.name() === "memory");
+  const index = memory?.commands.find((command) => command.name() === "index");
+  assert.ok(index?.handler);
+
+  const originalLog = console.log;
+  console.log = (() => {}) as typeof console.log;
+  try {
+    await index.handler?.({ force: true });
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.equal(rpcCalls.length, 1);
+  assert.equal(rpcCalls[0]?.method, "rebuild_index");
+  assert.equal(rpcCalls[0]?.options?.timeoutMs, 300000);
+  assert.equal(shutdownCalls, 1);
 });
 
 test("non-full CLI registration exposes command structure without action handlers", () => {

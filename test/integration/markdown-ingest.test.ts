@@ -83,6 +83,65 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function snapshotPath(tempRoot: string, kind: "generic" | "obsidian" = "generic"): string {
+  return path.join(tempRoot, `${kind}-snapshot.json`);
+}
+
+test("markdown ingestion roots stay inert unless explicitly enabled", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-disabled-"));
+  const filePath = path.join(tempRoot, "MEMORY.md");
+  await fsp.writeFile(filePath, "# Memory\n\nThis root is configured but not enabled.");
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+  fsApi.triggerAll("change");
+  await delay(25);
+
+  assert.equal(rpc.calls.length, 0);
+  assert.equal(fsApi.callbacks.size, 0);
+
+  await handle.stop();
+});
+
+test("obsidian roots stay inert unless explicitly enabled", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-obsidian-disabled-"));
+  const filePath = path.join(tempRoot, "tagged.md");
+  await fsp.writeFile(filePath, "# Project #openclaw\n\nThis vault root is configured but not enabled.");
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: false,
+      markdownIngestionObsidianRoots: [tempRoot],
+      markdownIngestionObsidianDebounceMs: 0,
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+  fsApi.triggerAll("change");
+  await delay(25);
+
+  assert.equal(rpc.calls.length, 0);
+  assert.equal(fsApi.callbacks.size, 0);
+
+  await handle.stop();
+});
+
 test("markdown ingestion forwards raw markdown to the go sidecar and stays hash-stable", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-"));
   const nestedDir = path.join(tempRoot, "skills", "alpha");
@@ -107,6 +166,7 @@ test("markdown ingestion forwards raw markdown to the go sidecar and stays hash-
       markdownIngestionEnabled: true,
       markdownIngestionRoots: [tempRoot],
       markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
     async () => rpc,
     console,
@@ -185,6 +245,7 @@ test("obsidian markdown ingestion flips source kind while reusing the same rpc p
       markdownIngestionObsidianEnabled: true,
       markdownIngestionObsidianRoots: [tempRoot],
       markdownIngestionObsidianDebounceMs: 0,
+      markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
     },
     async () => rpc,
     console,
@@ -218,6 +279,7 @@ test("obsidian markdown ingestion skips untaged notes by default", async () => {
       markdownIngestionObsidianEnabled: true,
       markdownIngestionObsidianRoots: [tempRoot],
       markdownIngestionObsidianDebounceMs: 0,
+      markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
     },
     async () => rpc,
     console,
@@ -251,6 +313,7 @@ test("markdown ingestion always includes MEMORY.md by filename even under narrow
       markdownIngestionRoots: [tempRoot],
       markdownIngestionInclude: ["skills/*/*.md"],
       markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
     async () => rpc,
     console,
@@ -287,6 +350,79 @@ test("obsidian markdown ingestion accepts inline tags like #project", async () =
       markdownIngestionObsidianEnabled: true,
       markdownIngestionObsidianRoots: [tempRoot],
       markdownIngestionObsidianDebounceMs: 0,
+      markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 1);
+  assert.equal(rpc.documents.get(filePath)?.sourceMeta.sourceKind, "obsidian");
+
+  await handle.stop();
+});
+
+test("obsidian markdown ingestion accepts CRLF frontmatter tags", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-obsidian-crlf-"));
+  const filePath = path.join(tempRoot, "windows-note.md");
+  await fsp.writeFile(
+    filePath,
+    [
+      "---",
+      "tags: [openclaw]",
+      "---",
+      "",
+      "# Vault",
+      "This note uses CRLF frontmatter.",
+    ].join("\r\n"),
+  );
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: false,
+      markdownIngestionObsidianEnabled: true,
+      markdownIngestionObsidianRoots: [tempRoot],
+      markdownIngestionObsidianDebounceMs: 0,
+      markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
+    },
+    async () => rpc,
+    console,
+    fsApi as never,
+  );
+
+  await handle.start();
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 1);
+  assert.equal(rpc.documents.get(filePath)?.sourceMeta.sourceKind, "obsidian");
+
+  await handle.stop();
+});
+
+test("obsidian markdown ingestion accepts tags in headings", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-obsidian-heading-tag-"));
+  const filePath = path.join(tempRoot, "heading-tag.md");
+  await fsp.writeFile(
+    filePath,
+    [
+      "# Project #openclaw",
+      "This note only has an Obsidian tag in the heading.",
+    ].join("\n"),
+  );
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: false,
+      markdownIngestionObsidianEnabled: true,
+      markdownIngestionObsidianRoots: [tempRoot],
+      markdownIngestionObsidianDebounceMs: 0,
+      markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
     },
     async () => rpc,
     console,
@@ -331,6 +467,7 @@ test("markdown ingestion stop waits for an in-flight startup scan", async () => 
       markdownIngestionEnabled: true,
       markdownIngestionRoots: [tempRoot],
       markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
     async () => rpc,
     { error() {}, warn() {} },
@@ -352,4 +489,88 @@ test("markdown ingestion stop waits for an in-flight startup scan", async () => 
   await stopPromise;
   await startPromise;
   assert.equal(rpcCompleted, true);
+});
+
+test("markdown ingestion prunes excluded directories before recursion", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-prune-"));
+  const docsDir = path.join(tempRoot, "docs");
+  const nodeModulesDir = path.join(tempRoot, "node_modules", "pkg");
+  await fsp.mkdir(docsDir, { recursive: true });
+  await fsp.mkdir(nodeModulesDir, { recursive: true });
+  const includedPath = path.join(docsDir, "guide.md");
+  const excludedPath = path.join(nodeModulesDir, "README.md");
+  await fsp.writeFile(includedPath, "# Guide\n\nThis should ingest.");
+  await fsp.writeFile(excludedPath, "# Package\n\nThis should not even be walked.");
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const infoMessages: string[] = [];
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionExclude: ["node_modules/**", "**/node_modules/**"],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: path.join(tempRoot, "snapshot.json"),
+    },
+    async () => rpc,
+    { error() {}, warn() {}, info: (message: string) => infoMessages.push(message) },
+    fsApi as never,
+  );
+
+  await handle.start();
+
+  assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 1);
+  assert.equal(rpc.documents.has(includedPath), true);
+  assert.equal(rpc.documents.has(excludedPath), false);
+  assert.equal([...fsApi.callbacks.keys()].some((watched) => watched.includes(`${path.sep}node_modules`)), false);
+  assert.equal(infoMessages.some((message) => message.includes("prunedDirs=1")), true);
+
+  await handle.stop();
+});
+
+test("markdown ingestion persists snapshots across adapter restarts", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-snapshot-"));
+  const filePath = path.join(tempRoot, "guide.md");
+  const snapshotPath = path.join(tempRoot, "snapshot.json");
+  await fsp.writeFile(filePath, "# Guide\n\nThis should ingest once across restarts.");
+
+  const firstRpc = new FakeRpcClient();
+  const firstHandle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath,
+    },
+    async () => firstRpc,
+    { error() {}, warn() {}, info() {} },
+  );
+
+  await firstHandle.start();
+  await firstHandle.stop();
+
+  assert.equal(firstRpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 1);
+  assert.equal(JSON.parse(await fsp.readFile(snapshotPath, "utf8")).files[filePath].sourceDoc, filePath);
+
+  const secondRpc = new FakeRpcClient();
+  const infoMessages: string[] = [];
+  const secondHandle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath,
+    },
+    async () => secondRpc,
+    { error() {}, warn() {}, info: (message: string) => infoMessages.push(message) },
+  );
+
+  await secondHandle.start();
+
+  assert.equal(secondRpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 0);
+  assert.equal(infoMessages.some((message) => message.includes("loaded 1 generic file snapshots")), true);
+  assert.equal(infoMessages.some((message) => message.includes("unchanged=1")), true);
+
+  await secondHandle.stop();
 });

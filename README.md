@@ -154,7 +154,7 @@ openclaw memory search "prior context"
 openclaw memory export --user-id <userId>
 openclaw memory flush --user-id <userId>
 openclaw memory journal --limit 50
-openclaw memory dream-promote --user-id <userId> --dream-file /path/to/DREAMS.md
+openclaw memory dream-promote --user-id <userId> --dream-file ~/DREAMS.md
 ```
 
 Use [Install](./docs/install.md) for service lifecycle commands and

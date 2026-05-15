@@ -38,6 +38,26 @@ export function register(api: OpenClawPluginApi) {
     `crossSessionRecall=${cfg.crossSessionRecall !== false}`,
   );
 
+  // Slot gating: reject conflicts and skip explicit opt-out BEFORE runtime
+  // creation, so no work is wasted when memory is disabled or misconfigured.
+  const memSlot = api.config?.plugins?.slots?.memory;
+  if (!isLightweight && !isDiscovery) {
+    if (memSlot && memSlot !== MEMORY_ID && memSlot !== "none") {
+      throw new Error(
+        `[libravdb-memory] plugins.slots.memory is "${memSlot}". ` +
+          `Set it to "libravdb-memory" before enabling this plugin.`,
+      );
+    }
+    if (memSlot === "none") {
+      logger.info?.(
+        "[libravdb-memory] plugins.slots.memory is \"none\"; " +
+        "skipping memory capability, context engine, embedding providers, services, and hooks.",
+      );
+      registerMemoryCli(api, null, cfg, logger);
+      return;
+    }
+  }
+
   // Runtime creation:
   // - Lightweight modes (cli-metadata, setup-only): no runtime, CLI structure only.
   // - Discovery mode: runtime for lazy CLI loading, but no context engine.
@@ -70,16 +90,8 @@ export function register(api: OpenClawPluginApi) {
   const runtime = runtimeOrNull;
   if (!runtime) return; // unreachable but satisfies the type checker
 
-  // Exclusive slot check: refuse to register if another plugin owns the memory slot.
-  // plugins.slots.memory is the only configurable slot; context engine exclusivity
-  // is enforced by the registry at runtime (no config surface for it).
-  // "none" means memory is disabled, not a conflict, allow registration.
-  const memSlot = api.config?.plugins?.slots?.memory;
-  if (memSlot && memSlot !== MEMORY_ID && memSlot !== "none") {
-    throw new Error(
-      `[libravdb-memory] plugins.slots.memory is "${memSlot}". ` +
-        `Set it to "libravdb-memory" before enabling this plugin.`,
-    );
+  if (!memSlot) {
+    logger.warn?.("[libravdb-memory] plugins.slots.memory is unset; set it to \"libravdb-memory\" for memory to work.");
   }
 
   // Migrated from three legacy calls to a single registerMemoryCapability.
@@ -162,21 +174,9 @@ export function register(api: OpenClawPluginApi) {
 
   api.on("before_reset", createBeforeResetHook(runtime, api.logger ?? console));
   api.on("session_end", createSessionEndHook(runtime, api.logger ?? console));
-  api.on("agent_end", async (event: unknown) => {
-    const e = asRecord(event) ?? {};
-    logger.info?.(
-      `LibraVDB agent_end success=${e.success ?? 'unknown'} ` +
-      `durationMs=${e.durationMs ?? "?"} ` +
-      `error=${typeof e.error === "string" ? e.error : "none"}`,
-    );
-  });
   api.on("gateway_stop", async () => {
     await runtime.shutdown();
   });
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
 }
 
 export default definePluginEntry({

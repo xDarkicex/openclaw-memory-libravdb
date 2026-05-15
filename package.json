@@ -1,6 +1,6 @@
 {
   "name": "@xdarkicex/openclaw-memory-libravdb",
-  "version": "1.4.52",
+  "version": "1.4.80",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -64,17 +64,15 @@
     "prepack": "npm run build",
     "build:daemon": "bash scripts/build-daemon.sh"
   },
-  "dependencies": {
-    "openclaw": "*"
-  },
   "devDependencies": {
     "@bufbuild/protobuf": "1.7.2",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
     "@openclaw/plugin-inspector": "0.3.7",
     "@types/node": "^20.11.0",
-    "@xdarkicex/libravdb-contracts": "^0.0.6",
+    "@xdarkicex/libravdb-contracts": "^0.0.7",
     "esbuild": "^0.27.0",
+    "openclaw": "2026.4.11",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
