@@ -187,7 +187,7 @@ All keys are optional. For the full reference, see [Configuration](./docs/config
 
 - New install: [Install](./docs/install.md), [Installation reference](./docs/installation.md)
 - Understand the design: [Problem](./docs/problem.md), [Architecture](./docs/architecture.md), [ADRs](./docs/architecture-decisions/README.md)
-- Configure: [Configuration](./docs/configuration.md), [Features](./docs/features.md), [Embedding profiles](./docs/embedding-profiles.md), [Models](./docs/models.md)
+- Configure: [Configuration](./docs/configuration.md), [TLS configuration](./docs/TLS_configuration.md), [Features](./docs/features.md), [Embedding profiles](./docs/embedding-profiles.md), [Models](./docs/models.md)
 - Operate safely: [Security](./docs/security.md), [Uninstall](./docs/uninstall.md)
 - Advanced operations: [Performance and tuning](./docs/performance-and-tuning.md)
 - Work from source: [Development](./docs/development.md), [Contributing](./docs/contributing.md)
