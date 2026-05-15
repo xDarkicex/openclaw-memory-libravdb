@@ -541,6 +541,12 @@ function buildExactRecallSystemPromptAddition(facts: string[]): string {
   ].join("\n");
 }
 
+/**
+ * Builds a system-prompt addition for daemon-predicted continuity context.
+ *
+ * Prediction text is untrusted memory content, so each item is escaped before it
+ * is placed inside the predictive-context wrapper.
+ */
 function buildPredictiveContextSystemPromptAddition(
   predictions: import("./types.js").PredictedContext[],
 ): string {
