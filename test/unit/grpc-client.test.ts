@@ -56,11 +56,14 @@ test("resolveGrpcCredentialMode undefined tlsMode defaults to auto (heuristic)",
 });
 
 test("resolveGrpcCredentials returns insecure credentials for loopback targets", () => {
+  // grpc.ChannelCredentials is typed as opaque; .secureContext is runtime-private.
+  // We access it directly in tests to verify credential type without a live connection.
   const creds = resolveGrpcCredentials("tcp:127.0.0.1:37421", undefined, "auto") as any;
   assert.equal(creds.secureContext, undefined);
 });
 
 test("resolveGrpcCredentials returns secure credentials for remote targets", () => {
+  // Access .secureContext via any to verify TLS — ChannelCredentials is opaque to consumers
   const creds = resolveGrpcCredentials("tcp:192.0.2.10:37421", undefined, "auto") as any;
   assert.notEqual(creds.secureContext, undefined);
 });
@@ -73,11 +76,13 @@ test("resolveGrpcCredentials throws when CA PEM file path does not exist", () =>
 });
 
 test("resolveGrpcCredentials tlsMode 'insecure' returns insecure credentials regardless of address", () => {
+  // Access .secureContext via any to verify plaintext — ChannelCredentials is opaque to consumers
   const creds = resolveGrpcCredentials("tcp:192.0.2.10:37421", undefined, "insecure") as any;
   assert.equal(creds.secureContext, undefined);
 });
 
 test("resolveGrpcCredentials tlsMode 'tls' forces secure credentials on loopback", () => {
+  // Access .secureContext via any to verify TLS — ChannelCredentials is opaque to consumers
   const creds = resolveGrpcCredentials("tcp:127.0.0.1:37421", undefined, "tls") as any;
   assert.notEqual(creds.secureContext, undefined);
 });

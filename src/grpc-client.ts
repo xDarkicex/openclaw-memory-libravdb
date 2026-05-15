@@ -16,7 +16,7 @@ export interface GrpcClientOptions {
   secret?: string;
   timeoutMs?: number;
   tlsCaPath?: string;
-  tlsMode?: "auto" | "tls" | "insecure";
+  tlsMode?: "auto" | "tls" | "insecure"; // exported type: use VALID_TLS_MODES from plugin-runtime for deriving new types
 }
 
 export function resolveGrpcTarget(endpoint: string): string {

@@ -9,8 +9,8 @@ export type RpcGetter = () => Promise<RpcClient>;
 export const DEFAULT_RPC_TIMEOUT_MS = 30000;
 export const STARTUP_HEALTH_TIMEOUT_MS = 2000;
 
-const VALID_TLS_MODES = ["auto", "tls", "insecure"] as const;
-type ValidTlsMode = typeof VALID_TLS_MODES[number];
+export const VALID_TLS_MODES = ["auto", "tls", "insecure"] as const;
+export type ValidTlsMode = typeof VALID_TLS_MODES[number];
 const isTlsModeValid = (m: string): m is ValidTlsMode =>
   VALID_TLS_MODES.includes(m as ValidTlsMode);
 
@@ -90,6 +90,7 @@ export function createPluginRuntime(
               cfg.grpcEndpointTlsMode === "insecure" &&
               cfg.grpcEndpointTlsCa
             ) {
+              // logger is provided by the host and may not have all methods
               logger.warn?.(
                 `LibraVDB: grpcEndpointTlsCa is set but grpcEndpointTlsMode ` +
                 `is "insecure" — the CA file will not be used`,
