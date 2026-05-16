@@ -1,6 +1,7 @@
 import type { PluginRuntime } from "./plugin-runtime.js";
 import type {
   LoggerLike,
+  PredictedContext,
   PluginConfig,
   SearchResult,
 } from "./types.js";
@@ -580,9 +581,55 @@ export function buildContextEngineFactory(
   cfg: PluginConfig,
   logger: LoggerLike = console,
 ) {
-  const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
+  const predictiveContextCache = new Map<string, PredictedContext[]>();
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
+
+  function cachePredictiveContext(sessionId: string, result: unknown): void {
+    const predictions = (result as { predictions?: unknown } | undefined)?.predictions;
+    if (!Array.isArray(predictions)) {
+      predictiveContextCache.delete(sessionId);
+      return;
+    }
+    const validPredictions = predictions.flatMap((prediction): PredictedContext[] => {
+      if (!prediction || typeof prediction !== "object") {
+        return [];
+      }
+      const record = prediction as { id?: unknown; text?: unknown; reason?: unknown };
+      if (typeof record.text !== "string" || record.text.trim().length === 0) {
+        return [];
+      }
+      return [{
+        id: typeof record.id === "string" ? record.id : "",
+        text: record.text,
+        reason: typeof record.reason === "string" ? record.reason : "",
+      }];
+    });
+    if (validPredictions.length === 0) {
+      predictiveContextCache.delete(sessionId);
+      return;
+    }
+    predictiveContextCache.set(sessionId, validPredictions);
+  }
+
+  function takePredictiveContextInjection(sessionId: string): string | null {
+    const predictions = predictiveContextCache.get(sessionId);
+    predictiveContextCache.delete(sessionId);
+    if (!predictions?.length) {
+      return null;
+    }
+    const texts = predictions
+      .map((prediction) => prediction.text.trim())
+      .filter((text) => text.length > 0);
+    if (texts.length === 0) {
+      return null;
+    }
+    return [
+      "<predictive_context>",
+      ...texts.map((text) => `<predicted_context_item>${escapeMemoryFactText(text)}</predicted_context_item>`),
+      "</predictive_context>",
+    ].join("\n");
+  }
 
   function resolveUserId(args?: {
     userIdOverride?: string;
@@ -744,6 +791,32 @@ export function buildContextEngineFactory(
       ),
       estimatedTokens: assembled.estimatedTokens + additionTokens,
     };
+  }
+
+  async function finalizeAssembleResult(
+    assembled: OpenClawCompatibleAssembleResult,
+    args: {
+      queryText: string;
+      userId: string;
+      sessionId: string;
+      tokenBudget?: number;
+    },
+  ): Promise<OpenClawCompatibleAssembleResult> {
+    const withExactRecall = await augmentWithExactRecall(assembled, args);
+    const predictiveContextInjection = takePredictiveContextInjection(args.sessionId);
+    const withPredictiveContext = predictiveContextInjection
+      ? {
+          ...withExactRecall,
+          systemPromptAddition: appendSystemPromptAddition(
+            withExactRecall.systemPromptAddition,
+            predictiveContextInjection,
+          ),
+          estimatedTokens:
+            withExactRecall.estimatedTokens +
+            approximateTokenCount(predictiveContextInjection),
+        }
+      : withExactRecall;
+    return enforceTokenBudgetInvariant(withPredictiveContext, args.tokenBudget);
   }
 
   function buildCompactSessionRequest(args: {
@@ -1015,6 +1088,7 @@ export function buildContextEngineFactory(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
             `(threshold=${dynamicCompactThreshold}): ${compactionResult.reason ?? "compaction failed"}`,
           );
+          predictiveContextCache.delete(sessionId);
           return buildBudgetFallbackContext(args.messages, args.tokenBudget);
         }
       }
@@ -1031,16 +1105,14 @@ export function buildContextEngineFactory(
             config: buildAssemblyConfig(args.tokenBudget),
             emitDebug: true,
           }));
-          return enforceTokenBudgetInvariant(
-            await augmentWithExactRecall(assembled, {
-              queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
-              userId,
-              sessionId,
-              tokenBudget: args.tokenBudget,
-            }),
-            args.tokenBudget,
-          );
+          return await finalizeAssembleResult(assembled, {
+            queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
+            userId,
+            sessionId,
+            tokenBudget: args.tokenBudget,
+          });
         } catch (error) {
+          predictiveContextCache.delete(sessionId);
           logger.warn?.(
             `LibraVDB assemble kernel failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
             }`,
@@ -1062,23 +1134,14 @@ export function buildContextEngineFactory(
           config: buildAssemblyConfig(args.tokenBudget),
         });
         const assembled = normalizeAssembleResult(resp);
-        const enforced = enforceTokenBudgetInvariant(
-          await augmentWithExactRecall(assembled, {
-            queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
-            userId,
-            sessionId,
-            tokenBudget: args.tokenBudget,
-          }),
-          args.tokenBudget,
-        );
-        const predictions = predictiveContextCache.get(sessionId) || [];
-        predictiveContextCache.delete(sessionId);
-        if (predictions.length > 0) {
-          const injection = ["<predictive_context>", ...predictions.map((p) => p.text), "</predictive_context>"].join("\n");
-          enforced.systemPromptAddition = appendSystemPromptAddition(enforced.systemPromptAddition, injection);
-        }
-        return enforced;
+        return await finalizeAssembleResult(assembled, {
+          queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
+          userId,
+          sessionId,
+          tokenBudget: args.tokenBudget,
+        });
       } catch (error) {
+        predictiveContextCache.delete(sessionId);
         logger.warn?.(
           `LibraVDB assemble sidecar failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
           }`,
@@ -1140,10 +1203,7 @@ export function buildContextEngineFactory(
             tokenBudget: args.tokenBudget,
             currentTokenCount,
           });
-          const predictions = (result as any).predictions;
-          if (Array.isArray(predictions) && predictions.length > 0) {
-            predictiveContextCache.set(sessionId, predictions);
-          }
+          cachePredictiveContext(sessionId, result);
           return result;
         }
         const rpc = await runtime.getRpc();
@@ -1160,10 +1220,7 @@ export function buildContextEngineFactory(
           tokenBudget: args.tokenBudget,
           currentTokenCount,
         });
-        const predictions = (result as any).predictions;
-        if (Array.isArray(predictions) && predictions.length > 0) {
-          predictiveContextCache.set(sessionId, predictions);
-        }
+        cachePredictiveContext(sessionId, result);
         return result;
       } catch (error) {
         logger.warn?.(

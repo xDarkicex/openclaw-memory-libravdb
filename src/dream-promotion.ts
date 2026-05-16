@@ -78,6 +78,7 @@ interface DreamFileState {
 
 interface DreamPromotionState {
   watching: boolean;
+  scanning: boolean;
   dirty: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   watcher: FsWatcherLike | null;
@@ -109,6 +110,7 @@ export function createDreamPromotionHandle(
 
   const state: DreamPromotionState = {
     watching: false,
+    scanning: false,
     dirty: false,
     timer: null,
     watcher: null,
@@ -146,7 +148,7 @@ export function createDreamPromotionHandle(
     if (!state.watching) {
       return;
     }
-    if (state.timer) {
+    if (state.timer || state.scanning) {
       state.dirty = true;
       return;
     }
@@ -162,73 +164,82 @@ export function createDreamPromotionHandle(
     if (!state.watching) {
       return;
     }
-    await ensureWatcher();
-
-    const stat = await safeStat(diaryPath);
-    if (!stat) {
-      lastFileState = null;
+    if (state.scanning) {
+      state.dirty = true;
       return;
     }
 
-    if (lastFileState && lastFileState.size === stat.size && lastFileState.mtimeMs === stat.mtimeMs) {
-      return;
-    }
+    state.scanning = true;
+    try {
+      await ensureWatcher();
 
-    const bytes = await safeReadFile(diaryPath);
-    if (!bytes) {
-      lastFileState = null;
-      return;
-    }
+      const stat = await safeStat(diaryPath);
+      if (!stat) {
+        lastFileState = null;
+        return;
+      }
 
-    const fileHash = hashBytes(bytes);
-    if (lastFileState && lastFileState.fileHash === fileHash) {
+      if (lastFileState && lastFileState.size === stat.size && lastFileState.mtimeMs === stat.mtimeMs) {
+        return;
+      }
+
+      const bytes = await safeReadFile(diaryPath);
+      if (!bytes) {
+        lastFileState = null;
+        return;
+      }
+
+      const fileHash = hashBytes(bytes);
+      if (lastFileState && lastFileState.fileHash === fileHash) {
+        lastFileState = {
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          fileHash,
+        };
+        return;
+      }
+
+      const text = textDecoder.decode(bytes);
+      const candidates = parseDreamPromotionCandidates(text);
+      if (candidates.length === 0) {
+        lastFileState = {
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          fileHash,
+        };
+        return;
+      }
+
+      const rpc = await getRpc();
+      const params: DreamPromotionParams = {
+        userId,
+        sourceDoc: diaryPath,
+        sourceRoot: path.dirname(diaryPath),
+        sourcePath: path.basename(diaryPath),
+        sourceKind: DREAM_SOURCE_KIND,
+        fileHash,
+        sourceSize: stat.size,
+        sourceMtimeMs: stat.mtimeMs,
+        ingestVersion: DREAM_PROMOTION_VERSION,
+        hashBackend: getHashBackendName(),
+        entries: candidates.map((candidate) => ({
+          ...candidate,
+          sourceLine: candidate.line,
+        })),
+      };
+      await rpc.call<DreamPromotionResult>("promote_dream_entries", params);
+
       lastFileState = {
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         fileHash,
       };
-      return;
-    }
-
-    const text = textDecoder.decode(bytes);
-    const candidates = parseDreamPromotionCandidates(text);
-    if (candidates.length === 0) {
-      lastFileState = {
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        fileHash,
-      };
-      return;
-    }
-
-    const rpc = await getRpc();
-    const params: DreamPromotionParams = {
-      userId,
-      sourceDoc: diaryPath,
-      sourceRoot: path.dirname(diaryPath),
-      sourcePath: path.basename(diaryPath),
-      sourceKind: DREAM_SOURCE_KIND,
-      fileHash,
-      sourceSize: stat.size,
-      sourceMtimeMs: stat.mtimeMs,
-      ingestVersion: DREAM_PROMOTION_VERSION,
-      hashBackend: getHashBackendName(),
-      entries: candidates.map((candidate) => ({
-        ...candidate,
-        sourceLine: candidate.line,
-      })),
-    };
-    await rpc.call<DreamPromotionResult>("promote_dream_entries", params);
-
-    lastFileState = {
-      size: stat.size,
-      mtimeMs: stat.mtimeMs,
-      fileHash,
-    };
-
-    if (state.dirty) {
-      state.dirty = false;
-      await refreshDiary();
+    } finally {
+      state.scanning = false;
+      if (state.dirty && state.watching) {
+        state.dirty = false;
+        await refreshDiary();
+      }
     }
   }
 
@@ -258,7 +269,6 @@ export function createDreamPromotionHandle(
         if (filename && path.basename(String(filename)) !== path.basename(diaryPath)) {
           return;
         }
-        state.dirty = true;
         void refreshDiary();
       });
       watcher.on("error", (error) => {

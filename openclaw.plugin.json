@@ -12,6 +12,7 @@
     "contextEngine": true
   },
   "activation": {
+    "onStartup": false,
     "onCommands": [
       "memory"
     ]

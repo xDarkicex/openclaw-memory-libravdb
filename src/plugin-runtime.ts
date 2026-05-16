@@ -195,13 +195,14 @@ export function validateGrpcKernelConfig(cfg: PluginConfig, logger: LoggerLike):
   }
 }
 
-function loadSecretFromEnv(): string | undefined {
-  const secret = process.env.LIBRAVDB_AUTH_SECRET;
+export function loadSecretFromEnv(): string | undefined {
+  const secret = process.env.LIBRAVDB_AUTH_SECRET?.trim();
   if (secret) return secret;
-  const path = process.env.LIBRAVDB_AUTH_SECRET_FILE;
+  const path = process.env.LIBRAVDB_AUTH_SECRET_FILE?.trim();
   if (path) {
     try {
-      return readFileSync(path, "utf8").trim();
+      const fileSecret = readFileSync(path, "utf8").trim();
+      return fileSecret || undefined;
     } catch {
       return undefined;
     }

@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-import { enrichStartupError, resolveStartupHealthTimeoutMs, validateGrpcKernelConfig } from "../../src/plugin-runtime.js";
+import { enrichStartupError, loadSecretFromEnv, resolveStartupHealthTimeoutMs, validateGrpcKernelConfig } from "../../src/plugin-runtime.js";
 
 test("enrichStartupError adds provisioning guidance for daemon startup failures", () => {
   const err = enrichStartupError("LibraVDB daemon failed health check", "embedder running in deterministic fallback mode");
@@ -19,6 +22,42 @@ test("resolveStartupHealthTimeoutMs uses the normal RPC timeout when it is highe
   assert.equal(resolveStartupHealthTimeoutMs({}), 30000);
   assert.equal(resolveStartupHealthTimeoutMs({ rpcTimeoutMs: 5000 }), 5000);
   assert.equal(resolveStartupHealthTimeoutMs({ rpcTimeoutMs: 1000 }), 2000);
+});
+
+test("loadSecretFromEnv trims direct secrets and ignores whitespace-only values", () => {
+  const previousSecret = process.env.LIBRAVDB_AUTH_SECRET;
+  const previousSecretFile = process.env.LIBRAVDB_AUTH_SECRET_FILE;
+  try {
+    process.env.LIBRAVDB_AUTH_SECRET = "  direct-secret  ";
+    delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+    assert.equal(loadSecretFromEnv(), "direct-secret");
+
+    process.env.LIBRAVDB_AUTH_SECRET = "   ";
+    assert.equal(loadSecretFromEnv(), undefined);
+  } finally {
+    restoreEnv("LIBRAVDB_AUTH_SECRET", previousSecret);
+    restoreEnv("LIBRAVDB_AUTH_SECRET_FILE", previousSecretFile);
+  }
+});
+
+test("loadSecretFromEnv falls back to trimmed secret files", () => {
+  const previousSecret = process.env.LIBRAVDB_AUTH_SECRET;
+  const previousSecretFile = process.env.LIBRAVDB_AUTH_SECRET_FILE;
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "libravdb-secret-"));
+  const secretPath = path.join(tempRoot, "secret.txt");
+  try {
+    fs.writeFileSync(secretPath, "\n file-secret \n");
+    process.env.LIBRAVDB_AUTH_SECRET = "   ";
+    process.env.LIBRAVDB_AUTH_SECRET_FILE = ` ${secretPath} `;
+    assert.equal(loadSecretFromEnv(), "file-secret");
+
+    fs.writeFileSync(secretPath, "\n\t  \n");
+    assert.equal(loadSecretFromEnv(), undefined);
+  } finally {
+    restoreEnv("LIBRAVDB_AUTH_SECRET", previousSecret);
+    restoreEnv("LIBRAVDB_AUTH_SECRET_FILE", previousSecretFile);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("validateGrpcKernelConfig: invalid grpcEndpointTlsMode throws with the bad value", () => {
@@ -100,3 +139,11 @@ test("validateGrpcKernelConfig: returns early when grpcEndpoint is not set", () 
     grpcEndpointTlsCa: "/etc/certs/ca.pem",
   }, console));
 });
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
+}

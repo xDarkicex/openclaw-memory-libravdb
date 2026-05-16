@@ -18,6 +18,40 @@ class FakeRpcClient {
   }
 }
 
+class BlockingRpcClient extends FakeRpcClient {
+  activeCalls = 0;
+  maxConcurrentCalls = 0;
+  private readonly releases: Array<() => void> = [];
+  private startedResolve: (() => void) | null = null;
+  readonly firstCallStarted = new Promise<void>((resolve) => {
+    this.startedResolve = resolve;
+  });
+
+  override async call<T>(method: string, params: unknown): Promise<T> {
+    this.calls.push({ method, params });
+    if (method !== "promote_dream_entries") {
+      throw new Error(`unexpected rpc call: ${method}`);
+    }
+    this.activeCalls++;
+    this.maxConcurrentCalls = Math.max(this.maxConcurrentCalls, this.activeCalls);
+    this.startedResolve?.();
+    try {
+      await new Promise<void>((resolve) => {
+        this.releases.push(resolve);
+      });
+      return { promoted: 1, rejected: 0 } as T;
+    } finally {
+      this.activeCalls--;
+    }
+  }
+
+  releaseAll(): void {
+    for (const release of this.releases.splice(0)) {
+      release();
+    }
+  }
+}
+
 class FakeFsApi {
   callbacks = new Map<string, Array<(event: string, filename: string | Buffer | null) => void>>();
 
@@ -130,6 +164,60 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
     assert.equal(rpc.calls.filter((call) => call.method === "promote_dream_entries").length, 1);
   } finally {
     await handle?.stop();
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("dream promotion serializes refreshes while promotion is in flight", async () => {
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-dream-"));
+  let handle: ReturnType<typeof createDreamPromotionHandle> | null = null;
+  process.env.OPENCLAW_STATE_DIR = tempRoot;
+
+  try {
+    const diaryPath = path.join(tempRoot, "DREAMS.md");
+    await fsp.writeFile(
+      diaryPath,
+      [
+        "# DREAMS",
+        "",
+        "## Deep Sleep",
+        "- Preserve the recent tail buffer {score=0.82 recall=3 unique=2}",
+      ].join("\n"),
+    );
+
+    const rpc = new BlockingRpcClient();
+    const fsApi = new FakeFsApi();
+    handle = createDreamPromotionHandle(
+      {
+        dreamPromotionEnabled: true,
+        dreamPromotionDiaryPath: diaryPath,
+        dreamPromotionUserId: "u1",
+        dreamPromotionDebounceMs: 0,
+      },
+      async () => rpc,
+      console,
+      fsApi as never,
+    );
+
+    await handle.start();
+    await rpc.firstCallStarted;
+    fsApi.callbacks.get(path.dirname(diaryPath))?.[0]?.("change", path.basename(diaryPath));
+    await delay(25);
+    rpc.releaseAll();
+    await delay(25);
+
+    assert.equal(rpc.maxConcurrentCalls, 1);
+    assert.equal(rpc.calls.filter((call) => call.method === "promote_dream_entries").length, 1);
+  } finally {
+    if (handle) {
+      await handle.stop();
+    }
     if (previousStateDir === undefined) {
       delete process.env.OPENCLAW_STATE_DIR;
     } else {
