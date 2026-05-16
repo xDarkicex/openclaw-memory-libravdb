@@ -897,7 +897,7 @@ export function buildContextEngineFactory(
       if (kernel) {
         try {
           await kernel.initializeSession({
-            clientId: "openclaw-ts-wrapper",
+            client_id: "openclaw-ts-wrapper",
             clientCapabilities: [{ name: "grpc", version: "1.0" }]
           });
         } catch (error) {

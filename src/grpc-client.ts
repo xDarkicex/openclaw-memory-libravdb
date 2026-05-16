@@ -5,6 +5,105 @@ import fs from "node:fs";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 
+// Minimal type definitions for the dynamically-loaded gRPC service.
+// These mirror the proto messages in api/proto/intelligence_kernel/v1/kernel.proto.
+
+interface ProtoInitializeRequest {
+  client_id: string;
+  client_capabilities: Array<{ name: string; version: string }>;
+  client_metadata: Record<string, string>;
+}
+
+interface ProtoInitializeResponse {
+  session_id: string;
+  connection_state: number;
+  server_capabilities: Array<{ name: string; version: string; required: boolean }>;
+  kernel_version: { major: number; minor: number; patch: number; prerelease: string };
+  server_metadata: Record<string, string>;
+}
+
+interface ProtoAssembleContextRequest {
+  session_id: string;
+  session_key: string;
+  user_id: string;
+  query_text: string;
+  visible_messages: Array<{ role: string; content: string; id: string }>;
+  token_budget: number;
+  config: Record<string, unknown>;
+  emit_debug: boolean;
+}
+
+interface ProtoGetStatusResponse {
+  ok: boolean;
+  message: string;
+  turn_count: number;
+  memory_count: number;
+  embedding_profile: string;
+  abstractive_ready: boolean;
+  kernel_version: { major: number; minor: number; patch: number; prerelease: string };
+}
+
+interface KernelServiceClient {
+  InitializeSession(
+    req: Record<string, unknown>,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, resp: ProtoInitializeResponse) => void,
+  ): void;
+  AssembleContext(
+    req: Record<string, unknown>,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, resp: Record<string, unknown>) => void,
+  ): void;
+  RankCandidates(
+    req: Record<string, unknown>,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, resp: Record<string, unknown>) => void,
+  ): void;
+  IngestMessage(
+    req: Record<string, unknown>,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, resp: Record<string, unknown>) => void,
+  ): void;
+  AfterTurn(
+    req: Record<string, unknown>,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, resp: Record<string, unknown>) => void,
+  ): void;
+  BootstrapSession(
+    req: Record<string, unknown>,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, resp: Record<string, unknown>) => void,
+  ): void;
+  CompactSession(
+    req: Record<string, unknown>,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, resp: Record<string, unknown>) => void,
+  ): void;
+  GetStatus(
+    req: Record<string, unknown>,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, resp: ProtoGetStatusResponse) => void,
+  ): void;
+  close(): void;
+}
+
+interface ProtoPackage {
+  intelligence_kernel: {
+    v1: {
+      IntelligenceKernel: typeof grpc.Client &
+        { new (address: string, credentials: grpc.ChannelCredentials): KernelServiceClient };
+    };
+  };
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // The proto file is expected to be copied to dist/proto/ at build time.
@@ -122,7 +221,7 @@ function isLoopbackHost(host: string): boolean {
 }
 
 export class GrpcKernelClient {
-  private client: any;
+  private client: KernelServiceClient;
   private readonly secret: string | undefined;
   private readonly timeoutMs: number;
   private nonceHex: string | undefined;
@@ -139,7 +238,7 @@ export class GrpcKernelClient {
       oneofs: true,
     });
 
-    const protoDescriptor = grpc.loadPackageDefinition(packageDefinition) as any;
+    const protoDescriptor = grpc.loadPackageDefinition(packageDefinition) as unknown as ProtoPackage;
     const kernelService = protoDescriptor.intelligence_kernel.v1.IntelligenceKernel;
 
     const target = resolveGrpcTarget(options.endpoint);
@@ -150,7 +249,7 @@ export class GrpcKernelClient {
       options.tlsMode,
       options.tlsClientCertPath,
       options.tlsClientKeyPath,
-    ));
+    )) as unknown as KernelServiceClient;
   }
 
   private getMetadata(signed = true): grpc.Metadata {
@@ -171,10 +270,12 @@ export class GrpcKernelClient {
     return md;
   }
 
-  private call<T>(method: string, req: any, signed = true): Promise<T> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private call<T>(method: string, req: Record<string, unknown>, signed = true): Promise<T> {
     return new Promise((resolve, reject) => {
       const deadline = new Date(Date.now() + this.timeoutMs);
-      this.client[method](req, this.getMetadata(signed), { deadline }, (err: any, resp: T) => {
+      // Dynamic dispatch on the gRPC stub — method names come from the proto service definition.
+      (this.client as any)[method](req, this.getMetadata(signed), { deadline }, (err: grpc.ServiceError | null, resp: T) => {
         if (err) {
           reject(err);
         } else {
@@ -184,10 +285,10 @@ export class GrpcKernelClient {
     });
   }
 
-  async initializeSession(req: any): Promise<any> {
+  async initializeSession(req: Record<string, unknown>): Promise<ProtoInitializeResponse> {
     return new Promise((resolve, reject) => {
       const deadline = new Date(Date.now() + this.timeoutMs);
-      this.client.InitializeSession(req, this.getMetadata(false), { deadline }, (err: any, resp: any) => {
+      this.client.InitializeSession(req, this.getMetadata(false), { deadline }, (err: grpc.ServiceError | null, resp: ProtoInitializeResponse) => {
         if (err) {
           reject(err);
           return;
@@ -205,31 +306,31 @@ export class GrpcKernelClient {
     });
   }
 
-  async assembleContext(req: any): Promise<any> {
+  async assembleContext(req: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call("AssembleContext", req);
   }
 
-  async rankCandidates(req: any): Promise<any> {
+  async rankCandidates(req: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call("RankCandidates", req);
   }
 
-  async ingestMessage(req: any): Promise<any> {
+  async ingestMessage(req: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call("IngestMessage", req);
   }
 
-  async afterTurn(req: any): Promise<any> {
+  async afterTurn(req: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call("AfterTurn", req);
   }
 
-  async bootstrapSession(req: any): Promise<any> {
+  async bootstrapSession(req: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call("BootstrapSession", req);
   }
 
-  async compactSession(req: any): Promise<any> {
+  async compactSession(req: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call("CompactSession", req);
   }
 
-  async getStatus(req: any = {}): Promise<any> {
+  async getStatus(req: Record<string, unknown> = {}): Promise<ProtoGetStatusResponse> {
     return this.call("GetStatus", req);
   }
 
