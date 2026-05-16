@@ -105,7 +105,11 @@ export function createPluginRuntime(
 
   return {
     async getRpc() {
-      return (await ensureStarted()).rpc;
+      const active = await ensureStarted();
+      if (active.sidecar.isDegraded()) {
+        throw new Error("LibraVDB sidecar is in degraded mode — RPC unavailable");
+      }
+      return active.rpc;
     },
     async getKernel() {
       return (await ensureStarted()).kernel;
@@ -113,6 +117,10 @@ export function createPluginRuntime(
     async emitLifecycleHint(hint: LifecycleHint) {
       try {
         const active = await ensureStarted();
+        if (active.sidecar.isDegraded()) {
+          logger.warn?.("LibraVDB lifecycle hint dropped: sidecar in degraded mode");
+          return;
+        }
         await active.rpc.call("session_lifecycle_hint", hint);
       } catch (error) {
         logger.warn?.(`LibraVDB lifecycle hint dropped: ${formatError(error)}`);
