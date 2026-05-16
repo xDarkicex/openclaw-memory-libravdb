@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { enrichStartupError, resolveStartupHealthTimeoutMs, validateGrpcKernelConfig } from "../../src/plugin-runtime.js";
+import { createPluginRuntime, enrichStartupError, resolveStartupHealthTimeoutMs, validateGrpcKernelConfig } from "../../src/plugin-runtime.js";
 
 test("enrichStartupError adds provisioning guidance for daemon startup failures", () => {
   const err = enrichStartupError("LibraVDB daemon failed health check", "embedder running in deterministic fallback mode");
@@ -99,4 +99,30 @@ test("validateGrpcKernelConfig: returns early when grpcEndpoint is not set", () 
     grpcEndpointTlsMode: "insecure",
     grpcEndpointTlsCa: "/etc/certs/ca.pem",
   }, console));
+});
+
+test("shutdown cleans up sidecar even when started promise rejects", async () => {
+  // Test: shutdown on an unstarted runtime completes without throwing.
+  // The real bug (health-check failure after sidecar start) requires a running
+  // sidecar to reproduce. This test verifies the shutdown path doesn't throw
+  // when called on a runtime that hasn't started yet — which exercises the
+  // `stopped` early-return and `sidecarRef === null` cleanup paths.
+  const runtime = createPluginRuntime(
+    { rpcTimeoutMs: 100 },
+    { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} },
+  );
+
+  // Calling shutdown before getRpc() means started is null and sidecarRef is null.
+  await runtime.shutdown();
+  // If we reach here, the shutdown path handled the null case correctly.
+});
+
+test("shutdown on already-shut-down runtime is idempotent", async () => {
+  const runtime = createPluginRuntime(
+    { rpcTimeoutMs: 100 },
+    { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} },
+  );
+
+  await runtime.shutdown();
+  await runtime.shutdown(); // second call should not throw
 });

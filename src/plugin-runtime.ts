@@ -48,6 +48,7 @@ export function createPluginRuntime(
   logger: LoggerLike = console,
 ): PluginRuntime {
   let started: Promise<{ rpc: RpcClient; sidecar: SidecarHandle; kernel: GrpcKernelClient | null }> | null = null;
+  let sidecarRef: SidecarHandle | null = null;
   let stopped = false;
   let shuttingDown = false;
   const shutdownTasks: RuntimeShutdownTask[] = [];
@@ -61,6 +62,7 @@ export function createPluginRuntime(
         validateGrpcKernelConfig(cfg, logger);
 
         const sidecar = await startSidecar(cfg, logger);
+        sidecarRef = sidecar;
         const rpc = new RpcClient(sidecar.socket, {
           timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
         });
@@ -144,12 +146,26 @@ export function createPluginRuntime(
       }
       const active = started;
       started = null;
-      const { rpc, sidecar, kernel } = await active;
+      let result: { rpc: RpcClient; sidecar: SidecarHandle; kernel: GrpcKernelClient | null } | null = null;
       try {
-        if (kernel) kernel.close();
-        await rpc.call("flush", {});
-      } finally {
-        await sidecar.shutdown();
+        result = await active;
+      } catch {
+        // Startup promise rejected — RPC cleanup not possible, but sidecar
+        // may still be alive (e.g. health check failed after sidecar started).
+        // sidecarRef is set immediately after startSidecar succeeds, so it
+        // is available even if the rest of initialization fails.
+      }
+      if (result) {
+        try {
+          if (result.kernel) result.kernel.close();
+          await result.rpc.call("flush", {});
+        } catch {
+          // Flush failure during shutdown is non-fatal.
+        }
+      }
+      if (sidecarRef) {
+        await sidecarRef.shutdown();
+        sidecarRef = null;
       }
     },
   };
