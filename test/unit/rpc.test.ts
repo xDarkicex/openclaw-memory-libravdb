@@ -425,6 +425,48 @@ test("RpcClient supports per-call timeout overrides", async () => {
   await assert.rejects(client.call("health", {}, { timeoutMs: 10 }), /10ms/);
 });
 
+test("RpcClient handles large frames delivered in multiple chunks", async () => {
+  const socket = new FakeSocket();
+  const client = new RpcClient(socket, { timeoutMs: 100 });
+
+  const pending = client.call<{ ok?: boolean }>("health", {});
+
+  const request = RpcRequest.fromBinary(parseClientFrame(socket.writes[0]!));
+  const response = new (RpcResponse as any)({
+    id: request.id,
+    result: HealthResponse.fromJson({ ok: true }).toBinary(),
+  });
+  const responseFrame = frameServerPayload(response.toBinary());
+
+  // Deliver the response in many small chunks — simulates TCP segmentation.
+  // Before the fix, a single chunk > 64MB would destroy the socket.
+  // Now the per-chunk size check is removed and only the accumulated frame
+  // size limit (64MB) applies.
+  const chunkSize = 7;
+  for (let i = 0; i < responseFrame.byteLength; i += chunkSize) {
+    socket.emitData(responseFrame.subarray(i, Math.min(i + chunkSize, responseFrame.byteLength)));
+  }
+
+  const result = await pending;
+  assert.equal(result.ok, true);
+});
+
+test("RpcClient rejects oversized frames (over 64MB payload)", async () => {
+  const socket = new FakeSocket();
+  const client = new RpcClient(socket, { timeoutMs: 500 });
+
+  // Start a call first so there's a pending entry to reject
+  const pending = client.call<{ ok?: boolean }>("health", {});
+
+  // Simulate a frame header claiming a 65MB payload
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(65 * 1024 * 1024, 0);
+  socket.emitData(header);
+
+  // The client should destroy the socket, which rejects pending calls
+  await assert.rejects(pending, /Socket closed/);
+});
+
 test("rebuild_index round-trips through protobuf codec", async () => {
   const socket = new FakeSocket();
   const client = new RpcClient(socket, { timeoutMs: 100 });

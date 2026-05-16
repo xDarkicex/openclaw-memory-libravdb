@@ -151,11 +151,6 @@ export class RpcClient {
   }
 
   private handleData(chunk: Buffer): void {
-    if (chunk.byteLength > 64 << 20) {
-      this.socket.destroy();
-      return;
-    }
-
     this.rxBuf = Buffer.concat([this.rxBuf, chunk]);
 
     while (this.rxBuf.byteLength >= 4) {
@@ -215,7 +210,9 @@ export class RpcClient {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       }
     } catch {
-      // Ignore malformed frames
+      // Malformed protobuf frame — the sender may have sent a corrupted
+      // response or a protocol mismatch. The pending call will time out
+      // if no valid response arrives, so dropping the frame is safe.
     }
   }
 
