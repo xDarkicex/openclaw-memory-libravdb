@@ -52,7 +52,20 @@ class FakeSocket implements SidecarSocket {
     }
   }
 
-  off(event: "connect" | "error", handler: (() => void) | ((error: Error) => void)): void {
+  off(
+    event: "data" | "close" | "connect" | "error",
+    handler: ((chunk: Buffer) => void) | (() => void) | ((error: Error) => void),
+  ): void {
+    if (event === "data") {
+      const idx = this.dataHandlers.indexOf(handler as (chunk: Buffer) => void);
+      if (idx >= 0) this.dataHandlers.splice(idx, 1);
+      return;
+    }
+    if (event === "close") {
+      const idx = this.closeHandlers.indexOf(handler as () => void);
+      if (idx >= 0) this.closeHandlers.splice(idx, 1);
+      return;
+    }
     if (event === "connect") {
       const idx = this.connectOnce.indexOf(handler as () => void);
       if (idx >= 0) this.connectOnce.splice(idx, 1);
@@ -108,14 +121,21 @@ class ReconnectingSocket extends FakeSocket {
     this.reconnectErrorHandlers.push(handler as (error: Error) => void);
   }
 
-  override off(event: "connect" | "error", handler: (() => void) | ((error: Error) => void)): void {
+  override off(
+    event: "data" | "close" | "connect" | "error",
+    handler: ((chunk: Buffer) => void) | (() => void) | ((error: Error) => void),
+  ): void {
     if (event === "connect") {
       const index = this.reconnectHandlers.indexOf(handler as () => void);
       if (index >= 0) this.reconnectHandlers.splice(index, 1);
       return;
     }
-    const index = this.reconnectErrorHandlers.indexOf(handler as (error: Error) => void);
-    if (index >= 0) this.reconnectErrorHandlers.splice(index, 1);
+    if (event === "error") {
+      const index = this.reconnectErrorHandlers.indexOf(handler as (error: Error) => void);
+      if (index >= 0) this.reconnectErrorHandlers.splice(index, 1);
+      return;
+    }
+    super.off(event, handler);
   }
 
   override write(chunk: Buffer | string): void {

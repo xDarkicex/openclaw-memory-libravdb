@@ -59,7 +59,15 @@ class PlaceholderSocket implements SidecarSocket {
     this.errorOnce.add(handler as ErrorHandler);
   }
 
-  off(event: "connect" | "error", handler: CloseHandler | ErrorHandler): void {
+  off(event: "data" | "close" | "connect" | "error", handler: DataHandler | CloseHandler | ErrorHandler): void {
+    if (event === "data") {
+      this.onData.delete(handler as DataHandler);
+      return;
+    }
+    if (event === "close") {
+      this.onClose.delete(handler as CloseHandler);
+      return;
+    }
     if (event === "connect") {
       this.connectOnce.delete(handler as CloseHandler);
       return;
@@ -209,7 +217,15 @@ class SupervisorSocket implements SidecarSocket {
     this.errorOnce.add(handler as ErrorHandler);
   }
 
-  off(event: "connect" | "error", handler: CloseHandler | ErrorHandler): void {
+  off(event: "data" | "close" | "connect" | "error", handler: DataHandler | CloseHandler | ErrorHandler): void {
+    if (event === "data") {
+      this.onData.delete(handler as DataHandler);
+      return;
+    }
+    if (event === "close") {
+      this.onClose.delete(handler as CloseHandler);
+      return;
+    }
     if (event === "connect") {
       this.connectOnce.delete(handler as CloseHandler);
       return;

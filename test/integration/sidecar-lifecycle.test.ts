@@ -53,7 +53,15 @@ class ControlledSocket implements SidecarSocket {
     this.errorOnce.add(handler as ErrorHandler);
   }
 
-  off(event: "connect" | "error", handler: CloseHandler | ErrorHandler): void {
+  off(event: "data" | "close" | "connect" | "error", handler: DataHandler | CloseHandler | ErrorHandler): void {
+    if (event === "data") {
+      this.onData.delete(handler as DataHandler);
+      return;
+    }
+    if (event === "close") {
+      this.onClose.delete(handler as CloseHandler);
+      return;
+    }
     if (event === "connect") {
       this.connectOnce.delete(handler as CloseHandler);
       return;
@@ -152,7 +160,7 @@ function createFailingConnectSocket(errorCode: string): SidecarSocket {
         );
       }
     },
-    off() {},
+    off(_event?: unknown, _handler?: unknown) {},
     write() {},
     destroy() {},
   };
@@ -303,7 +311,7 @@ test("missing daemon errors point users at libravdbd instead of spawn internals"
         queueMicrotask(() => (handler as (error: Error) => void)(Object.assign(new Error("missing"), { code: "ENOENT" })));
       }
     },
-    off() {},
+    off(_event?: unknown, _handler?: unknown) {},
     write() {},
     destroy() {},
   });
@@ -330,7 +338,7 @@ test("startup connect retries ENOENT until the daemon becomes available", async 
             queueMicrotask(() => (handler as (error: Error) => void)(Object.assign(new Error("missing"), { code: "ENOENT" })));
           }
         },
-        off() {},
+        off(_event?: unknown, _handler?: unknown) {},
         write() {},
         destroy() {},
       };

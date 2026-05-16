@@ -154,6 +154,8 @@ export interface SidecarSocket {
   on(event: "error", handler: (error: Error) => void): void;
   once(event: "connect", handler: () => void): void;
   once(event: "error", handler: (error: Error) => void): void;
+  off(event: "data", handler: (chunk: Buffer) => void): void;
+  off(event: "close", handler: () => void): void;
   off(event: "connect", handler: () => void): void;
   off(event: "error", handler: (error: Error) => void): void;
   write(chunk: Buffer | string): void;

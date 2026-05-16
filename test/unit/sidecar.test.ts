@@ -205,7 +205,15 @@ class ManualSidecarSocket implements SidecarSocket {
     this.errorOnce.add(handler as UnitErrorHandler);
   }
 
-  off(event: "connect" | "error", handler: UnitCloseHandler | UnitErrorHandler): void {
+  off(event: "data" | "close" | "connect" | "error", handler: UnitDataHandler | UnitCloseHandler | UnitErrorHandler): void {
+    if (event === "data") {
+      this.onData.delete(handler as UnitDataHandler);
+      return;
+    }
+    if (event === "close") {
+      this.onClose.delete(handler as UnitCloseHandler);
+      return;
+    }
     if (event === "connect") {
       this.connectOnce.delete(handler as UnitCloseHandler);
       return;
