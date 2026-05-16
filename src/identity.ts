@@ -8,7 +8,10 @@ import {
   mkdirSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { validateNamespace } from "./memory-scopes.js";
 import type { LoggerLike } from "./types.js";
+
+const COLLECTION_SAFE_CHAR_RE = /[^a-zA-Z0-9_.:@#-]+/g;
 
 /**
  * Resolves the identity file path, respecting OpenClaw's state directory conventions.
@@ -76,8 +79,34 @@ function deriveIdentityParts(): DerivedParts {
   return { username, host, home, homeHash };
 }
 
+export function sanitizeAutoIdentityForNamespace(value: string): string {
+  const normalized = value
+    .trim()
+    .replace(COLLECTION_SAFE_CHAR_RE, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const prefixed = /^[a-zA-Z]/.test(normalized) ? normalized : `u-${normalized}`;
+  const hash = createHash("sha256").update(value).digest("hex").slice(0, 16);
+  const candidate = prefixed.length <= 128
+    ? prefixed
+    : `${prefixed.slice(0, 111)}-${hash}`;
+  if (isCollectionNamespace(candidate)) {
+    return candidate;
+  }
+  return `u-${hash}`;
+}
+
+function isCollectionNamespace(value: string): boolean {
+  try {
+    validateNamespace(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function deriveAutoId(parts: DerivedParts): string {
-  return `${parts.username}@${parts.host}#${parts.homeHash}`;
+  return sanitizeAutoIdentityForNamespace(`${parts.username}@${parts.host}#${parts.homeHash}`);
 }
 
 function writeIdentityFile(path: string, userId: string, parts: DerivedParts): void {

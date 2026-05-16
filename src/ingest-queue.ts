@@ -16,13 +16,6 @@ const DEFAULT_OPTIONS: IngestQueueOptions = {
   maxRetries: 4,
 };
 
-interface QueuedIngest {
-  sourceDoc: string;
-  params: IngestMarkdownDocumentParams;
-  resolve: () => void;
-  reject: (err: Error) => void;
-}
-
 interface IngestMarkdownDocumentParams {
   sourceDoc: string;
   text: string;
@@ -42,11 +35,9 @@ interface IngestMarkdownDocumentParams {
 }
 
 export class IngestQueue {
-  private readonly queue: QueuedIngest[] = [];
   private readonly rpcCall: <T>(method: string, params: unknown) => Promise<T>;
   private readonly logger: LoggerLike;
   private readonly options: IngestQueueOptions;
-  private running = false;
 
   constructor(
     rpcCall: <T>(method: string, params: unknown) => Promise<T>,

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { buildContextEngineFactory } from "../../src/context-engine.js";
 import fs from "node:fs";
-import { resolveIdentity } from "../../src/identity.js";
+import { resolveIdentity, sanitizeAutoIdentityForNamespace } from "../../src/identity.js";
 import type { PluginConfig, SearchResult } from "../../src/types.js";
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
 import type { RpcClient } from "../../src/rpc.js";
@@ -333,6 +333,50 @@ test("context engine uses gRPC kernel on cold assemble without falling back to R
   assert.equal(params.sessionKey, "sk1");
   assert.equal(params.userId, "fixed-user");
   assert.deepEqual(assembled.messages, [{ role: "assistant", content: "kernel context" }]);
+});
+
+test("context engine drains predictive context on the gRPC assemble path", async () => {
+  const kernel = {
+    afterTurn: async () => ({
+      ok: true,
+      turnCount: 1,
+      predictions: [
+        { id: "p1", text: "Predicted follow-up context", reason: "likely-next-query" },
+      ],
+    }),
+    assembleContext: async () => ({
+      messages: [{ role: "assistant", content: "kernel context" }],
+      estimatedTokens: 12,
+      systemPromptAddition: "base prompt",
+    }),
+  };
+  const { runtime, getRpcCalls } = makeKernelFirstRuntime(kernel);
+  const engine = buildContextEngineFactory(runtime, { userId: "fixed-user" });
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "hello"), makeMessage("assistant", "hi")],
+  });
+  const firstAssemble = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "hello")],
+    prompt: "hello",
+    tokenBudget: 4000,
+  });
+  const secondAssemble = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "hello again")],
+    prompt: "hello again",
+    tokenBudget: 4000,
+  });
+
+  assert.equal(getRpcCalls(), 0);
+  assert.match(firstAssemble.systemPromptAddition, /<predictive_context>/);
+  assert.match(firstAssemble.systemPromptAddition, /Predicted follow-up context/);
+  assert.doesNotMatch(secondAssemble.systemPromptAddition, /<predictive_context>/);
 });
 
 function makeMessage(role: string, content: string, id?: string) {
@@ -1024,6 +1068,18 @@ test("resolveIdentity returns config userId with whitespace trimming", () => {
   const result = resolveIdentity({ configUserId: "  padded-user  " });
   assert.equal(result.userId, "padded-user");
   assert.equal(result.source, "config");
+});
+
+test("auto-derived identities are sanitized for collection namespaces", () => {
+  const userId = sanitizeAutoIdentityForNamespace("123 bad/user@host name#abcdef12");
+  assert.match(userId, /^[a-zA-Z][a-zA-Z0-9_.:@#-]{0,127}$/);
+  assert.equal(userId.includes("/"), false);
+  assert.equal(userId.includes(" "), false);
+  assert.ok(userId.startsWith("u-123-bad-user@host-name#abcdef12"));
+
+  const longUserId = sanitizeAutoIdentityForNamespace(`user-${"x".repeat(200)}`);
+  assert.match(longUserId, /^[a-zA-Z][a-zA-Z0-9_.:@#-]{0,127}$/);
+  assert.ok(longUserId.length <= 128);
 });
 
 test("resolveIdentity auto-derives when only sessionKey is provided", () => {

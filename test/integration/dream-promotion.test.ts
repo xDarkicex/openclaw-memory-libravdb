@@ -138,3 +138,83 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
     await fsp.rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("dream promotion stop waits for an in-flight scan and skips promotion after stop", async () => {
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-dream-stop-"));
+  let handle: ReturnType<typeof createDreamPromotionHandle> | null = null;
+  let readStarted!: () => void;
+  const readStartedPromise = new Promise<void>((resolve) => {
+    readStarted = resolve;
+  });
+  let releaseRead!: () => void;
+  let readReleased = false;
+  const releaseReadPromise = new Promise<void>((resolve) => {
+    releaseRead = () => {
+      readReleased = true;
+      resolve();
+    };
+  });
+  class SlowFsApi extends FakeFsApi {
+    async readFile(file: string) {
+      readStarted();
+      await releaseReadPromise;
+      return await super.readFile(file);
+    }
+  }
+  process.env.OPENCLAW_STATE_DIR = tempRoot;
+
+  try {
+    const diaryPath = path.join(tempRoot, "DREAMS.md");
+    await fsp.writeFile(
+      diaryPath,
+      [
+        "# DREAMS",
+        "",
+        "## Deep Sleep",
+        "- Preserve the recent tail buffer {score=0.82 recall=3 unique=2}",
+      ].join("\n"),
+    );
+
+    const rpc = new FakeRpcClient();
+    const fsApi = new SlowFsApi();
+    handle = createDreamPromotionHandle(
+      {
+        dreamPromotionEnabled: true,
+        dreamPromotionDiaryPath: diaryPath,
+        dreamPromotionUserId: "u1",
+        dreamPromotionDebounceMs: 0,
+      },
+      async () => rpc,
+      console,
+      fsApi as never,
+    );
+
+    await handle.start();
+    await readStartedPromise;
+
+    let stopResolved = false;
+    const stopPromise = handle.stop().then(() => {
+      stopResolved = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(stopResolved, false, "stop must wait for the in-flight scan");
+
+    releaseRead();
+    await stopPromise;
+
+    assert.equal(stopResolved, true);
+    assert.equal(rpc.calls.length, 0);
+  } finally {
+    if (!readReleased && releaseRead) {
+      releaseRead();
+    }
+    await handle?.stop();
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+});

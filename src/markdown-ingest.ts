@@ -321,9 +321,11 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       const startedAt = Date.now();
       try {
         const currentFiles = new Set<string>();
-        await this.walkDirectory(rootState, rootState.root, currentFiles, stats);
+        const currentDirectories = new Set<string>();
+        await this.walkDirectory(rootState, rootState.root, currentFiles, currentDirectories, stats);
         if (!this.stopping) {
           await this.pruneDeletedFiles(rootState, currentFiles, stats);
+          this.pruneDirectoryWatchers(rootState, currentDirectories);
           rootState.knownFiles = currentFiles;
           await this.saveSnapshotIfDirty();
           this.logScanStats(rootState.root, stats, Date.now() - startedAt);
@@ -366,14 +368,19 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }, this.debounceMs);
   }
 
-  private async walkDirectory(rootState: RootState, dir: string, currentFiles: Set<string>, stats: ScanStats): Promise<void> {
+  private async walkDirectory(
+    rootState: RootState,
+    dir: string,
+    currentFiles: Set<string>,
+    currentDirectories: Set<string>,
+    stats: ScanStats,
+  ): Promise<void> {
     if (this.shouldPruneDirectory(rootState.root, dir)) {
       stats.directoriesPruned++;
       return;
     }
 
     stats.directoriesScanned++;
-    await this.ensureDirectoryWatcher(rootState, dir);
 
     let entries: FsDirentLike[];
     try {
@@ -381,10 +388,14 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     } catch (error) {
       const message = formatError(error);
       if (!message.includes("ENOENT")) {
+        currentDirectories.add(dir);
         this.logger.warn?.(`[markdown-ingest] readdir failed for ${dir}: ${message}`);
       }
       return;
     }
+
+    currentDirectories.add(dir);
+    await this.ensureDirectoryWatcher(rootState, dir);
 
     for (const entry of entries) {
       if (this.stopping) {
@@ -392,7 +403,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       const child = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await this.walkDirectory(rootState, child, currentFiles, stats);
+        await this.walkDirectory(rootState, child, currentFiles, currentDirectories, stats);
         continue;
       }
       if (!entry.isFile() || !isMarkdownFile(entry.name)) {
@@ -447,6 +458,16 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       rootState.directoryWatchers.set(dir, watcher);
     } catch (error) {
       this.logger.warn?.(`[markdown-ingest] watch unavailable for ${dir}: ${formatError(error)}`);
+    }
+  }
+
+  private pruneDirectoryWatchers(rootState: RootState, currentDirectories: Set<string>): void {
+    for (const [dir, watcher] of rootState.directoryWatchers.entries()) {
+      if (currentDirectories.has(dir)) {
+        continue;
+      }
+      watcher.close();
+      rootState.directoryWatchers.delete(dir);
     }
   }
 

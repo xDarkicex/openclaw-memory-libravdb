@@ -114,6 +114,7 @@ export function createDreamPromotionHandle(
     watcher: null,
   };
   let lastFileState: DreamFileState | null = null;
+  const activeScans = new Set<Promise<void>>();
   const debounceMs = cfg.dreamPromotionDebounceMs ?? DEFAULT_DEBOUNCE_MS;
 
   return {
@@ -139,6 +140,9 @@ export function createDreamPromotionHandle(
         state.watcher.close();
         state.watcher = null;
       }
+      if (activeScans.size > 0) {
+        await Promise.allSettled([...activeScans]);
+      }
     },
   };
 
@@ -152,10 +156,20 @@ export function createDreamPromotionHandle(
     }
     state.timer = setTimeout(() => {
       state.timer = null;
-      void scanDiary().catch((error) => {
-        logger.warn?.(`[dream-promotion] refresh failed for ${diaryPath}: ${formatError(error)}`);
-      });
+      trackScan(scanDiary());
     }, debounceMs);
+    state.timer.unref?.();
+  }
+
+  function trackScan(scan: Promise<void>): void {
+    activeScans.add(scan);
+    void scan
+      .catch((error) => {
+        logger.warn?.(`[dream-promotion] refresh failed for ${diaryPath}: ${formatError(error)}`);
+      })
+      .finally(() => {
+        activeScans.delete(scan);
+      });
   }
 
   async function scanDiary(): Promise<void> {
@@ -163,8 +177,14 @@ export function createDreamPromotionHandle(
       return;
     }
     await ensureWatcher();
+    if (!state.watching) {
+      return;
+    }
 
     const stat = await safeStat(diaryPath);
+    if (!state.watching) {
+      return;
+    }
     if (!stat) {
       lastFileState = null;
       return;
@@ -175,6 +195,9 @@ export function createDreamPromotionHandle(
     }
 
     const bytes = await safeReadFile(diaryPath);
+    if (!state.watching) {
+      return;
+    }
     if (!bytes) {
       lastFileState = null;
       return;
@@ -192,6 +215,9 @@ export function createDreamPromotionHandle(
 
     const text = textDecoder.decode(bytes);
     const candidates = parseDreamPromotionCandidates(text);
+    if (!state.watching) {
+      return;
+    }
     if (candidates.length === 0) {
       lastFileState = {
         size: stat.size,
@@ -202,6 +228,9 @@ export function createDreamPromotionHandle(
     }
 
     const rpc = await getRpc();
+    if (!state.watching) {
+      return;
+    }
     const params: DreamPromotionParams = {
       userId,
       sourceDoc: diaryPath,
@@ -218,6 +247,9 @@ export function createDreamPromotionHandle(
         sourceLine: candidate.line,
       })),
     };
+    if (!state.watching) {
+      return;
+    }
     await rpc.call<DreamPromotionResult>("promote_dream_entries", params);
 
     lastFileState = {

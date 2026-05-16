@@ -8,6 +8,7 @@ import type { LoggerLike, PluginConfig, SidecarHandle, SidecarSocket } from "./t
 type CloseHandler = () => void;
 type DataHandler = (chunk: Buffer) => void;
 type ErrorHandler = (error: Error) => void;
+type RestartTimer = ReturnType<typeof setTimeout>;
 
 const STARTUP_CONNECT_MAX_RETRIES = 5;
 const STARTUP_CONNECT_BASE_DELAY_MS = 100;
@@ -17,7 +18,7 @@ const CONNECTION_STABILITY_WINDOW_MS = 15_000;
 export interface SidecarRuntime {
   resolveEndpoint(cfg: PluginConfig): string | Promise<string>;
   createSocket(endpoint: string): SidecarSocket;
-  scheduleRestart(delayMs: number, restart: () => void): void;
+  scheduleRestart(delayMs: number, restart: () => void): RestartTimer | void;
   stabilityWindowMs?: number;
 }
 
@@ -235,6 +236,7 @@ class SidecarSupervisor implements SidecarHandle {
   private shuttingDown = false;
   private reconnectScheduled = false;
   private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimer: RestartTimer | null = null;
   public socket: SidecarSocket;
 
   constructor(
@@ -249,6 +251,7 @@ class SidecarSupervisor implements SidecarHandle {
     const endpoint = await this.runtime.resolveEndpoint(this.cfg);
     const socket = await this.connectEndpointWithRetry(endpoint);
     this.reconnectScheduled = false;
+    this.clearReconnectTimer();
     this.scheduleStabilityReset();
     if (this.socket instanceof SupervisorSocket) {
       this.socket.bind(socket);
@@ -265,6 +268,7 @@ class SidecarSupervisor implements SidecarHandle {
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     this.clearStabilityTimer();
+    this.clearReconnectTimer();
     this.socket.destroy();
   }
 
@@ -287,6 +291,13 @@ class SidecarSupervisor implements SidecarHandle {
     if (this.stabilityTimer) {
       clearTimeout(this.stabilityTimer);
       this.stabilityTimer = null;
+    }
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
   }
 
@@ -358,7 +369,8 @@ class SidecarSupervisor implements SidecarHandle {
     const backoffMs = computeBackoffMs(this.retries);
     this.retries += 1;
     this.reconnectScheduled = true;
-    this.runtime.scheduleRestart(backoffMs, () => {
+    this.reconnectTimer = this.runtime.scheduleRestart(backoffMs, () => {
+      this.reconnectTimer = null;
       if (this.shuttingDown) {
         this.reconnectScheduled = false;
         return;
@@ -369,7 +381,8 @@ class SidecarSupervisor implements SidecarHandle {
         this.logger.error(`[libravdb] sidecar reconnect failed: ${message}`);
         void this.handleExit(1);
       });
-    });
+    }) ?? null;
+    this.reconnectTimer?.unref?.();
   }
 }
 
@@ -575,7 +588,9 @@ function createDefaultRuntime(): SidecarRuntime {
       return net.connect(endpoint) as unknown as SidecarSocket;
     },
     scheduleRestart(delayMs, restart) {
-      setTimeout(restart, delayMs);
+      const timer = setTimeout(restart, delayMs);
+      timer.unref?.();
+      return timer;
     },
   };
 }

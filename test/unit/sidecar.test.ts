@@ -266,6 +266,10 @@ function flushAsyncWork(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 test("sidecar retry budget resets after stability window", async () => {
   const runtime = createManualRestartRuntime();
   runtime.runtime.stabilityWindowMs = 0;
@@ -288,6 +292,31 @@ test("sidecar retry budget resets after stability window", async () => {
 
   assert.equal(handle.isDegraded(), false);
   assert.equal(runtime.scheduled.length, 2);
+});
+
+test("sidecar shutdown cancels pending reconnect timers", async () => {
+  const runtime = createManualRestartRuntime();
+  let scheduled = 0;
+  let restartFired = false;
+  runtime.runtime.scheduleRestart = (_delayMs, restart) => {
+    scheduled += 1;
+    return setTimeout(() => {
+      restartFired = true;
+      restart();
+    }, 10);
+  };
+  const logger = { error() {}, info() {}, warn() {} };
+  const handle = await startSidecar({ rpcTimeoutMs: 50, maxRetries: 2 }, logger, runtime.runtime);
+
+  runtime.sockets[0]?.emitClose();
+  await flushAsyncWork();
+  assert.equal(scheduled, 1);
+
+  await handle.shutdown();
+  await delay(30);
+
+  assert.equal(restartFired, false);
+  assert.equal(runtime.sockets.length, 1);
 });
 
 test("crash before stability window preserves retry count and triggers degraded mode", async () => {

@@ -529,6 +529,41 @@ test("markdown ingestion prunes excluded directories before recursion", async ()
   await handle.stop();
 });
 
+test("markdown ingestion closes watchers for deleted directories", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-watch-prune-"));
+  const nestedDir = path.join(tempRoot, "notes", "daily");
+  const filePath = path.join(nestedDir, "today.md");
+  await fsp.mkdir(nestedDir, { recursive: true });
+  await fsp.writeFile(filePath, "# Today\n\nThis should ingest before the directory is deleted.");
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: path.join(tempRoot, "snapshot.json"),
+    },
+    async () => rpc,
+    { error() {}, warn() {}, info() {} },
+    fsApi as never,
+  );
+
+  await handle.start();
+  assert.equal(fsApi.callbacks.has(nestedDir), true);
+
+  await fsp.rm(path.join(tempRoot, "notes"), { recursive: true, force: true });
+  fsApi.callbacks.get(tempRoot)?.[0]?.("rename", "notes");
+  await delay(25);
+
+  assert.equal(fsApi.callbacks.has(tempRoot), true);
+  assert.equal(fsApi.callbacks.has(nestedDir), false);
+  assert.equal(rpc.calls.filter((call) => call.method === "delete_authored_document").length, 1);
+
+  await handle.stop();
+});
+
 test("markdown ingestion persists snapshots across adapter restarts", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-snapshot-"));
   const filePath = path.join(tempRoot, "guide.md");

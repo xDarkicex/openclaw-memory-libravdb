@@ -2,6 +2,7 @@ import type { PluginRuntime } from "./plugin-runtime.js";
 import type {
   LoggerLike,
   PluginConfig,
+  PredictedContext,
   SearchResult,
 } from "./types.js";
 import {
@@ -575,12 +576,35 @@ export function normalizeAssembleResult(result: {
   };
 }
 
+function isPredictedContext(value: unknown): value is PredictedContext {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as { id?: unknown; text?: unknown; reason?: unknown };
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.text === "string" &&
+    typeof candidate.reason === "string"
+  );
+}
+
+function extractPredictedContexts(result: unknown): PredictedContext[] {
+  if (typeof result !== "object" || result === null) {
+    return [];
+  }
+  const predictions = (result as { predictions?: unknown }).predictions;
+  if (!Array.isArray(predictions)) {
+    return [];
+  }
+  return predictions.filter(isPredictedContext);
+}
+
 export function buildContextEngineFactory(
   runtime: PluginRuntime,
   cfg: PluginConfig,
   logger: LoggerLike = console,
 ) {
-  const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
+  const predictiveContextCache = new Map<string, PredictedContext[]>();
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
 
@@ -744,6 +768,42 @@ export function buildContextEngineFactory(
       ),
       estimatedTokens: assembled.estimatedTokens + additionTokens,
     };
+  }
+
+  function appendPredictiveContext(
+    assembled: OpenClawCompatibleAssembleResult,
+    sessionId: string,
+  ): OpenClawCompatibleAssembleResult {
+    const predictions = predictiveContextCache.get(sessionId) ?? [];
+    predictiveContextCache.delete(sessionId);
+    if (predictions.length === 0) {
+      return assembled;
+    }
+
+    const injection = [
+      "<predictive_context>",
+      ...predictions.map((prediction) => prediction.text),
+      "</predictive_context>",
+    ].join("\n");
+    return {
+      ...assembled,
+      systemPromptAddition: appendSystemPromptAddition(assembled.systemPromptAddition, injection),
+      estimatedTokens: assembled.estimatedTokens + approximateTokenCount(injection),
+    };
+  }
+
+  async function finalizeAssembleResult(
+    assembled: OpenClawCompatibleAssembleResult,
+    args: {
+      queryText: string;
+      userId: string;
+      sessionId: string;
+      tokenBudget: number;
+    },
+  ): Promise<OpenClawCompatibleAssembleResult> {
+    const withExactRecall = await augmentWithExactRecall(assembled, args);
+    const withPredictiveContext = appendPredictiveContext(withExactRecall, args.sessionId);
+    return enforceTokenBudgetInvariant(withPredictiveContext, args.tokenBudget);
   }
 
   function buildCompactSessionRequest(args: {
@@ -1031,15 +1091,12 @@ export function buildContextEngineFactory(
             config: buildAssemblyConfig(args.tokenBudget),
             emitDebug: true,
           }));
-          return enforceTokenBudgetInvariant(
-            await augmentWithExactRecall(assembled, {
-              queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
-              userId,
-              sessionId,
-              tokenBudget: args.tokenBudget,
-            }),
-            args.tokenBudget,
-          );
+          return await finalizeAssembleResult(assembled, {
+            queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
+            userId,
+            sessionId,
+            tokenBudget: args.tokenBudget,
+          });
         } catch (error) {
           logger.warn?.(
             `LibraVDB assemble kernel failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
@@ -1062,22 +1119,12 @@ export function buildContextEngineFactory(
           config: buildAssemblyConfig(args.tokenBudget),
         });
         const assembled = normalizeAssembleResult(resp);
-        const enforced = enforceTokenBudgetInvariant(
-          await augmentWithExactRecall(assembled, {
-            queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
-            userId,
-            sessionId,
-            tokenBudget: args.tokenBudget,
-          }),
-          args.tokenBudget,
-        );
-        const predictions = predictiveContextCache.get(sessionId) || [];
-        predictiveContextCache.delete(sessionId);
-        if (predictions.length > 0) {
-          const injection = ["<predictive_context>", ...predictions.map((p) => p.text), "</predictive_context>"].join("\n");
-          enforced.systemPromptAddition = appendSystemPromptAddition(enforced.systemPromptAddition, injection);
-        }
-        return enforced;
+        return await finalizeAssembleResult(assembled, {
+          queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
+          userId,
+          sessionId,
+          tokenBudget: args.tokenBudget,
+        });
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble sidecar failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
@@ -1140,8 +1187,8 @@ export function buildContextEngineFactory(
             tokenBudget: args.tokenBudget,
             currentTokenCount,
           });
-          const predictions = (result as any).predictions;
-          if (Array.isArray(predictions) && predictions.length > 0) {
+          const predictions = extractPredictedContexts(result);
+          if (predictions.length > 0) {
             predictiveContextCache.set(sessionId, predictions);
           }
           return result;
@@ -1160,8 +1207,8 @@ export function buildContextEngineFactory(
           tokenBudget: args.tokenBudget,
           currentTokenCount,
         });
-        const predictions = (result as any).predictions;
-        if (Array.isArray(predictions) && predictions.length > 0) {
+        const predictions = extractPredictedContexts(result);
+        if (predictions.length > 0) {
           predictiveContextCache.set(sessionId, predictions);
         }
         return result;
