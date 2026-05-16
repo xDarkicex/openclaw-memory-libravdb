@@ -88,7 +88,8 @@ export class IngestQueue {
     }
 
     // Multiple chunks: clear the source once, then append the remaining chunks.
-    // Sending REPLACE last deletes the earlier chunks from the same source_doc.
+    // The first chunk uses REPLACE to clear any existing data for this source_doc,
+    // subsequent chunks use APPEND to add to it.
     for (let i = 0; i < chunks.length; i++) {
       const isFirst = i === 0;
       const chunkParams: IngestMarkdownDocumentParams = {
