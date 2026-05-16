@@ -10,8 +10,11 @@ export interface IngestQueueOptions {
   maxRetries: number;
 }
 
+/** Default max tokens per chunk. */
+const DEFAULT_CHUNK_TOKENS = 8192;
+
 const DEFAULT_OPTIONS: IngestQueueOptions = {
-  chunkTokens: 8192,
+  chunkTokens: DEFAULT_CHUNK_TOKENS,
   retryBaseDelayMs: 500,
   maxRetries: 4,
 };

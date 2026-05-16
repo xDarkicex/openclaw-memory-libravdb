@@ -9,6 +9,9 @@ interface PendingCall {
   decodeResult(bytes: Uint8Array): unknown;
 }
 
+/** Maximum receive buffer size before compaction (64 KiB). */
+const RX_MAX_BUFFER_SIZE = 65536;
+
 export class RpcClient {
   private seq = 0n;
   private readonly pending = new Map<bigint, PendingCall>();
@@ -179,7 +182,7 @@ export class RpcClient {
 
     // Compaction guard: release large backing allocations if the remainder is tiny
     if (
-      this.rxBuf.buffer.byteLength > 65536 &&
+      this.rxBuf.buffer.byteLength > RX_MAX_BUFFER_SIZE &&
       this.rxBuf.byteLength < this.rxBuf.buffer.byteLength >>> 2
     ) {
       this.rxBuf = Buffer.from(this.rxBuf);

@@ -9,6 +9,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // The proto file is expected to be copied to dist/proto/ at build time.
 // In source, it's at api/proto/.
+/** Default gRPC call timeout in milliseconds. */
+const DEFAULT_GRPC_TIMEOUT_MS = 30_000;
+
 const PROTO_PATH = path.resolve(__dirname, "./proto/intelligence_kernel/v1/kernel.proto");
 
 export interface GrpcClientOptions {
@@ -129,7 +132,7 @@ export class GrpcKernelClient {
 
   constructor(options: GrpcClientOptions) {
     this.secret = options.secret;
-    this.timeoutMs = options.timeoutMs ?? 30000;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_GRPC_TIMEOUT_MS;
 
     const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
       keepCase: true,

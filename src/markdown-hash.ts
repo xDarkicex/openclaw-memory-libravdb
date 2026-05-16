@@ -67,9 +67,9 @@ class WasmFnv64 implements HashBackend {
       return;
     }
 
-    const pageSize = 65536;
-    const requiredPages = Math.ceil(size / pageSize);
-    const currentPages = this.memory.buffer.byteLength / pageSize;
+    const WASM_PAGE_SIZE = 65536;
+    const requiredPages = Math.ceil(size / WASM_PAGE_SIZE);
+    const currentPages = this.memory.buffer.byteLength / WASM_PAGE_SIZE;
     const deltaPages = requiredPages - currentPages;
     if (deltaPages > 0) {
       this.memory.grow(deltaPages);
