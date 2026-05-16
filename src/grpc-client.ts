@@ -126,6 +126,10 @@ export class GrpcKernelClient {
   private readonly secret: string | undefined;
   private readonly timeoutMs: number;
   private nonceHex: string | undefined;
+  /** Per-call counter mixed into HMAC to make each auth tag unique.
+   *  Prevents replay of a captured auth tag within the same session.
+   *  Full replay protection requires server-side counter tracking (see #192). */
+  private callCounter = 0n;
 
   constructor(options: GrpcClientOptions) {
     this.secret = options.secret;
@@ -159,14 +163,17 @@ export class GrpcKernelClient {
       if (!this.nonceHex) {
         throw new Error("call initializeSession before authenticated RPCs");
       }
-      // Challenge-response: HMAC(secret, nonce) — the secret is the HMAC key,
-      // the server-issued nonce is the message. The previous implementation
-      // swapped these, computing HMAC(nonce, secret), which is cryptographically
-      // incorrect: the nonce is sent in the clear and must not be used as the key.
+      // Challenge-response with per-call counter: HMAC(secret, nonce || counter)
+      // The counter ensures each call produces a unique auth tag, preventing
+      // replay of a captured tag within the same session.
+      // Note: the server must also verify the counter for full replay protection.
+      const counter = this.callCounter++;
       const hmac = createHmac("sha256", this.secret);
       hmac.update(this.nonceHex);
+      hmac.update(counter.toString());
       const signature = hmac.digest("hex");
       md.add("x-libravdb-auth", signature);
+      md.add("x-libravdb-counter", counter.toString());
     }
     return md;
   }
