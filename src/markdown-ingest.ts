@@ -7,6 +7,7 @@ import type { LoggerLike, PluginConfig } from "./types.js";
 import { hashBytes } from "./markdown-hash.js";
 import { formatError } from "./format-error.js";
 import { IngestQueue } from "./ingest-queue.js";
+import { resolveStateDir } from "./state-dir.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
@@ -733,7 +734,7 @@ function resolveMarkdownSnapshotPath(kind: string, configuredPath?: string): str
   if (trimmed) {
     return path.resolve(trimmed);
   }
-  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(os.homedir(), ".openclaw");
+  const stateDir = resolveStateDir();
   return path.join(stateDir, `libravdb-markdown-ingest-${kind}.json`);
 }
 

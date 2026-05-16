@@ -1,5 +1,6 @@
 import { userInfo, hostname } from "node:os";
 import { createHash } from "node:crypto";
+import { resolveStateDir } from "./state-dir.js";
 import {
   existsSync,
   readFileSync,
@@ -21,11 +22,8 @@ import type { LoggerLike } from "./types.js";
 function resolveIdentityPath(configuredPath?: string): string {
   if (configuredPath) return configuredPath;
 
-  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
-  if (stateDir) return join(stateDir, "libravdb-identity.json");
-
-  const home = userInfo().homedir;
-  return join(home, ".openclaw", "libravdb-identity.json");
+  const stateDir = resolveStateDir();
+  return join(stateDir, "libravdb-identity.json");
 }
 
 export type IdentitySource = "config" | "file" | "auto" | "session-key" | "default";

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { getHashBackendName, hashBytes } from "./markdown-hash.js";
 import { formatError } from "./format-error.js";
+import { resolveStateDir } from "./state-dir.js";
 import type { LoggerLike, PluginConfig } from "./types.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
@@ -495,11 +496,11 @@ function normalizeDiaryPath(value?: string): string {
 
   // Restrict to known-safe locations to prevent arbitrary file reads.
   // Allowed roots: home directory and the configured OpenClaw state dir.
+  const stateDir = resolveStateDir();
   const allowedRoots = [
     os.homedir(),
-    process.env.OPENCLAW_STATE_DIR,
+    stateDir,
   ]
-    .filter((r): r is string => typeof r === "string" && r.trim().length > 0)
     .map((root) => path.resolve(root));
 
   const isAllowed = allowedRoots.some(
