@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@xdarkicex/libravdb-contracts': link:../libravdb-contracts
-
 importers:
 
   .:
@@ -34,8 +31,8 @@ importers:
         specifier: ^20.11.0
         version: 20.19.39
       '@xdarkicex/libravdb-contracts':
-        specifier: link:../libravdb-contracts
-        version: link:../libravdb-contracts
+        specifier: ^0.3.0
+        version: 0.3.0
       esbuild:
         specifier: ^0.27.0
         version: 0.27.7
@@ -1517,6 +1514,10 @@ packages:
 
   '@wasm-audio-decoders/common@9.0.7':
     resolution: {integrity: sha512-WRaUuWSKV7pkttBygml/a6dIEpatq2nnZGFIoPTc5yPLkxL6Wk4YaslPM98OPQvWacvNZ+Py9xROGDtrFBDzag==}
+
+  '@xdarkicex/libravdb-contracts@0.3.0':
+    resolution: {integrity: sha512-ekk1k7ze/P8xiC14m7MD38Ne0rokl2GNsmEKjP4j5h80+mBT9NF7Gqg1PJ+J1976kvFNYsORz3Yten21Xp5SVQ==}
+    engines: {node: '>=22'}
 
   abbrev@1.1.1:
     resolution: {integrity: sha512-nne9/IiQ/hzIhY6pdDnbBtz7DjPTKrY00P/zvPSm5pOFkl6xuGrGnXn/VtTNNfNtAfZ9/1RtehkszU9qcTii0Q==}
@@ -5310,6 +5311,10 @@ snapshots:
     dependencies:
       '@eshaz/web-worker': 1.2.2
       simple-yenc: 1.0.4
+
+  '@xdarkicex/libravdb-contracts@0.3.0':
+    dependencies:
+      '@bufbuild/protobuf': 1.7.2
 
   abbrev@1.1.1:
     optional: true
