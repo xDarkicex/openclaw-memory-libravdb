@@ -59,7 +59,6 @@ function state(overrides: Partial<AuthInterceptorState> = {}): AuthInterceptorSt
   return {
     secret: "test-key",
     nonceHex: undefined,
-    recovering: false,
     bootstrap: async () => {},
     rpcMutex: {
       current: Promise.resolve(),
@@ -139,7 +138,7 @@ test("nonce read from trailer fallback", async () => {
   assert.equal(st.nonceHex, "trailer");
 });
 
-test("recovery guard blocks concurrent bootstraps", async () => {
+test("recovery serializes inside mutex — single bootstrap", async () => {
   let count = 0;
   let resolveBootstrap!: () => void;
   const bootstrapGate = new Promise<void>((r) => (resolveBootstrap = r));
@@ -148,29 +147,29 @@ test("recovery guard blocks concurrent bootstraps", async () => {
     bootstrap: async () => {
       count++;
       await bootstrapGate;
+      st.nonceHex = "recovered";
     },
   });
   const int = createAuthInterceptor(st);
 
-  const p1 = (int as any)(async () => ({
-    header: { get: () => null },
+  // Fire two concurrent requests while nonce is undefined.
+  // p1 acquires the lock and triggers bootstrap (blocked on gate).
+  // p2 queues behind the lock — it does NOT call bootstrap again.
+  const nextRes = {
+    header: { get: (n: string) => n === "x-libravdb-nonce" ? "after" : null },
     trailer: { get: () => null },
-  }))({ method: { name: "Status" }, header: { set: () => {} } } as any);
+  };
+  const p1 = (int as any)(async () => nextRes)({ method: { name: "Status" }, header: { set: () => {} } } as any);
 
-  // Let p1 enter the recovery path and stop at bootstrapGate
+  const p2 = (int as any)(async () => nextRes)({ method: { name: "SearchText" }, header: { set: () => {} } } as any);
+
+  // Let p1 acquire the lock and reach bootstrapGate
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(st.recovering, true);
-
-  // Second call while recovery is still in progress — must not start another bootstrap
-  await (int as any)(async () => ({
-    header: { get: () => null },
-    trailer: { get: () => null },
-  }))({ method: { name: "SearchText" }, header: { set: () => {} } } as any);
 
   resolveBootstrap();
   await p1;
+  await p2;
 
-  assert.equal(st.recovering, false);
   assert.equal(count, 1);
 });
 

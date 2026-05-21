@@ -114,7 +114,6 @@ function createRpcMutex(): RpcMutex {
 export interface AuthInterceptorState {
   readonly secret: string | undefined;
   nonceHex: string | undefined;
-  recovering: boolean;
   bootstrap(): Promise<void>;
   readonly rpcMutex: RpcMutex;
 }
@@ -123,9 +122,21 @@ export function createAuthInterceptor(
   state: AuthInterceptorState,
 ): Interceptor {
   return (next) => async (req) => {
+    // Health does not participate in the nonce chain — bypass the
+    // mutex entirely so recovery can call Health without deadlocking.
+    if (req.method.name === "Health") {
+      return next(req);
+    }
+
     const release = await state.rpcMutex.lock();
     try {
-      if (state.secret && state.nonceHex && req.method.name !== "Health") {
+      // Lost the nonce? Recover inside the lock so queued requests
+      // wait for the chain to be restored instead of failing spuriously.
+      if (state.secret && !state.nonceHex) {
+        await state.bootstrap();
+      }
+
+      if (state.secret && state.nonceHex) {
         const hmac = createHmac("sha256", state.secret);
         hmac.update(state.nonceHex);
         req.header.set("x-libravdb-nonce", state.nonceHex);
@@ -136,13 +147,13 @@ export function createAuthInterceptor(
       try {
         res = await next(req);
       } catch (error) {
-        if (state.secret && state.nonceHex && req.method.name !== "Health") {
+        if (state.secret && state.nonceHex) {
           state.nonceHex = undefined;
         }
         throw error;
       }
 
-      if (state.secret && req.method.name !== "Health") {
+      if (state.secret) {
         const nextNonce = res.header.get("x-libravdb-nonce") || res.trailer.get("x-libravdb-nonce");
         if (nextNonce) {
           state.nonceHex = nextNonce;
@@ -153,11 +164,6 @@ export function createAuthInterceptor(
       return res;
     } finally {
       release();
-      if (state.secret && !state.nonceHex && !state.recovering && req.method.name !== "Health") {
-        state.recovering = true;
-        console.debug("LibraVDB: x-libravdb-nonce header missing in response, forcing synchronous re-bootstrap");
-        await state.bootstrap().catch(e => console.error("LibraVDB: recovery handshake failed", e)).finally(() => { state.recovering = false; });
-      }
     }
   };
 }
@@ -167,7 +173,6 @@ export class LibravDBClient {
   private readonly secret: string | undefined;
   private nonceHex: string | undefined;
   private closed = false;
-  private recovering = false;
 
   constructor(options: LibravDBClientOptions = {}) {
     this.secret = options.secret ?? loadSecretFromEnv();
@@ -200,8 +205,6 @@ export class LibravDBClient {
       secret: this.secret,
       get nonceHex() { return self.nonceHex; },
       set nonceHex(v: string | undefined) { self.nonceHex = v; },
-      get recovering() { return self.recovering; },
-      set recovering(v: boolean) { self.recovering = v; },
       bootstrap: () => self.bootstrapHandshake(),
       rpcMutex,
     });
