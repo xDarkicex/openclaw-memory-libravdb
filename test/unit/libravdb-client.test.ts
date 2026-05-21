@@ -48,14 +48,7 @@ test("close prevents RPC methods", async () => {
 
 test("bootstrapHandshake wraps transport errors", async () => {
   const client = new LibravDBClient({ secret: "test" });
-  try {
-    await client.bootstrapHandshake();
-  } catch (error) {
-    assert.match(
-      (error as Error).message,
-      /LibraVDB: failed to handshake/,
-    );
-  }
+  await assert.rejects(client.bootstrapHandshake(), /LibraVDB: failed to handshake/);
 });
 
 // ---------------------------------------------------------------------------
@@ -189,7 +182,7 @@ test("no auth headers without secret", async () => {
   await (int as any)(async () => ({
     header: { get: () => null },
     trailer: { get: () => null },
-  }))(header as any);
+  }))({ method: { name: "Status" }, header } as any);
 
   assert.equal(sent.has("x-libravdb-auth"), false);
 });

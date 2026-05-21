@@ -194,14 +194,15 @@ export class LibravDBClient {
     }
 
     const rpcMutex = createRpcMutex();
+    const self = this;
 
     const authInterceptor = createAuthInterceptor({
       secret: this.secret,
-      get nonceHex() { return this.nonceHex; },
-      set nonceHex(v: string | undefined) { this.nonceHex = v; },
-      get recovering() { return this.recovering; },
-      set recovering(v: boolean) { this.recovering = v; },
-      bootstrap: () => this.bootstrapHandshake(),
+      get nonceHex() { return self.nonceHex; },
+      set nonceHex(v: string | undefined) { self.nonceHex = v; },
+      get recovering() { return self.recovering; },
+      set recovering(v: boolean) { self.recovering = v; },
+      bootstrap: () => self.bootstrapHandshake(),
       rpcMutex,
     });
 
