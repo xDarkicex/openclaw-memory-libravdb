@@ -136,9 +136,10 @@ export class LibravDBClient {
           req.header.set("x-libravdb-nonce", this.nonceHex);
           req.header.set("x-libravdb-auth", hmac.digest("hex"));
         }
-        
+
         const res = await next(req);
-        
+
+
         if (this.secret && req.method.name !== "BootstrapSessionKernel") {
           const nextNonce = res.header.get("x-libravdb-nonce") || res.trailer.get("x-libravdb-nonce");
           if (nextNonce) {
