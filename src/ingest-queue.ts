@@ -160,7 +160,15 @@ export class IngestQueue {
 
   private async ingestWithRetry(params: IngestMarkdownDocumentParams): Promise<IngestMarkdownDocumentResponse> {
     return withRetry(
-      () => this.ingestDocument(params),
+      async () => {
+        const resp = await this.ingestDocument(params);
+        if (!resp.ok) {
+          throw new Error(
+            `ingest_markdown_document(${params.sourceDoc}) returned ok=false`,
+          );
+        }
+        return resp;
+      },
       this.options.maxRetries,
       this.options.retryBaseDelayMs,
       this.logger,
