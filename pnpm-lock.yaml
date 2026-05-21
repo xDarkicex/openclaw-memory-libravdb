@@ -14,6 +14,9 @@ importers:
       '@connectrpc/connect-node':
         specifier: ^1.7.0
         version: 1.7.0(@bufbuild/protobuf@1.7.2)(@connectrpc/connect@1.7.0(@bufbuild/protobuf@1.7.2))
+      '@xdarkicex/libravdb-contracts':
+        specifier: ^0.3.0
+        version: 0.3.0
     devDependencies:
       '@bufbuild/protobuf':
         specifier: 1.7.2
@@ -30,9 +33,6 @@ importers:
       '@types/node':
         specifier: ^20.11.0
         version: 20.19.39
-      '@xdarkicex/libravdb-contracts':
-        specifier: ^0.3.0
-        version: 0.3.0
       esbuild:
         specifier: ^0.27.0
         version: 0.27.7
