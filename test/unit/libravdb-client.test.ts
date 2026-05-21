@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   resolveClientEndpoint,
   createAuthInterceptor,
   LibravDBClient,
+  loadSecretFromEnv,
 } from "../../src/libravdb-client.js";
 
 import type { AuthInterceptorState } from "../../src/libravdb-client.js";
@@ -32,6 +36,76 @@ test("resolveClientEndpoint returns env var when endpoint is undefined or auto",
 
 test("resolveClientEndpoint returns a unix socket path by default on darwin", () => {
   assert.ok(resolveClientEndpoint().startsWith("unix:"));
+});
+
+test("loadSecretFromEnv trims direct secrets", () => {
+  const savedSecret = process.env.LIBRAVDB_AUTH_SECRET;
+  const savedSecretFile = process.env.LIBRAVDB_AUTH_SECRET_FILE;
+  try {
+    process.env.LIBRAVDB_AUTH_SECRET = "  direct-secret  ";
+    process.env.LIBRAVDB_AUTH_SECRET_FILE = "/should/not/be/read";
+
+    assert.equal(loadSecretFromEnv(), "direct-secret");
+  } finally {
+    if (savedSecret === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET = savedSecret;
+    }
+    if (savedSecretFile === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET_FILE = savedSecretFile;
+    }
+  }
+});
+
+test("loadSecretFromEnv treats whitespace direct secrets as unset and falls back to secret file", () => {
+  const savedSecret = process.env.LIBRAVDB_AUTH_SECRET;
+  const savedSecretFile = process.env.LIBRAVDB_AUTH_SECRET_FILE;
+  const dir = mkdtempSync(path.join(tmpdir(), "libravdb-secret-"));
+  try {
+    const secretFile = path.join(dir, "secret.txt");
+    writeFileSync(secretFile, "  file-secret  \n");
+    process.env.LIBRAVDB_AUTH_SECRET = "   ";
+    process.env.LIBRAVDB_AUTH_SECRET_FILE = secretFile;
+
+    assert.equal(loadSecretFromEnv(), "file-secret");
+  } finally {
+    if (savedSecret === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET = savedSecret;
+    }
+    if (savedSecretFile === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET_FILE = savedSecretFile;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadSecretFromEnv ignores whitespace direct secrets without file fallback", () => {
+  const savedSecret = process.env.LIBRAVDB_AUTH_SECRET;
+  const savedSecretFile = process.env.LIBRAVDB_AUTH_SECRET_FILE;
+  try {
+    process.env.LIBRAVDB_AUTH_SECRET = " \t\n ";
+    delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+
+    assert.equal(loadSecretFromEnv(), undefined);
+  } finally {
+    if (savedSecret === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET = savedSecret;
+    }
+    if (savedSecretFile === undefined) {
+      delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
+    } else {
+      process.env.LIBRAVDB_AUTH_SECRET_FILE = savedSecretFile;
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------

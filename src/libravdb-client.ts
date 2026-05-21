@@ -438,13 +438,13 @@ function extractHost(target: string): string {
   return sep > 0 ? withoutDns.slice(0, sep) : withoutDns;
 }
 
-function loadSecretFromEnv(): string | undefined {
-  const secret = process.env.LIBRAVDB_AUTH_SECRET;
+export function loadSecretFromEnv(): string | undefined {
+  const secret = process.env.LIBRAVDB_AUTH_SECRET?.trim();
   if (secret) return secret;
   const secretPath = process.env.LIBRAVDB_AUTH_SECRET_FILE;
   if (secretPath) {
     try {
-      return fs.readFileSync(secretPath, "utf8").trim();
+      return fs.readFileSync(secretPath, "utf8").trim() || undefined;
     } catch {
       return undefined;
     }
