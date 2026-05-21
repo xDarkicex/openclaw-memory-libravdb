@@ -950,8 +950,8 @@ export function buildContextEngineFactory(
           return buildBudgetFallbackContext(args.messages, args.tokenBudget);
         }
       }
-      const client = await runtime.getClient();
       try {
+        const client = await runtime.getClient();
         const resp = await client.assembleContextInternal({
           sessionId,
           sessionKey: args.sessionKey,
