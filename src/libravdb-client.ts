@@ -302,9 +302,12 @@ export class LibravDBClient {
 
   // ── Index ────────────────────────────────────────────────────────
 
-  async rebuildIndex(req: PartialMessage<RebuildIndexRequest>): Promise<RebuildIndexResponse> {
+  async rebuildIndex(
+    req: PartialMessage<RebuildIndexRequest>,
+    opts?: { timeoutMs?: number },
+  ): Promise<RebuildIndexResponse> {
     this.guardOpen();
-    return this.client.rebuildIndex(req);
+    return this.client.rebuildIndex(req, opts);
   }
 
   // ── Kernel ───────────────────────────────────────────────────────

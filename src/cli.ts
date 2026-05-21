@@ -423,7 +423,7 @@ async function runIndex(
     const result = await client.rebuildIndex({
       namespace: namespace ?? "",
       ...(collections?.length ? { collections } : {}),
-    });
+    }, { timeoutMs: resolveIndexRebuildTimeoutMs(cfg) });
 
     if (!params.quiet) {
       console.log(`Collections processed: ${result.collectionsProcessed ?? 0}`);
