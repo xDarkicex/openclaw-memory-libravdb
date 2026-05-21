@@ -118,10 +118,16 @@ export function createPluginRuntime(
       const client = started;
       started = null;
       try {
-        await client.then((c) => c.flush({}));
-        (await client).close();
+        const resolved = await client;
+        try {
+          await resolved.flush({});
+        } catch (error) {
+          logger.warn?.(`LibraVDB flush failed during shutdown: ${formatError(error)}`);
+        } finally {
+          resolved.close();
+        }
       } catch {
-        // best-effort flush on shutdown
+        // startup may have failed before client resolution; nothing to flush or close
       }
     },
   };
