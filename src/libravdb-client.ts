@@ -92,6 +92,7 @@ export class LibravDBClient {
   private readonly secret: string | undefined;
   private nonceHex: string | undefined;
   private closed = false;
+  private recovering = false;
 
   constructor(options: LibravDBClientOptions = {}) {
     this.secret = options.secret ?? loadSecretFromEnv();
@@ -159,9 +160,10 @@ export class LibravDBClient {
       } finally {
         release();
         // If header was lost and nonce chain broken, trigger sync re-bootstrap outside the lock
-        if (this.secret && !this.nonceHex && req.method.name !== "BootstrapSessionKernel") {
+        if (this.secret && !this.nonceHex && !this.recovering && req.method.name !== "BootstrapSessionKernel") {
+          this.recovering = true;
           console.debug("LibraVDB: x-libravdb-nonce header missing in response, forcing synchronous re-bootstrap");
-          await this.bootstrapHandshake().catch(e => console.error("LibraVDB: recovery handshake failed", e));
+          await this.bootstrapHandshake().catch(e => console.error("LibraVDB: recovery handshake failed", e)).finally(() => { this.recovering = false; });
         }
       }
     };
