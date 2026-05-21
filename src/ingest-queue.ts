@@ -164,7 +164,7 @@ export class IngestQueue {
         const resp = await this.ingestDocument(params);
         if (!resp.ok) {
           throw new Error(
-            `ingest_markdown_document(${params.sourceDoc}) returned ok=false`,
+            `ingest_markdown_document(${params.sourceDoc}) mode=${params.mode} returned ok=false`,
           );
         }
         return resp;
