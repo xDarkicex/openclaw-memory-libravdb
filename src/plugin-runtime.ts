@@ -62,7 +62,7 @@ export function createPluginRuntime(
         validateTlsConfig(cfg, logger);
 
         client = new LibravDBClient({
-          endpoint: cfg.grpcEndpoint,
+          endpoint: cfg.grpcEndpoint || cfg.sidecarPath,
           timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
           tlsCaPath: cfg.grpcEndpointTlsCa,
           tlsMode: cfg.grpcEndpointTlsMode,

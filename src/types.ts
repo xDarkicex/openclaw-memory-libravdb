@@ -1,6 +1,8 @@
 
 export interface PluginConfig {
   dbPath?: string;
+  /** Legacy fallback alias for grpcEndpoint. */
+  sidecarPath?: string;
   /** Stable identity for cross-session durable memory. When set, all sessions
    *  share memories under user:{userId}. When unset, the plugin auto-derives
    *  identity from the OS and persists it to the identity file. */

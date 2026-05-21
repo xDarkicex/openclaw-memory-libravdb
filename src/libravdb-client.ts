@@ -87,6 +87,81 @@ export function resolveClientEndpoint(configuredEndpoint?: string): string {
 
 type PromiseClient = ReturnType<typeof createPromiseClient<typeof LibravDB>>;
 
+// ---------------------------------------------------------------------------
+// Extracted for testability — exported so tests can exercise the nonce
+// lifecycle state machine directly without mocking Connect-ES internals.
+// ---------------------------------------------------------------------------
+
+interface RpcMutex {
+  current: Promise<void>;
+  lock(): Promise<() => void>;
+}
+
+function createRpcMutex(): RpcMutex {
+  return {
+    current: Promise.resolve(),
+    async lock() {
+      let release!: () => void;
+      const p = new Promise<void>(r => release = r);
+      const prev = this.current;
+      this.current = prev.then(() => p);
+      await prev;
+      return release;
+    }
+  };
+}
+
+export interface AuthInterceptorState {
+  readonly secret: string | undefined;
+  nonceHex: string | undefined;
+  recovering: boolean;
+  bootstrap(): Promise<void>;
+  readonly rpcMutex: RpcMutex;
+}
+
+export function createAuthInterceptor(
+  state: AuthInterceptorState,
+): Interceptor {
+  return (next) => async (req) => {
+    const release = await state.rpcMutex.lock();
+    try {
+      if (state.secret && state.nonceHex && req.method.name !== "Health") {
+        const hmac = createHmac("sha256", state.secret);
+        hmac.update(state.nonceHex);
+        req.header.set("x-libravdb-nonce", state.nonceHex);
+        req.header.set("x-libravdb-auth", hmac.digest("hex"));
+      }
+
+      let res;
+      try {
+        res = await next(req);
+      } catch (error) {
+        if (state.secret && state.nonceHex && req.method.name !== "Health") {
+          state.nonceHex = undefined;
+        }
+        throw error;
+      }
+
+      if (state.secret && req.method.name !== "Health") {
+        const nextNonce = res.header.get("x-libravdb-nonce") || res.trailer.get("x-libravdb-nonce");
+        if (nextNonce) {
+          state.nonceHex = nextNonce;
+        } else {
+          state.nonceHex = undefined;
+        }
+      }
+      return res;
+    } finally {
+      release();
+      if (state.secret && !state.nonceHex && !state.recovering && req.method.name !== "Health") {
+        state.recovering = true;
+        console.debug("LibraVDB: x-libravdb-nonce header missing in response, forcing synchronous re-bootstrap");
+        await state.bootstrap().catch(e => console.error("LibraVDB: recovery handshake failed", e)).finally(() => { state.recovering = false; });
+      }
+    }
+  };
+}
+
 export class LibravDBClient {
   private client: PromiseClient;
   private readonly secret: string | undefined;
@@ -100,9 +175,11 @@ export class LibravDBClient {
     const rawEndpoint = resolveClientEndpoint(options.endpoint);
     const isUnix = rawEndpoint.startsWith("unix:");
     const socketPath = isUnix ? rawEndpoint.slice(5) : undefined;
-    const targetUrl = isUnix ? "http://localhost" : rawEndpoint.replace(/^tcp:/, "http://");
-
-    const isInsecure = isUnix || resolveCredentialMode(rawEndpoint, options.tlsMode) === "insecure";
+    const credMode = resolveCredentialMode(rawEndpoint, options.tlsMode);
+    const isInsecure = isUnix || credMode === "insecure";
+    const targetUrl = isUnix 
+      ? "http://localhost" 
+      : rawEndpoint.replace(/^tcp:/, isInsecure ? "http://" : "https://");
 
     let rootCerts: Buffer | null = null;
     let clientKey: Buffer | null = null;
@@ -116,57 +193,17 @@ export class LibravDBClient {
       clientKey = fs.readFileSync(options.tlsClientKeyPath);
     }
 
-    const rpcMutex = {
-      current: Promise.resolve(),
-      async lock() {
-        let release!: () => void;
-        const p = new Promise<void>(r => release = r);
-        const prev = this.current;
-        this.current = prev.then(() => p);
-        await prev;
-        return release;
-      }
-    };
+    const rpcMutex = createRpcMutex();
 
-    const authInterceptor: Interceptor = (next) => async (req) => {
-      const release = await rpcMutex.lock();
-      try {
-        if (this.secret && this.nonceHex && req.method.name !== "BootstrapSessionKernel") {
-          const hmac = createHmac("sha256", this.secret);
-          hmac.update(this.nonceHex);
-          req.header.set("x-libravdb-nonce", this.nonceHex);
-          req.header.set("x-libravdb-auth", hmac.digest("hex"));
-        }
-
-        let res;
-        try {
-          res = await next(req);
-        } catch (error) {
-          if (this.secret && this.nonceHex && req.method.name !== "BootstrapSessionKernel") {
-            this.nonceHex = undefined;
-          }
-          throw error;
-        }
-
-        if (this.secret && req.method.name !== "BootstrapSessionKernel") {
-          const nextNonce = res.header.get("x-libravdb-nonce") || res.trailer.get("x-libravdb-nonce");
-          if (nextNonce) {
-            this.nonceHex = nextNonce;
-          } else {
-            this.nonceHex = undefined;
-          }
-        }
-        return res;
-      } finally {
-        release();
-        // If header was lost and nonce chain broken, trigger sync re-bootstrap outside the lock
-        if (this.secret && !this.nonceHex && !this.recovering && req.method.name !== "BootstrapSessionKernel") {
-          this.recovering = true;
-          console.debug("LibraVDB: x-libravdb-nonce header missing in response, forcing synchronous re-bootstrap");
-          await this.bootstrapHandshake().catch(e => console.error("LibraVDB: recovery handshake failed", e)).finally(() => { this.recovering = false; });
-        }
-      }
-    };
+    const authInterceptor = createAuthInterceptor({
+      secret: this.secret,
+      get nonceHex() { return this.nonceHex; },
+      set nonceHex(v: string | undefined) { this.nonceHex = v; },
+      get recovering() { return this.recovering; },
+      set recovering(v: boolean) { this.recovering = v; },
+      bootstrap: () => this.bootstrapHandshake(),
+      rpcMutex,
+    });
 
     const transport = createGrpcTransport({
       baseUrl: targetUrl,
@@ -189,8 +226,8 @@ export class LibravDBClient {
   async bootstrapHandshake(): Promise<void> {
     this.guardOpen();
     try {
-      await this.client.bootstrapSessionKernel(
-        { sessionId: "auth-bootstrap", userId: "system" },
+      await this.client.health(
+        { service: "" },
         {
           onHeader: (headers) => {
             const nonce = headers.get("x-libravdb-nonce");

@@ -120,7 +120,7 @@ test("nonce cleared when transport throws", async () => {
   assert.equal(st.nonceHex, undefined);
 });
 
-test("auth skipped for BootstrapSessionKernel", async () => {
+test("auth skipped for Health", async () => {
   const st = state({ nonceHex: "keep" });
   const int = createAuthInterceptor(st);
   const { sent, header } = headerSink();
@@ -128,7 +128,7 @@ test("auth skipped for BootstrapSessionKernel", async () => {
   await (int as any)(async () => ({
     header: { get: () => null },
     trailer: { get: () => null },
-  }))({ method: { name: "BootstrapSessionKernel" }, header } as any);
+  }))({ method: { name: "Health" }, header } as any);
 
   assert.equal(sent.has("x-libravdb-auth"), false);
   assert.equal(st.nonceHex, "keep");
