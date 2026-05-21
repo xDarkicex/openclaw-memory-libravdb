@@ -4,7 +4,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createMarkdownIngestionHandle } from "../../src/markdown-ingest.js";
+import { createMarkdownIngestionHandle, type MarkdownIngestionHandle } from "../../src/markdown-ingest.js";
 
 function createTestFsApi() {
   return {
@@ -61,6 +61,7 @@ class FeedbackRpcClient {
 
 test("stops scanning when daemon returns acceptMore: false", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-feedback-stop-"));
+  let handle: MarkdownIngestionHandle | undefined;
   try {
     await fsp.writeFile(path.join(tempRoot, "a.md"), "# File A\n\nContent for file A.");
     await fsp.writeFile(path.join(tempRoot, "b.md"), "# File B\n\nContent for file B.");
@@ -70,7 +71,7 @@ test("stops scanning when daemon returns acceptMore: false", async () => {
       { acceptMore: false, retryAfterMs: 2000, tokensIngested: 100 },
     ];
     const rpc = new FeedbackRpcClient(feedbacks);
-    const handle = createMarkdownIngestionHandle(
+    handle = createMarkdownIngestionHandle(
       {
         markdownIngestionEnabled: true,
         markdownIngestionRoots: [tempRoot],
@@ -92,12 +93,14 @@ test("stops scanning when daemon returns acceptMore: false", async () => {
       `expected 1 ingest call when daemon says stop, got ${ingestCalls.length}`,
     );
   } finally {
+    await handle?.stop();
     await fsp.rm(tempRoot, { recursive: true, force: true });
   }
 });
 
 test("continues scanning when daemon returns no feedback", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-feedback-continue-"));
+  let handle: MarkdownIngestionHandle | undefined;
   try {
     await fsp.writeFile(path.join(tempRoot, "a.md"), "# File A\n\nContent for file A.");
     await fsp.writeFile(path.join(tempRoot, "b.md"), "# File B\n\nContent for file B.");
@@ -105,7 +108,7 @@ test("continues scanning when daemon returns no feedback", async () => {
 
     const feedbacks: Array<undefined> = [undefined, undefined, undefined];
     const rpc = new FeedbackRpcClient(feedbacks);
-    const handle = createMarkdownIngestionHandle(
+    handle = createMarkdownIngestionHandle(
       {
         markdownIngestionEnabled: true,
         markdownIngestionRoots: [tempRoot],
@@ -127,6 +130,7 @@ test("continues scanning when daemon returns no feedback", async () => {
       `expected 3 ingest calls with no feedback, got ${ingestCalls.length}`,
     );
   } finally {
+    await handle?.stop();
     await fsp.rm(tempRoot, { recursive: true, force: true });
   }
 });
