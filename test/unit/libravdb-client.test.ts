@@ -141,11 +141,14 @@ test("nonce read from trailer fallback", async () => {
 test("recovery serializes inside mutex — single bootstrap", async () => {
   let count = 0;
   let resolveBootstrap!: () => void;
+  let markBootstrapStarted!: () => void;
   const bootstrapGate = new Promise<void>((r) => (resolveBootstrap = r));
+  const bootstrapStarted = new Promise<void>((r) => (markBootstrapStarted = r));
   const st = state({
     nonceHex: undefined,
     bootstrap: async () => {
       count++;
+      markBootstrapStarted();
       await bootstrapGate;
       st.nonceHex = "recovered";
     },
@@ -163,8 +166,8 @@ test("recovery serializes inside mutex — single bootstrap", async () => {
 
   const p2 = (int as any)(async () => nextRes)({ method: { name: "SearchText" }, header: { set: () => {} } } as any);
 
-  // Let p1 acquire the lock and reach bootstrapGate
-  await new Promise((r) => setTimeout(r, 20));
+  // Wait until p1 has entered bootstrap and is blocked on the gate
+  await bootstrapStarted;
 
   resolveBootstrap();
   await p1;

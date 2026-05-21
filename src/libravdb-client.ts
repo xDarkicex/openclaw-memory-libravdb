@@ -134,6 +134,9 @@ export function createAuthInterceptor(
       // wait for the chain to be restored instead of failing spuriously.
       if (state.secret && !state.nonceHex) {
         await state.bootstrap();
+        if (!state.nonceHex) {
+          throw new Error("LibraVDB: bootstrap handshake did not return a nonce");
+        }
       }
 
       if (state.secret && state.nonceHex) {
