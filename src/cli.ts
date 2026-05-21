@@ -8,6 +8,7 @@ import { formatError } from "./format-error.js";
 import { promoteDreamDiaryFile } from "./dream-promotion.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import type { PluginRuntime } from "./plugin-runtime.js";
+import type { LibravDBClient } from "./libravdb-client.js";
 import type { LoggerLike, PluginConfig } from "./types.js";
 
 type StatusResult = {
@@ -274,9 +275,9 @@ async function runStatus(
   }
 
   try {
-    const rpc = await runtime.getRpc();
-    const status = await rpc.call<StatusResult>("status", {});
-    const deep = opts.deep ? await runDeepStatusProbe(rpc, cfg) : undefined;
+    const client = await runtime.getClient();
+    const status = await client.status({});
+    const deep = opts.deep ? await runDeepStatusProbe(client, cfg) : undefined;
     if (opts.json) {
       console.log(JSON.stringify({ status, ...(deep ? { deep } : {}) }, null, 2));
       if (deep && !deep.ok) {
@@ -334,7 +335,7 @@ async function runStatus(
 const AUTHORED_STATUS_COLLECTIONS = ["authored:hard", "authored:soft", "authored:variant"] as const;
 
 async function runDeepStatusProbe(
-  rpc: { call<T>(method: string, params: unknown): Promise<T> },
+  client: { searchText(params: { collection: string; text: string; k: number }): Promise<{ results?: unknown[] }> },
   cfg: PluginConfig,
 ): Promise<DeepStatusResult> {
   // Resolve userId without triggering auto-derive file writes.
@@ -362,7 +363,7 @@ async function runDeepStatusProbe(
 
   for (const collection of allCollections) {
     try {
-      const result = await rpc.call<{ results?: unknown[] }>("search_text", {
+      const result = await client.searchText({
         collection,
         text: "memory",
         k: 1,
@@ -418,17 +419,10 @@ async function runIndex(
     .filter((c) => c.length > 0);
 
   try {
-    const rpc = await runtime.getRpc();
-    const result = await rpc.call<{
-      collectionsProcessed: number;
-      recordsReindexed: number;
-      collectionsRecreated: number;
-      errors: string[];
-    }>("rebuild_index", {
+    const client = await runtime.getClient();
+    const result = await client.rebuildIndex({
       namespace: namespace ?? "",
       ...(collections?.length ? { collections } : {}),
-    }, {
-      timeoutMs: resolveIndexRebuildTimeoutMs(cfg),
     });
 
     if (!params.quiet) {
@@ -486,7 +480,7 @@ async function runSearch(
   }
 
   try {
-    const bridge = buildMemoryRuntimeBridge(runtime.getRpc, cfg);
+    const bridge = buildMemoryRuntimeBridge(runtime.getClient, cfg);
     const { manager } = await bridge.getMemorySearchManager({
       agentId: opts?.agent,
     });
@@ -544,8 +538,8 @@ async function runFlush(runtime: PluginRuntime, opts: CliOptionBag | undefined, 
   }
 
   try {
-    const rpc = await runtime.getRpc();
-    await rpc.call("flush_namespace", scope.params);
+    const client = await runtime.getClient();
+    await client.flushNamespace(scope.params);
     console.log(`Deleted durable memory namespace ${scope.displayName}.`);
   } catch (error) {
     logger.error(`LibraVDB flush failed: ${formatError(error)}`);
@@ -562,8 +556,8 @@ async function runExport(runtime: PluginRuntime, opts: CliOptionBag | undefined,
   }
 
   try {
-    const rpc = await runtime.getRpc();
-    const result = await rpc.call<ExportResult>("export_memory", scope.params);
+    const client = await runtime.getClient();
+    const result = await client.exportMemory(scope.params);
     for (const record of result.records ?? []) {
       stdout.write(`${JSON.stringify(record)}\n`);
     }
@@ -584,13 +578,13 @@ async function runJournal(runtime: PluginRuntime, opts: CliOptionBag | undefined
   }
 
   try {
-    const rpc = await runtime.getRpc();
-    const result = await rpc.call<JournalResult>("list_lifecycle_journal", {
+    const client = await runtime.getClient();
+    const result = await client.listLifecycleJournal({
       sessionId: opts?.sessionId?.trim() || undefined,
       limit,
     });
-    for (const record of result.results ?? []) {
-      stdout.write(`${JSON.stringify(record)}\n`);
+    for (const entry of result.entries) {
+      stdout.write(`${entry}\n`);
     }
   } catch (error) {
     logger.error(`LibraVDB journal lookup failed: ${formatError(error)}`);
@@ -608,8 +602,8 @@ async function runDreamPromote(runtime: PluginRuntime, opts: CliOptionBag | unde
   }
 
   try {
-    const rpc = await runtime.getRpc();
-    const result = await promoteDreamDiaryFile(rpc, { userId, diaryPath: dreamFile });
+    const client = await runtime.getClient();
+    const result = await promoteDreamDiaryFile(client, { userId, diaryPath: dreamFile });
     console.log(
       `Promoted ${result.promoted ?? 0} dream entr${(result.promoted ?? 0) === 1 ? "y" : "ies"}; rejected ${result.rejected ?? 0}.`,
     );

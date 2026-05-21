@@ -65,17 +65,20 @@ interface QueuedIngest {
 
 export class IngestQueue {
   private readonly queue: QueuedIngest[] = [];
-  private readonly rpcCall: <T>(method: string, params: unknown) => Promise<T>;
+  private readonly ingestDocument: (params: IngestMarkdownDocumentParams) => Promise<IngestMarkdownDocumentResponse>;
+  private readonly deleteDocument: (params: { sourceDoc: string }) => Promise<unknown>;
   private readonly logger: LoggerLike;
   private readonly options: IngestQueueOptions;
   private running = false;
 
   constructor(
-    rpcCall: <T>(method: string, params: unknown) => Promise<T>,
+    ingestDocument: (params: IngestMarkdownDocumentParams) => Promise<IngestMarkdownDocumentResponse>,
+    deleteDocument: (params: { sourceDoc: string }) => Promise<unknown>,
     logger: LoggerLike,
     options: Partial<IngestQueueOptions> = {},
   ) {
-    this.rpcCall = rpcCall;
+    this.ingestDocument = ingestDocument;
+    this.deleteDocument = deleteDocument;
     this.logger = logger;
     this.options = { ...DEFAULT_OPTIONS, ...options };
     if (!(this.options.chunkTokens > 0)) {
@@ -157,7 +160,7 @@ export class IngestQueue {
 
   private async ingestWithRetry(params: IngestMarkdownDocumentParams): Promise<IngestMarkdownDocumentResponse> {
     return withRetry(
-      () => this.rpcCall<IngestMarkdownDocumentResponse>("ingest_markdown_document", params),
+      () => this.ingestDocument(params),
       this.options.maxRetries,
       this.options.retryBaseDelayMs,
       this.logger,
@@ -167,7 +170,7 @@ export class IngestQueue {
 
   async enqueueDelete(sourceDoc: string): Promise<void> {
     await withRetry(
-      () => this.rpcCall("delete_authored_document", { sourceDoc }) as Promise<void>,
+      () => this.deleteDocument({ sourceDoc }) as Promise<void>,
       this.options.maxRetries,
       this.options.retryBaseDelayMs,
       this.logger,

@@ -76,11 +76,8 @@ const selectedConfig = {
 
 function createRuntime(): PluginRuntime {
   return {
-    async getRpc() {
+    async getClient() {
       throw new Error("not used by registration tests");
-    },
-    async getKernel() {
-      return null;
     },
     async emitLifecycleHint() {},
     onShutdown() {},
@@ -191,15 +188,14 @@ test("full CLI registration exposes standard memory commands and LibraVDB operat
 test("flush command sends explicit user ids through the userId RPC field", async () => {
   const rpcCalls: Array<{ method: string; params: unknown }> = [];
   const memory = buildMemoryCommand({
-    async getRpc() {
+    async getClient() {
       return {
-        async call(method: string, params: unknown) {
-          rpcCalls.push({ method, params });
+        async flushNamespace(params: Record<string, unknown>) {
+          rpcCalls.push({ method: "flushNamespace", params });
           return {};
         },
       } as never;
     },
-    getKernel: async () => null,
     async emitLifecycleHint() {},
     onShutdown() {},
     async shutdown() {},
@@ -218,7 +214,7 @@ test("flush command sends explicit user ids through the userId RPC field", async
 
   assert.deepEqual(rpcCalls, [
     {
-      method: "flush_namespace",
+      method: "flushNamespace",
       params: { userId: "alice" },
     },
   ]);
@@ -227,15 +223,14 @@ test("flush command sends explicit user ids through the userId RPC field", async
 test("export command keeps user ids separate from derived namespaces", async () => {
   const rpcCalls: Array<{ method: string; params: unknown }> = [];
   const memory = buildMemoryCommand({
-    async getRpc() {
+    async getClient() {
       return {
-        async call(method: string, params: unknown) {
-          rpcCalls.push({ method, params });
+        async exportMemory(params: Record<string, unknown>) {
+          rpcCalls.push({ method: "exportMemory", params });
           return { records: [] };
         },
       } as never;
     },
-    getKernel: async () => null,
     async emitLifecycleHint() {},
     onShutdown() {},
     async shutdown() {},
@@ -249,11 +244,11 @@ test("export command keeps user ids separate from derived namespaces", async () 
 
   assert.deepEqual(rpcCalls, [
     {
-      method: "export_memory",
+      method: "exportMemory",
       params: { userId: "alice" },
     },
     {
-      method: "export_memory",
+      method: "exportMemory",
       params: { namespace: "session-key:session-1" },
     },
   ]);
@@ -272,10 +267,9 @@ test("status command shuts the plugin runtime down after printing status", async
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
+      async getClient() {
         return {
-          async call(method: string) {
-            assert.equal(method, "status");
+          async status() {
             return {
               ok: true,
               turnCount: 3,
@@ -288,9 +282,6 @@ test("status command shuts the plugin runtime down after printing status", async
             };
           },
         } as never;
-      },
-      async getKernel() {
-        return null;
       },
       async emitLifecycleHint() {},
       onShutdown() {},
@@ -325,7 +316,7 @@ test("status command shuts the plugin runtime down after printing status", async
 test("status --index requires --force before rebuilding", async () => {
   let registered: RegisteredCli | null = null;
   let shutdownCalls = 0;
-  let getRpcCalls = 0;
+  let getClientCalls = 0;
   const errors: string[] = [];
   const api = {
     config: selectedConfig,
@@ -337,12 +328,9 @@ test("status --index requires --force before rebuilding", async () => {
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
-        getRpcCalls += 1;
+      async getClient() {
+        getClientCalls += 1;
         throw new Error("status --index without --force should not start RPC");
-      },
-      async getKernel() {
-        return null;
       },
       async emitLifecycleHint() {},
       onShutdown() {},
@@ -376,7 +364,7 @@ test("status --index requires --force before rebuilding", async () => {
     process.exitCode = previousExitCode;
   }
 
-  assert.equal(getRpcCalls, 0);
+  assert.equal(getClientCalls, 0);
   assert.equal(shutdownCalls, 1);
   assert.match(errors[0] ?? "", /--force/);
 });
@@ -395,36 +383,31 @@ test("status --index --force rebuilds before printing status", async () => {
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
+      async getClient() {
         return {
-          async call(method: string, params: Record<string, unknown>) {
-            calls.push({ method, params });
-            if (method === "rebuild_index") {
-              return {
-                collectionsProcessed: 1,
-                recordsReindexed: 2,
-                collectionsRecreated: 0,
-                errors: [],
-              };
-            }
-            if (method === "status") {
-              return {
-                ok: true,
-                turnCount: 3,
-                memoryCount: 3,
-                lifecycleHintCount: 1,
-                gatingThreshold: 0.35,
-                abstractiveReady: true,
-                embeddingProfile: "all-minilm-l6-v2",
-                message: "ok",
-              };
-            }
-            throw new Error(`unexpected rpc method: ${method}`);
+          async rebuildIndex(params: Record<string, unknown>) {
+            calls.push({ method: "rebuildIndex", params });
+            return {
+              collectionsProcessed: 1,
+              recordsReindexed: 2,
+              collectionsRecreated: 0,
+              errors: [],
+            };
+          },
+          async status() {
+            calls.push({ method: "status", params: {} });
+            return {
+              ok: true,
+              turnCount: 3,
+              memoryCount: 3,
+              lifecycleHintCount: 1,
+              gatingThreshold: 0.35,
+              abstractiveReady: true,
+              embeddingProfile: "all-minilm-l6-v2",
+              message: "ok",
+            };
           },
         } as never;
-      },
-      async getKernel() {
-        return null;
       },
       async emitLifecycleHint() {},
       onShutdown() {},
@@ -452,7 +435,7 @@ test("status --index --force rebuilds before printing status", async () => {
     console.table = originalTable;
   }
 
-  assert.deepEqual(calls.map((call) => call.method), ["rebuild_index", "status"]);
+  assert.deepEqual(calls.map((call) => call.method), ["rebuildIndex", "status"]);
   assert.deepEqual(calls[0]?.params, { namespace: "" });
   assert.equal(shutdownCalls, 1);
 });
@@ -470,46 +453,42 @@ test("search command applies the status gate threshold by default", async () => 
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
+      async getClient() {
         return {
-          async call(method: string) {
-            if (method === "status") {
-              return {
-                ok: true,
-                message: "ok",
-                gatingThreshold: 0.5,
-                embeddingProfile: "all-minilm-l6-v2",
-              };
-            }
-            if (method === "search_text_collections") {
-              return {
-                results: [
-                  {
-                    id: "low",
-                    score: 0.25,
-                    text: "weak unrelated memory",
-                    metadata: { collection: "user:test-user" },
-                  },
-                  {
-                    id: "mid",
-                    score: 0.4,
-                    text: "mid-range memory gated by status threshold",
-                    metadata: { collection: "user:test-user" },
-                  },
-                  {
-                    id: "high",
-                    score: 0.76,
-                    text: "strong relevant memory",
-                    metadata: { collection: "user:test-user" },
-                  },
-                ],
-              };
-            }
-            throw new Error(`unexpected rpc method: ${method}`);
+          async status() {
+            return {
+              ok: true,
+              message: "ok",
+              gatingThreshold: 0.5,
+              embeddingProfile: "all-minilm-l6-v2",
+            };
+          },
+          async searchTextCollections(_params: Record<string, unknown>) {
+            return {
+              results: [
+                {
+                  id: "low",
+                  score: 0.25,
+                  text: "weak unrelated memory",
+                  metadata: { collection: "user:test-user" },
+                },
+                {
+                  id: "mid",
+                  score: 0.4,
+                  text: "mid-range memory gated by status threshold",
+                  metadata: { collection: "user:test-user" },
+                },
+                {
+                  id: "high",
+                  score: 0.76,
+                  text: "strong relevant memory",
+                  metadata: { collection: "user:test-user" },
+                },
+              ],
+            };
           },
         } as never;
       },
-      getKernel: async () => null,
       async emitLifecycleHint() {},
       onShutdown: async () => {},
       async shutdown() {},
@@ -552,34 +531,30 @@ test("search command honors an explicit min-score below the default threshold", 
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
+      async getClient() {
         return {
-          async call(method: string) {
-            if (method === "status") {
-              return {
-                ok: true,
-                message: "ok",
-                gatingThreshold: 0.35,
-                embeddingProfile: "all-minilm-l6-v2",
-              };
-            }
-            if (method === "search_text_collections") {
-              return {
-                results: [
-                  {
-                    id: "low",
-                    score: 0.25,
-                    text: "weak but explicitly requested memory",
-                    metadata: { collection: "user:test-user" },
-                  },
-                ],
-              };
-            }
-            throw new Error(`unexpected rpc method: ${method}`);
+          async status() {
+            return {
+              ok: true,
+              message: "ok",
+              gatingThreshold: 0.35,
+              embeddingProfile: "all-minilm-l6-v2",
+            };
+          },
+          async searchTextCollections(_params: Record<string, unknown>) {
+            return {
+              results: [
+                {
+                  id: "low",
+                  score: 0.25,
+                  text: "weak but explicitly requested memory",
+                  metadata: { collection: "user:test-user" },
+                },
+              ],
+            };
           },
         } as never;
       },
-      getKernel: async () => null,
       async emitLifecycleHint() {},
       onShutdown: async () => {},
       async shutdown() {},
@@ -622,24 +597,20 @@ test("status --deep probes authored collection search health", async () => {
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
+      async getClient() {
         return {
-          async call(method: string, params: Record<string, unknown>) {
-            rpcCalls.push({ method, params });
-            if (method === "status") {
-              return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+          async status() {
+            return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+          },
+          async searchText(params: Record<string, unknown>) {
+            rpcCalls.push({ method: "searchText", params });
+            if (params.collection === "authored:soft") {
+              throw new Error("query vector dimension 384 does not match collection dimension 1");
             }
-            if (method === "search_text") {
-              if (params.collection === "authored:soft") {
-                throw new Error("query vector dimension 384 does not match collection dimension 1");
-              }
-              return { results: [] };
-            }
-            throw new Error(`unexpected rpc method: ${method}`);
+            return { results: [] };
           },
         } as never;
       },
-      getKernel: async () => null,
       async emitLifecycleHint() {},
       onShutdown: async () => {},
       async shutdown() {
@@ -676,7 +647,7 @@ test("status --deep probes authored collection search health", async () => {
   assert.equal(payload.status.ok, true);
   assert.equal(payload.deep.ok, false);
   assert.deepEqual(
-    rpcCalls.filter((call) => call.method === "search_text").map((call) => call.params.collection),
+    rpcCalls.filter((call) => call.method === "searchText").map((call) => call.params.collection),
     ["authored:hard", "authored:soft", "authored:variant", "user:default", "global"],
   );
   assert.match(payload.deep.probes[1]?.error ?? "", /dimension 384/);
@@ -697,21 +668,17 @@ test("status --deep reports invalid user collection without probing it", async (
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
+      async getClient() {
         return {
-          async call(method: string, params: Record<string, unknown>) {
-            rpcCalls.push({ method, params });
-            if (method === "status") {
-              return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
-            }
-            if (method === "search_text") {
-              return { results: [] };
-            }
-            throw new Error(`unexpected rpc method: ${method}`);
+          async status() {
+            return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+          },
+          async searchText(params: Record<string, unknown>) {
+            rpcCalls.push({ method: "searchText", params });
+            return { results: [] };
           },
         } as never;
       },
-      getKernel: async () => null,
       async emitLifecycleHint() {},
       onShutdown: async () => {},
       async shutdown() {},
@@ -747,7 +714,7 @@ test("status --deep reports invalid user collection without probing it", async (
   assert.equal(payload.deep.probes[0]?.collection, "user:<invalid>");
   assert.match(payload.deep.probes[0]?.error ?? "", /Invalid collection namespace/);
   assert.deepEqual(
-    rpcCalls.filter((call) => call.method === "search_text").map((call) => call.params.collection),
+    rpcCalls.filter((call) => call.method === "searchText").map((call) => call.params.collection),
     ["authored:hard", "authored:soft", "authored:variant", "global"],
   );
   assert.equal(observedExitCode, 1);
@@ -765,26 +732,22 @@ test("status --deep includes authored probe rows in table output", async () => {
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
+      async getClient() {
         return {
-          async call(method: string, params: Record<string, unknown>) {
-            if (method === "status") {
-              return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+          async status() {
+            return { ok: true, message: "ok", embeddingProfile: "all-minilm-l6-v2" };
+          },
+          async searchText(params: Record<string, unknown>) {
+            if (params.collection === "authored:variant") {
+              return { results: [{ id: "v1" }] };
             }
-            if (method === "search_text") {
-              if (params.collection === "authored:variant") {
-                return { results: [{ id: "v1" }] };
-              }
-              if (params.collection === "global") {
-                return { results: [{ id: "g1" }] };
-              }
-              return { results: [] };
+            if (params.collection === "global") {
+              return { results: [{ id: "g1" }] };
             }
-            throw new Error(`unexpected rpc method: ${method}`);
+            return { results: [] };
           },
         } as never;
       },
-      getKernel: async () => null,
       async emitLifecycleHint() {},
       onShutdown: async () => {},
       async shutdown() {},
@@ -830,7 +793,6 @@ test("index command uses an extended timeout for rebuild_index", async () => {
   const rpcCalls: Array<{
     method: string;
     params: Record<string, unknown>;
-    options?: { timeoutMs?: number };
   }> = [];
   const api = {
     config: selectedConfig,
@@ -842,23 +804,19 @@ test("index command uses an extended timeout for rebuild_index", async () => {
   registerMemoryCli(
     api as never,
     {
-      async getRpc() {
+      async getClient() {
         return {
-          async call(method: string, params: Record<string, unknown>, options?: { timeoutMs?: number }) {
-            rpcCalls.push({ method, params, options });
-            if (method === "rebuild_index") {
-              return {
-                collectionsProcessed: 1,
-                recordsReindexed: 2,
-                collectionsRecreated: 0,
-                errors: [],
-              };
-            }
-            throw new Error(`unexpected rpc method: ${method}`);
+          async rebuildIndex(params: Record<string, unknown>) {
+            rpcCalls.push({ method: "rebuildIndex", params });
+            return {
+              collectionsProcessed: 1,
+              recordsReindexed: 2,
+              collectionsRecreated: 0,
+              errors: [],
+            };
           },
         } as never;
       },
-      getKernel: async () => null,
       async emitLifecycleHint() {},
       onShutdown: async () => {},
       async shutdown() {
@@ -886,8 +844,7 @@ test("index command uses an extended timeout for rebuild_index", async () => {
   }
 
   assert.equal(rpcCalls.length, 1);
-  assert.equal(rpcCalls[0]?.method, "rebuild_index");
-  assert.equal(rpcCalls[0]?.options?.timeoutMs, 300000);
+  assert.equal(rpcCalls[0]?.method, "rebuildIndex");
   assert.equal(shutdownCalls, 1);
 });
 

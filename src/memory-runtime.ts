@@ -1,12 +1,10 @@
-import type { RpcGetter } from "./plugin-runtime.js";
+import type { ClientGetter } from "./plugin-runtime.js";
+import type { LibravDBClient } from "./libravdb-client.js";
 import { resolveDurableNamespace, resolveUserCollection } from "./memory-scopes.js";
 import { resolveIdentity } from "./identity.js";
 import { detectDreamQuerySignal, resolveDreamCollection } from "./dream-routing.js";
-import type { PluginConfig, LoggerLike, SearchResult } from "./types.js";
-
-type RpcLike = {
-  call<T>(method: string, params: unknown): Promise<T>;
-};
+import type { PluginConfig, LoggerLike } from "./types.js";
+import type { SearchResult as ProtoSearchResult } from "@xdarkicex/libravdb-contracts";
 
 type MemorySearchParams = {
   query?: string;
@@ -40,17 +38,15 @@ type MemoryRuntimeStatus = {
   embeddingProfile?: string;
 };
 
-export function buildMemoryRuntimeBridge(getRpc: RpcGetter, cfg: PluginConfig) {
+export function buildMemoryRuntimeBridge(getClient: ClientGetter, cfg: PluginConfig) {
   return {
     async getMemorySearchManager(params: { agentId?: string; purpose?: string } = {}) {
-      const status = await readStatus(getRpc, params.purpose);
+      const status = await readStatus(getClient, params.purpose);
       return {
-        manager: createMemorySearchManager(getRpc, cfg, params, status),
+        manager: createMemorySearchManager(getClient, cfg, params, status),
       };
     },
     resolveMemoryBackendConfig() {
-      // We keep retrieval inside the plugin-side sidecar rather than delegating to
-      // OpenClaw's external QMD path.
       return { backend: "builtin" };
     },
     async closeAllMemorySearchManagers() {
@@ -60,14 +56,14 @@ export function buildMemoryRuntimeBridge(getRpc: RpcGetter, cfg: PluginConfig) {
 }
 
 function createMemorySearchManager(
-  getRpc: RpcGetter,
+  getClient: ClientGetter,
   cfg: PluginConfig,
   defaults: { agentId?: string; purpose?: string },
   initialStatus: MemoryRuntimeStatus & Record<string, unknown>,
 ) {
   let cachedStatus = initialStatus;
   let cachedIdentityUserId: string | null = null;
-  const returnedSearchPaths = new Set<string>();
+  const returnedSearchPaths = new Map<string, string>();
 
   function getResolvedUserId(sessionKey: string | undefined): string {
     if (cachedIdentityUserId !== null) return cachedIdentityUserId;
@@ -113,15 +109,15 @@ function createMemorySearchManager(
       });
       const k = normalizePositiveInteger(params.k, params.limit, params.maxResults, params.topK, cfg.topK, 8);
       const minScore = normalizeNumber(params.minScore);
-      const rpc = await getRpc();
+      const client = await getClient();
 
       const result = dreamQuery.active && cfg.crossSessionRecall !== false
-        ? await rpc.call<{ results: SearchResult[] }>("search_text", {
+        ? await client.searchText({
             collection: resolveDreamCollection(userId),
             text: queryText,
             k,
           })
-        : await searchResolvedCollections(rpc, cfg, userId, sessionId, queryText, k);
+        : await searchResolvedCollections(client, cfg, userId, sessionId, queryText, k);
       const filteredResults =
         minScore === undefined
           ? result.results
@@ -134,32 +130,34 @@ function createMemorySearchManager(
       if (legacyCall) {
         return { results: legacyResults };
       }
-      const memoryResults = filteredResults.map(toMemorySearchResult);
-      for (const item of memoryResults) {
-        returnedSearchPaths.add(item.path);
-      }
+      const memoryResults = filteredResults.map((item) => {
+        const meta = parseMetadataJson(item);
+        const collection = typeof meta.collection === "string" ? meta.collection : "memory";
+        const relPath = encodeSearchResultPath(collection, item.id);
+        returnedSearchPaths.set(relPath, item.text);
+        return toMemorySearchResult(item);
+      });
       return memoryResults;
     },
     async readFile(params: { relPath: string; from?: number; lines?: number }) {
-      if (!returnedSearchPaths.has(params.relPath)) {
+      const cachedText = returnedSearchPaths.get(params.relPath);
+      if (cachedText === undefined) {
         throw new Error("LibraVDB memory path was not returned by this search manager");
       }
-      const located = await loadSearchResultText(getRpc, params.relPath);
       const fromLine = Math.max(1, params.from ?? 1);
       const lineCount = Math.max(1, params.lines ?? 200);
-      const lines = located.text.split("\n");
+      const lines = cachedText.split("\n");
       const text = lines.slice(fromLine - 1, fromLine - 1 + lineCount).join("\n");
       return {
         text,
-        path: located.path,
+        path: params.relPath,
       };
     },
     async ingest() {
-      // The plugin already owns per-turn ingest through the context engine.
       return { ingested: false, delegatedToContextEngine: true };
     },
     async sync(_params?: { reason?: string; force?: boolean }) {
-      cachedStatus = await readStatus(getRpc, defaults.purpose);
+      cachedStatus = await readStatus(getClient, defaults.purpose);
       return { synced: true, delegatedToContextEngine: true };
     },
     status() {
@@ -177,30 +175,30 @@ function createMemorySearchManager(
       return cachedStatus.ok ?? false;
     },
     async close() {
-      // The sidecar connection is shared by the plugin runtime.
+      // The client connection is shared by the plugin runtime.
     },
   };
 }
 
 async function searchResolvedCollections(
-  rpc: RpcLike,
+  client: LibravDBClient,
   cfg: PluginConfig,
   userId: string,
   sessionId: string | undefined,
   queryText: string,
   k: number,
-): Promise<{ results: SearchResult[] }> {
+): Promise<{ results: ProtoSearchResult[] }> {
   const collections = resolveSearchCollections(cfg, userId, sessionId);
   if (collections.length === 0) {
     return { results: [] };
   }
   return collections.length === 1
-    ? await rpc.call<{ results: SearchResult[] }>("search_text", {
+    ? await client.searchText({
         collection: collections[0],
         text: queryText,
         k,
       })
-    : await rpc.call<{ results: SearchResult[] }>("search_text_collections", {
+    : await client.searchTextCollections({
         collections,
         text: queryText,
         k,
@@ -245,8 +243,20 @@ function firstString(...values: Array<string | undefined>): string | undefined {
   return undefined;
 }
 
-function toMemorySearchResult(item: SearchResult) {
-  const collection = typeof item.metadata.collection === "string" ? item.metadata.collection : "memory";
+function parseMetadataJson(item: { metadataJson?: Uint8Array }): Record<string, unknown> {
+  if (item.metadataJson && item.metadataJson.length > 0) {
+    try {
+      return JSON.parse(new TextDecoder().decode(item.metadataJson));
+    } catch (e) {
+      // ignore
+    }
+  }
+  return {};
+}
+
+function toMemorySearchResult(item: ProtoSearchResult) {
+  const meta = parseMetadataJson(item);
+  const collection = typeof meta.collection === "string" ? meta.collection : "memory";
   return {
     path: encodeSearchResultPath(collection, item.id),
     startLine: 1,
@@ -258,42 +268,17 @@ function toMemorySearchResult(item: SearchResult) {
   };
 }
 
-async function loadSearchResultText(getRpc: RpcGetter, relPath: string): Promise<{ path: string; text: string }> {
-  const { collection, id } = decodeSearchResultPath(relPath);
-  const rpc = await getRpc();
-  const result = await rpc.call<{ results: SearchResult[] }>("list_collection", { collection });
-  const item = result.results.find((entry) => entry.id === id);
-  if (!item) {
-    throw new Error(`LibraVDB memory path not found: ${relPath}`);
-  }
-  return {
-    path: relPath,
-    text: item.text,
-  };
-}
-
 function encodeSearchResultPath(collection: string, id: string): string {
   return `${encodeURIComponent(collection)}::${encodeURIComponent(id)}`;
 }
 
-function decodeSearchResultPath(relPath: string): { collection: string; id: string } {
-  const separator = relPath.indexOf("::");
-  if (separator <= 0) {
-    throw new Error(`Unsupported LibraVDB memory path: ${relPath}`);
-  }
-  return {
-    collection: decodeURIComponent(relPath.slice(0, separator)),
-    id: decodeURIComponent(relPath.slice(separator + 2)),
-  };
-}
-
 async function readStatus(
-  getRpc: RpcGetter,
+  getClient: ClientGetter,
   purpose: string | undefined,
 ): Promise<MemoryRuntimeStatus & Record<string, unknown>> {
   try {
-    const rpc = await getRpc();
-    const status = await rpc.call<MemoryRuntimeStatus & Record<string, unknown>>("status", {});
+    const client = await getClient();
+    const status = await client.status({});
     return {
       ...status,
       backend: "builtin",

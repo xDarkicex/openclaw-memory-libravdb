@@ -6,15 +6,12 @@ import path from "node:path";
 
 import { createDreamPromotionHandle } from "../../src/dream-promotion.js";
 
-class FakeRpcClient {
+class FakeClient {
   calls: Array<{ method: string; params: unknown }> = [];
 
-  async call<T>(method: string, params: unknown): Promise<T> {
-    this.calls.push({ method, params });
-    if (method === "promote_dream_entries") {
-      return { promoted: 1, rejected: 0 } as T;
-    }
-    throw new Error(`unexpected rpc call: ${method}`);
+  async promoteDreamEntries(params: unknown) {
+    this.calls.push({ method: "promoteDreamEntries", params });
+    return { promoted: 1, rejected: 0 };
   }
 }
 
@@ -71,7 +68,7 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
       ].join("\n"),
     );
 
-    const rpc = new FakeRpcClient();
+    const client = new FakeClient();
     const fsApi = new FakeFsApi();
     handle = createDreamPromotionHandle(
       {
@@ -80,7 +77,7 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
         dreamPromotionUserId: "u1",
         dreamPromotionDebounceMs: 0,
       },
-      async () => rpc,
+      async () => client as any,
       console,
       fsApi as never,
     );
@@ -88,7 +85,7 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
     await handle.start();
     await delay(25);
 
-    const promoteCall = rpc.calls.find((call) => call.method === "promote_dream_entries");
+    const promoteCall = client.calls.find((call) => call.method === "promoteDreamEntries");
     assert.ok(promoteCall, "expected dream promotion RPC to fire");
     const params = promoteCall?.params as {
       userId: string;
@@ -127,7 +124,7 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
     fsApi.callbacks.get(path.dirname(diaryPath))?.[0]?.("change", path.basename(diaryPath));
     await delay(25);
 
-    assert.equal(rpc.calls.filter((call) => call.method === "promote_dream_entries").length, 1);
+    assert.equal(client.calls.filter((call) => call.method === "promoteDreamEntries").length, 1);
   } finally {
     await handle?.stop();
     if (previousStateDir === undefined) {

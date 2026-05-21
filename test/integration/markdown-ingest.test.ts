@@ -13,32 +13,26 @@ class FakeRpcClient {
 
   private ingestCallCount = 0;
 
-  async call<T>(method: string, params: unknown): Promise<T> {
-    this.calls.push({ method, params });
+  async ingestMarkdownDocument(params: {
+    sourceDoc: string;
+    text: string;
+    tokenizerId: string;
+    coreDoc: boolean;
+    sourceMeta: Record<string, unknown>;
+    mode?: number;
+  }): Promise<{ ok: boolean; feedback?: Record<string, unknown> }> {
+    this.calls.push({ method: "ingest_markdown_document", params });
+    const { sourceDoc, text, tokenizerId, coreDoc, sourceMeta } = params;
+    this.documents.set(sourceDoc, { text, tokenizerId, coreDoc, sourceMeta });
+    const callIdx = this.ingestCallCount++;
+    const feedback = this.feedbackSupplier?.(sourceDoc, callIdx);
+    return feedback ? { ok: true, feedback } : { ok: true };
+  }
 
-    if (method === "ingest_markdown_document") {
-      const { sourceDoc, text, tokenizerId, coreDoc, sourceMeta } = params as {
-        sourceDoc: string;
-        text: string;
-        tokenizerId: string;
-        coreDoc: boolean;
-        sourceMeta: Record<string, unknown>;
-      };
-      this.documents.set(sourceDoc, { text, tokenizerId, coreDoc, sourceMeta });
-      const callIdx = this.ingestCallCount++;
-      const feedback = this.feedbackSupplier?.(sourceDoc, callIdx);
-      return (feedback ? { ok: true, feedback } : { ok: true }) as T;
-    }
-    if (method === "delete_authored_document") {
-      const { sourceDoc } = params as { sourceDoc: string };
-      this.documents.delete(sourceDoc);
-      return { ok: true } as T;
-    }
-    if (method === "ensure_collections") {
-      return { ok: true } as T;
-    }
-
-    throw new Error(`unexpected rpc call: ${method}`);
+  async deleteAuthoredDocument(params: { sourceDoc: string }): Promise<{ ok: boolean }> {
+    this.calls.push({ method: "delete_authored_document", params });
+    this.documents.delete(params.sourceDoc);
+    return { ok: true };
   }
 }
 
@@ -117,7 +111,7 @@ test("markdown ingestion roots stay inert unless explicitly enabled", async () =
       markdownIngestionRoots: [tempRoot],
       markdownIngestionDebounceMs: 0,
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -145,7 +139,7 @@ test("obsidian roots stay inert unless explicitly enabled", async () => {
       markdownIngestionObsidianRoots: [tempRoot],
       markdownIngestionObsidianDebounceMs: 0,
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -186,7 +180,7 @@ test("markdown ingestion forwards raw markdown to the go sidecar and stays hash-
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -265,7 +259,7 @@ test("obsidian markdown ingestion flips source kind while reusing the same rpc p
       markdownIngestionObsidianDebounceMs: 0,
       markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -299,7 +293,7 @@ test("obsidian markdown ingestion skips untaged notes by default", async () => {
       markdownIngestionObsidianDebounceMs: 0,
       markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -333,7 +327,7 @@ test("markdown ingestion always includes MEMORY.md by filename even under narrow
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -370,7 +364,7 @@ test("obsidian markdown ingestion accepts inline tags like #project", async () =
       markdownIngestionObsidianDebounceMs: 0,
       markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -408,7 +402,7 @@ test("obsidian markdown ingestion accepts CRLF frontmatter tags", async () => {
       markdownIngestionObsidianDebounceMs: 0,
       markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -442,7 +436,7 @@ test("obsidian markdown ingestion accepts tags in headings", async () => {
       markdownIngestionObsidianDebounceMs: 0,
       markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
     },
-    async () => rpc,
+    async () => rpc as never,
     console,
     fsApi as never,
   );
@@ -471,12 +465,11 @@ test("markdown ingestion stop waits for an in-flight startup scan", async () => 
   let rpcCompleted = false;
 
   const rpc = {
-    async call<T>(method: string): Promise<T> {
-      assert.equal(method, "ingest_markdown_document");
+    async ingestMarkdownDocument(_params: unknown) {
       callStarted();
       await releaseCallPromise;
       rpcCompleted = true;
-      return { ok: true } as T;
+      return { ok: true };
     },
   };
 
@@ -487,7 +480,7 @@ test("markdown ingestion stop waits for an in-flight startup scan", async () => 
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {} },
   );
 
@@ -531,7 +524,7 @@ test("markdown ingestion prunes excluded directories before recursion", async ()
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: path.join(tempRoot, "snapshot.json"),
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info: (message: string) => infoMessages.push(message) },
     fsApi as never,
   );
@@ -561,7 +554,7 @@ test("markdown ingestion persists snapshots across adapter restarts", async () =
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: snapshotPath,
     },
-    async () => firstRpc,
+    async () => firstRpc as never,
     { error() {}, warn() {}, info() {} },
   );
 
@@ -580,7 +573,7 @@ test("markdown ingestion persists snapshots across adapter restarts", async () =
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: snapshotPath,
     },
-    async () => secondRpc,
+    async () => secondRpc as never,
     { error() {}, warn() {}, info: (message: string) => infoMessages.push(message) },
   );
 
@@ -612,7 +605,7 @@ test("markdown ingestion startup processes newest files first in mtime mode", as
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
       markdownIngestionPriorityMode: "mtime",
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info() {} },
   );
 
@@ -645,7 +638,7 @@ test("markdown ingestion startup defers files exceeding per-file max token cap",
       markdownIngestionPriorityMode: "fifo",
       markdownIngestionMaxTokensPerFile: 200,
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info() {} },
   );
 
@@ -686,7 +679,7 @@ test("markdown ingestion startup streams reads without fsApi.readFile dependency
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info() {} },
     fsApi as never,
   );
@@ -730,7 +723,7 @@ test("backpressure resume cursor skips already-processed files on retry scan", a
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
       markdownIngestionPriorityMode: "mtime",
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info() {} },
   );
 
@@ -787,7 +780,7 @@ test("resume cursor invalidates when target file is deleted during pause", async
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
       markdownIngestionPriorityMode: "mtime",
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info() {} },
   );
 
@@ -839,7 +832,7 @@ test("watcher-triggered scan resets resume cursor for full re-scan", async () =>
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
       markdownIngestionPriorityMode: "mtime",
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info() {} },
     fsApi as never,
   );
@@ -892,7 +885,7 @@ test("ingest feedback interface stores all 8 daemon fields without dropping any"
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info() {} },
   );
 
@@ -932,7 +925,7 @@ test("REPLACE and APPEND ingest modes are unaffected by feedback interface chang
       markdownIngestionDebounceMs: 0,
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
-    async () => rpc,
+    async () => rpc as never,
     { error() {}, warn() {}, info() {} },
   );
 

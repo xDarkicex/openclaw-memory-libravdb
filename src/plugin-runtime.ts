@@ -1,11 +1,8 @@
-import { RpcClient } from "./rpc.js";
-import { GrpcKernelClient } from "./grpc-client.js";
-import { daemonProvisioningHint, startSidecar } from "./sidecar.js";
-import type { LoggerLike, PluginConfig, SidecarHandle } from "./types.js";
+import { LibravDBClient } from "./libravdb-client.js";
+import type { LoggerLike, PluginConfig } from "./types.js";
 import { formatError } from "./format-error.js";
-import { readFileSync } from "node:fs";
 
-export type RpcGetter = () => Promise<RpcClient>;
+export type ClientGetter = () => Promise<LibravDBClient>;
 export const DEFAULT_RPC_TIMEOUT_MS = 30000;
 export const STARTUP_HEALTH_TIMEOUT_MS = 2000;
 
@@ -36,65 +33,44 @@ export interface LifecycleHint {
 export type RuntimeShutdownTask = () => Promise<void> | void;
 
 export interface PluginRuntime {
-  getRpc: RpcGetter;
-  getKernel(): Promise<GrpcKernelClient | null>;
+  getClient: ClientGetter;
   emitLifecycleHint(hint: LifecycleHint): Promise<void>;
   onShutdown(task: RuntimeShutdownTask): void;
   shutdown(): Promise<void>;
+}
+
+export function daemonProvisioningHint(): string {
+  return "If you installed the npm package, install and start libravdbd separately; the package does not provision the daemon binary, ONNX Runtime, or model assets.";
 }
 
 export function createPluginRuntime(
   cfg: PluginConfig,
   logger: LoggerLike = console,
 ): PluginRuntime {
-  let started: Promise<{ rpc: RpcClient; sidecar: SidecarHandle; kernel: GrpcKernelClient | null }> | null = null;
+  let started: Promise<LibravDBClient> | null = null;
   let stopped = false;
   let shuttingDown = false;
   const shutdownTasks: RuntimeShutdownTask[] = [];
 
-  const ensureStarted = async () => {
+  const ensureStarted = async (): Promise<LibravDBClient> => {
     if (stopped) {
       throw new Error("LibraVDB plugin runtime has been shut down");
     }
     if (!started) {
       started = (async () => {
-        validateGrpcKernelConfig(cfg, logger);
+        validateTlsConfig(cfg, logger);
 
-        const sidecar = await startSidecar(cfg, logger);
-        const rpc = new RpcClient(sidecar.socket, {
+        const client = new LibravDBClient({
+          endpoint: cfg.grpcEndpoint,
           timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
+          tlsCaPath: cfg.grpcEndpointTlsCa,
+          tlsMode: cfg.grpcEndpointTlsMode,
+          tlsClientCertPath: cfg.grpcEndpointTlsClientCert,
+          tlsClientKeyPath: cfg.grpcEndpointTlsClientKey,
         });
-        const health = await rpc.call<{ ok?: boolean; message?: string }>("health", {}, {
-          timeoutMs: resolveStartupHealthTimeoutMs(cfg),
-        });
-        if (!health.ok) {
-          try {
-            await sidecar.shutdown();
-          } catch {
-            // Ignore cleanup failure on startup rejection.
-          }
-          throw enrichStartupError("LibraVDB daemon failed health check", health.message);
-        }
-        let kernel: GrpcKernelClient | null = null;
-        if (cfg.grpcEndpoint) {
-            const secret = loadSecretFromEnv();
-            try {
-              kernel = new GrpcKernelClient({
-                endpoint: cfg.grpcEndpoint,
-                secret,
-                timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
-                tlsCaPath: cfg.grpcEndpointTlsCa,
-                tlsMode: cfg.grpcEndpointTlsMode,
-                tlsClientCertPath: cfg.grpcEndpointTlsClientCert,
-                tlsClientKeyPath: cfg.grpcEndpointTlsClientKey,
-              });
-            } catch (error) {
-              // Only gRPC init errors land here — config validation already threw above
-              logger.warn?.(`LibraVDB: failed to initialize gRPC kernel client: ${formatError(error)}`);
-            }
-        }
 
-        return { rpc, sidecar, kernel };
+        await client.bootstrapHandshake();
+        return client;
       })().catch((error) => {
         started = null;
         throw enrichStartupError(error);
@@ -104,16 +80,13 @@ export function createPluginRuntime(
   };
 
   return {
-    async getRpc() {
-      return (await ensureStarted()).rpc;
-    },
-    async getKernel() {
-      return (await ensureStarted()).kernel;
+    async getClient() {
+      return await ensureStarted();
     },
     async emitLifecycleHint(hint: LifecycleHint) {
       try {
-        const active = await ensureStarted();
-        await active.rpc.call("session_lifecycle_hint", hint);
+        const client = await ensureStarted();
+        await client.sessionLifecycleHint(hint);
       } catch (error) {
         logger.warn?.(`LibraVDB lifecycle hint dropped: ${formatError(error)}`);
       }
@@ -142,23 +115,19 @@ export function createPluginRuntime(
       if (!started) {
         return;
       }
-      const active = started;
+      const client = started;
       started = null;
-      const { rpc, sidecar, kernel } = await active;
       try {
-        if (kernel) kernel.close();
-        await rpc.call("flush", {});
-      } finally {
-        await sidecar.shutdown();
+        await client.then((c) => c.flush({}));
+        (await client).close();
+      } catch {
+        // best-effort flush on shutdown
       }
     },
   };
 }
 
-export function validateGrpcKernelConfig(cfg: PluginConfig, logger: LoggerLike): void {
-  if (!cfg.grpcEndpoint) {
-    return;
-  }
+function validateTlsConfig(cfg: PluginConfig, logger: LoggerLike): void {
   if (
     cfg.grpcEndpointTlsMode !== undefined &&
     !isTlsModeValid(cfg.grpcEndpointTlsMode)
@@ -193,20 +162,6 @@ export function validateGrpcKernelConfig(cfg: PluginConfig, logger: LoggerLike):
       );
     }
   }
-}
-
-function loadSecretFromEnv(): string | undefined {
-  const secret = process.env.LIBRAVDB_AUTH_SECRET;
-  if (secret) return secret;
-  const path = process.env.LIBRAVDB_AUTH_SECRET_FILE;
-  if (path) {
-    try {
-      return readFileSync(path, "utf8").trim();
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
 }
 
 export function enrichStartupError(error: unknown, healthMessage?: string): Error {

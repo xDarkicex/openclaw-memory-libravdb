@@ -2,7 +2,6 @@ import type { PluginRuntime } from "./plugin-runtime.js";
 import type {
   LoggerLike,
   PluginConfig,
-  SearchResult,
 } from "./types.js";
 import {
   AssembleContextInternalRequest,
@@ -497,7 +496,7 @@ function isQuestionShapedRecallCandidate(text: string): boolean {
   );
 }
 
-function rankExactRecallCandidate(result: SearchResult, token: string): number {
+function rankExactRecallCandidate(result: { text: string; score: number }, token: string): number {
   if (typeof result.text !== "string" || !result.text.includes(token)) {
     return Number.NEGATIVE_INFINITY;
   }
@@ -528,7 +527,7 @@ function escapeMemoryFactText(text: string): string {
     .replaceAll("\t", "&#9;");
 }
 
-function buildExactRecallFact(result: SearchResult, token: string): string {
+function buildExactRecallFact(result: { text: string }, token: string): string {
   const factText = extractExactRecallFactText(result.text, token);
   return `<memory_fact source="exact_recalled">${escapeMemoryFactText(factText)}</memory_fact>`;
 }
@@ -612,18 +611,6 @@ export function buildContextEngineFactory(
       cfg.compactionThresholdFraction,
     );
 
-  async function getKernelOrNull(phase: string): Promise<Awaited<ReturnType<PluginRuntime["getKernel"]>>> {
-    try {
-      return await runtime.getKernel();
-    } catch (error) {
-      logger.warn?.(
-        `LibraVDB ${phase} kernel unavailable, falling back to sidecar: ` +
-        `${error instanceof Error ? error.message : String(error)}`,
-      );
-      return null;
-    }
-  }
-
   const buildAssemblyConfig = (tokenBudget: number | undefined) => ({
     useSessionRecallProjection: cfg.useSessionRecallProjection,
     useSessionSummarySearchExperiment: cfg.useSessionSummarySearchExperiment,
@@ -687,9 +674,9 @@ export function buildContextEngineFactory(
     );
     if (missingTokens.length === 0) return assembled;
 
-    let rpc: Awaited<ReturnType<typeof runtime.getRpc>>;
+    let client: Awaited<ReturnType<typeof runtime.getClient>>;
     try {
-      rpc = await runtime.getRpc();
+      client = await runtime.getClient();
     } catch (error) {
       logger.warn?.(
         `LibraVDB exact recall skipped sessionId=${args.sessionId}: ` +
@@ -700,7 +687,7 @@ export function buildContextEngineFactory(
     const injectedFacts: string[] = [];
     for (const token of missingTokens) {
       try {
-        const result = await rpc.call<{ results: SearchResult[] }>("search_text_collections", {
+        const result = await client.searchTextCollections({
           collections: [resolveUserCollection(args.userId), "global"],
           text: token,
           k: Math.max(EXACT_RECALL_SEARCH_K, cfg.topK ?? 0),
@@ -780,27 +767,6 @@ export function buildContextEngineFactory(
     };
   }
 
-  function isGrpcAuthConfigured(): boolean {
-    const secret = process.env.LIBRAVDB_AUTH_SECRET?.trim();
-    const secretFile = process.env.LIBRAVDB_AUTH_SECRET_FILE?.trim();
-    return (
-      typeof secret === "string" && secret.length > 0
-    ) || (
-      typeof secretFile === "string" && secretFile.length > 0
-    );
-  }
-
-  function buildGrpcAuthInitializationError(error: unknown): Error {
-    const code = typeof (error as { code?: unknown } | undefined)?.code === "number" ||
-      typeof (error as { code?: unknown } | undefined)?.code === "string"
-      ? ` code=${String((error as { code: unknown }).code)}`
-      : "";
-    return new Error(
-      `LibraVDB gRPC auth initialization failed${code}; ` +
-      `check LIBRAVDB_AUTH_SECRET and daemon auth configuration`,
-    );
-  }
-
   async function runCompaction(args: {
     sessionId: string;
     force?: boolean;
@@ -809,15 +775,9 @@ export function buildContextEngineFactory(
     currentTokenCount?: number;
   }): Promise<OpenClawCompatibleCompactResult> {
     const request = buildCompactSessionRequest(args);
-    const kernel = await getKernelOrNull("compact");
     try {
-      if (kernel) {
-        return normalizeCompactResult(await kernel.compactSession(request), {
-          tokensBefore: args.currentTokenCount,
-        });
-      }
-      const rpc = await runtime.getRpc();
-      return normalizeCompactResult(await rpc.call("compact_session", request), {
+      const client = await runtime.getClient();
+      return normalizeCompactResult(await client.compactSession(request), {
         tokensBefore: args.currentTokenCount,
       });
     } catch (error) {
@@ -893,29 +853,10 @@ export function buildContextEngineFactory(
         `LibraVDB bootstrap sessionId=${sessionId} userId=${userId} ` +
         `sessionKey=${args.sessionKey ?? "(none)"}`,
       );
-      const kernel = await getKernelOrNull("bootstrap");
-      if (kernel) {
-        try {
-          await kernel.initializeSession({
-            clientId: "openclaw-ts-wrapper",
-            clientCapabilities: [{ name: "grpc", version: "1.0" }]
-          });
-        } catch (error) {
-          if (isGrpcAuthConfigured()) {
-            throw buildGrpcAuthInitializationError(error);
-          }
-          // Proceed when the kernel does not require auth and the init call is unavailable.
-        }
-        return await kernel.bootstrapSession({
-          sessionId,
-          sessionKey: args.sessionKey,
-          userId,
-        });
-      }
-      const rpc = await runtime.getRpc();
-      return await rpc.call("bootstrap_session_kernel", {
-        ...args,
+      const client = await runtime.getClient();
+      return await client.bootstrapSessionKernel({
         sessionId,
+        sessionKey: args.sessionKey,
         userId,
       });
     },
@@ -932,22 +873,13 @@ export function buildContextEngineFactory(
         `contentLen=${message.content.length}`,
       );
       try {
-        const kernel = await getKernelOrNull("ingest");
-        if (kernel) {
-          return await kernel.ingestMessage({
-            sessionId,
-            sessionKey: args.sessionKey,
-            userId,
-            message,
-            isHeartbeat: args.isHeartbeat,
-          });
-        }
-        const rpc = await runtime.getRpc();
-        return await rpc.call("ingest_message_kernel", {
-          ...args,
+        const client = await runtime.getClient();
+        return await client.ingestMessageKernel({
           sessionId,
+          sessionKey: args.sessionKey,
           userId,
           message,
+          isHeartbeat: args.isHeartbeat,
         });
       } catch (error) {
         logger.warn?.(
@@ -1018,48 +950,17 @@ export function buildContextEngineFactory(
           return buildBudgetFallbackContext(args.messages, args.tokenBudget);
         }
       }
-      const kernel = await getKernelOrNull("assemble");
-      if (kernel) {
-        try {
-          const assembled = normalizeAssembleResult(await kernel.assembleContext({
-            sessionId,
-            sessionKey: args.sessionKey,
-            userId,
-            queryText: args.prompt ?? "",
-            visibleMessages: messages,
-            tokenBudget: args.tokenBudget,
-            config: buildAssemblyConfig(args.tokenBudget),
-            emitDebug: true,
-          }));
-          return enforceTokenBudgetInvariant(
-            await augmentWithExactRecall(assembled, {
-              queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
-              userId,
-              sessionId,
-              tokenBudget: args.tokenBudget,
-            }),
-            args.tokenBudget,
-          );
-        } catch (error) {
-          logger.warn?.(
-            `LibraVDB assemble kernel failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          return buildBudgetFallbackContext(args.messages, args.tokenBudget);
-        }
-      }
-
-      const rpc = await runtime.getRpc();
+      const client = await runtime.getClient();
       try {
-        const resp = await rpc.call<AssembleContextInternalResponse>("assemble_context_internal", {
+        const resp = await client.assembleContextInternal({
           sessionId,
           sessionKey: args.sessionKey,
           userId,
+          prompt: args.prompt ?? "",
           messages,
           tokenBudget: args.tokenBudget,
-          prompt: args.prompt,
-          emitDebug: true,
           config: buildAssemblyConfig(args.tokenBudget),
+          emitDebug: true,
         });
         const assembled = normalizeAssembleResult(resp);
         const enforced = enforceTokenBudgetInvariant(
@@ -1080,8 +981,7 @@ export function buildContextEngineFactory(
         return enforced;
       } catch (error) {
         logger.warn?.(
-          `LibraVDB assemble sidecar failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)
-          }`,
+          `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
         return buildBudgetFallbackContext(args.messages, args.tokenBudget);
       }
@@ -1120,34 +1020,13 @@ export function buildContextEngineFactory(
         `heartbeat=${args.isHeartbeat ?? false}`,
       );
       try {
-        const kernel = await getKernelOrNull("afterTurn");
+        const client = await runtime.getClient();
         const currentTokenCount = normalizeCurrentTokenCount(
           typeof args.runtimeContext?.currentTokenCount === "number"
             ? args.runtimeContext.currentTokenCount
             : undefined,
         );
-        if (kernel) {
-          const result = await kernel.afterTurn({
-            sessionId,
-            sessionKey: args.sessionKey,
-            userId,
-            messages,
-            isHeartbeat: args.isHeartbeat,
-          });
-          await performAfterTurnPredictiveCompaction({
-            sessionId,
-            messages,
-            tokenBudget: args.tokenBudget,
-            currentTokenCount,
-          });
-          const predictions = (result as any).predictions;
-          if (Array.isArray(predictions) && predictions.length > 0) {
-            predictiveContextCache.set(sessionId, predictions);
-          }
-          return result;
-        }
-        const rpc = await runtime.getRpc();
-        const result = await rpc.call("after_turn_kernel", {
+        const result = await client.afterTurnKernel({
           sessionId,
           sessionKey: args.sessionKey,
           userId,

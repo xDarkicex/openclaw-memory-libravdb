@@ -3,9 +3,12 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import type { PartialMessage } from "@bufbuild/protobuf";
+import type { MarkdownSourceMeta as ProtoSourceMeta } from "@xdarkicex/libravdb-contracts";
 import type { LoggerLike, PluginConfig } from "./types.js";
 import { formatError } from "./format-error.js";
 import { IngestQueue } from "./ingest-queue.js";
+import type { ClientGetter } from "./plugin-runtime.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
@@ -13,12 +16,6 @@ const MARKDOWN_INGEST_VERSION = 3;
 const HASH_BACKEND = "wasm-fnv1a64";
 const STREAM_CHUNK_BYTES = 64 * 1024;
 type Disposable = { close(): void };
-
-interface RpcLike {
-  call<T>(method: string, params: unknown): Promise<T>;
-}
-
-type RpcGetterLike = () => Promise<RpcLike>;
 
 interface FsDirentLike {
   name: string;
@@ -159,7 +156,7 @@ interface DeleteAuthoredDocumentParams {
 
 export function createMarkdownIngestionHandle(
   cfg: PluginConfig,
-  getRpc: RpcGetterLike,
+  getClient: ClientGetter,
   logger: LoggerLike = console,
   fsApi: FsApi = createRealFsApi(),
 ): MarkdownIngestionHandle {
@@ -179,7 +176,7 @@ export function createMarkdownIngestionHandle(
           priorityMode: cfg.markdownIngestionPriorityMode,
           maxTokensPerFile: cfg.markdownIngestionMaxTokensPerFile,
         },
-        getRpc,
+        getClient,
         logger,
         fsApi,
       ),
@@ -200,7 +197,7 @@ export function createMarkdownIngestionHandle(
           priorityMode: cfg.markdownIngestionPriorityMode,
           maxTokensPerFile: cfg.markdownIngestionMaxTokensPerFile,
         },
-        getRpc,
+        getClient,
         logger,
         fsApi,
       ),
@@ -254,7 +251,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly excludePatterns: string[];
   private readonly debounceMs: number;
   private readonly fsApi: FsApi;
-  private readonly getRpc: RpcGetterLike;
+  private readonly getClient: ClientGetter;
   private readonly logger: LoggerLike;
   private readonly snapshotPath: string;
   private readonly priorityMode: "mtime" | "ctime" | "size" | "fifo";
@@ -281,14 +278,14 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private snapshotLoaded = false;
   private snapshotDirty = false;
 
-  constructor(kind: string, config: GenericMarkdownSourceConfig, getRpc: RpcGetterLike, logger: LoggerLike, fsApi: FsApi) {
+  constructor(kind: string, config: GenericMarkdownSourceConfig, getClient: ClientGetter, logger: LoggerLike, fsApi: FsApi) {
     this.kind = kind;
     this.roots = config.roots;
     this.includePatterns = config.include?.length ? config.include : [];
     this.excludePatterns = config.exclude?.length ? config.exclude : [];
     this.debounceMs = config.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.fsApi = fsApi;
-    this.getRpc = getRpc;
+    this.getClient = getClient;
     this.logger = logger;
     this.snapshotPath = config.snapshotPath ?? resolveMarkdownSnapshotPath(kind);
     this.priorityMode = config.priorityMode ?? "mtime";
@@ -756,10 +753,47 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
 
   private async getIngestQueue(): Promise<IngestQueue> {
     if (!this.ingestQueue) {
-      const rpc = await this.getRpc();
-      this.ingestQueue = new IngestQueue(rpc.call.bind(rpc), this.logger, {
-        onChunkFeedback: (feedback) => this.applyIngestFeedback(feedback),
-      });
+      const client = await this.getClient();
+      this.ingestQueue = new IngestQueue(
+        (params) => client.ingestMarkdownDocument({
+          sourceDoc: params.sourceDoc,
+          text: params.text,
+          tokenizerId: params.tokenizerId,
+          coreDoc: params.coreDoc,
+          mode: params.mode,
+          sourceMeta: params.sourceMeta ? ({
+            sourceRoot: params.sourceMeta.sourceRoot,
+            sourcePath: params.sourceMeta.sourcePath,
+            sourceKind: params.sourceMeta.sourceKind,
+            fileHash: params.sourceMeta.fileHash,
+            sourceSize: BigInt(params.sourceMeta.sourceSize),
+            sourceMtimeMs: BigInt(Math.trunc(params.sourceMeta.sourceMtimeMs)),
+            sourceCtimeMs: BigInt(Math.trunc(params.sourceMeta.sourceCtimeMs)),
+            ingestVersion: params.sourceMeta.ingestVersion,
+            hashBackend: params.sourceMeta.hashBackend,
+          } satisfies PartialMessage<ProtoSourceMeta>) : undefined,
+        }).then((r) => ({
+          ok: r.ok,
+          feedback: r.feedback ? {
+            queueDepth: r.feedback.queueDepth,
+            queueCapacity: r.feedback.queueCapacity,
+            acceptMore: r.feedback.acceptMore,
+            retryAfterMs: r.feedback.retryAfterMs,
+            processingTimeUs: Number(r.feedback.processingTimeUs),
+            nodesAccepted: r.feedback.nodesAccepted,
+            nodesRejected: r.feedback.nodesRejected,
+            tokensIngested: r.feedback.tokensIngested,
+            tokenBurstLimit: r.feedback.tokenBurstLimit,
+            walDepth: r.feedback.walDepth,
+            walCapacity: r.feedback.walCapacity,
+          } : undefined,
+        })),
+        (params) => client.deleteAuthoredDocument(params).then(() => undefined),
+        this.logger,
+        {
+          onChunkFeedback: (feedback) => this.applyIngestFeedback(feedback),
+        },
+      );
     }
     return this.ingestQueue;
   }

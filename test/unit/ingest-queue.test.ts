@@ -23,12 +23,13 @@ function baseParams() {
 }
 
 test("chunked ingest replaces first chunk then appends remaining chunks", async () => {
-  const calls: Array<{ method: string; params: { mode?: IngestMode; text: string } }> = [];
+  const calls: Array<{ mode?: IngestMode; text: string }> = [];
   const queue = new IngestQueue(
-    async (method, params) => {
-      calls.push({ method, params: params as { mode?: IngestMode; text: string } });
-      return { ok: true } as never;
+    async (params) => {
+      calls.push({ mode: params.mode, text: params.text });
+      return { ok: true };
     },
+    async () => {},
     { error() {}, warn() {} },
     { chunkTokens: 4, maxRetries: 0 },
   );
@@ -44,10 +45,8 @@ test("chunked ingest replaces first chunk then appends remaining chunks", async 
   );
 
   assert.ok(calls.length > 1, "test input should split into multiple chunks");
-  assert.equal(calls[0]?.method, "ingest_markdown_document");
-  assert.equal(calls[0]?.params.mode, IngestMode.REPLACE);
+  assert.equal(calls[0]?.mode, IngestMode.REPLACE);
   for (const call of calls.slice(1)) {
-    assert.equal(call.method, "ingest_markdown_document");
-    assert.equal(call.params.mode, IngestMode.APPEND);
+    assert.equal(call.mode, IngestMode.APPEND);
   }
 });

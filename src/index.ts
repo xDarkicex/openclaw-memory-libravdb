@@ -96,8 +96,8 @@ export function register(api: OpenClawPluginApi) {
 
   // Migrated from three legacy calls to a single registerMemoryCapability.
   api.registerMemoryCapability(MEMORY_ID, {
-    promptBuilder: buildMemoryPromptSection(runtime.getRpc, cfg),
-    runtime: buildMemoryRuntimeBridge(runtime.getRpc, cfg),
+    promptBuilder: buildMemoryPromptSection(runtime.getClient, cfg),
+    runtime: buildMemoryRuntimeBridge(runtime.getClient, cfg),
   });
 
   // Register embedding adapter IDs so OpenClaw can discover available
@@ -126,8 +126,8 @@ export function register(api: OpenClawPluginApi) {
     () => buildContextEngineFactory(runtime, cfg, api.logger ?? console),
   );
 
-  const markdownIngestion = createMarkdownIngestionHandle(cfg, runtime.getRpc, api.logger ?? console);
-  const dreamPromotion = createDreamPromotionHandle(cfg, runtime.getRpc, api.logger ?? console);
+  const markdownIngestion = createMarkdownIngestionHandle(cfg, runtime.getClient, api.logger ?? console);
+  const dreamPromotion = createDreamPromotionHandle(cfg, runtime.getClient, api.logger ?? console);
 
   api.registerService?.({
     id: "libravdb-markdown-ingestion",

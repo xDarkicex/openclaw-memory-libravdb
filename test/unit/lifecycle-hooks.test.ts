@@ -7,10 +7,9 @@ import type { LifecycleHint, PluginRuntime } from "../../src/plugin-runtime.js";
 function createRuntimeRecorder() {
   const hints: LifecycleHint[] = [];
   const runtime: PluginRuntime = {
-    async getRpc() {
+    async getClient() {
       throw new Error("not used in lifecycle hook tests");
     },
-    getKernel: async () => null,
     async emitLifecycleHint(hint: LifecycleHint) {
       hints.push(hint);
     },

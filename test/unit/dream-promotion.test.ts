@@ -50,6 +50,16 @@ test("dream promotion parser rejects partially parsed numeric metadata", () => {
   assert.equal(candidates[0]?.uniqueQueries, 2);
 });
 
+import type { LibravDBClient } from "../../src/libravdb-client.js";
+
+function fakeClient(impl?: { promoteDreamEntries?: (params: unknown) => Promise<unknown> }) {
+  return {
+    async promoteDreamEntries(params: unknown) {
+      return impl?.promoteDreamEntries?.(params) ?? { promoted: 0 };
+    },
+  } as unknown as LibravDBClient;
+}
+
 test("disabled dream promotion does not validate unused diary paths", () => {
   assert.doesNotThrow(() => {
     createDreamPromotionHandle(
@@ -58,7 +68,7 @@ test("disabled dream promotion does not validate unused diary paths", () => {
         dreamPromotionDiaryPath: "/etc/passwd",
         dreamPromotionUserId: "fixed-user",
       },
-      async () => ({ call: async <T>() => ({ promoted: 0 }) as T }),
+      async () => fakeClient(),
     );
   });
 });
@@ -75,7 +85,7 @@ test("enabled dream promotion validates configured diary paths", () => {
           dreamPromotionDiaryPath: "/etc/passwd",
           dreamPromotionUserId: "fixed-user",
         },
-        async () => ({ call: async <T>() => ({ promoted: 0 }) as T }),
+        async () => fakeClient(),
       ),
       /must be within an allowed root/,
     );
@@ -89,13 +99,13 @@ test("enabled dream promotion validates configured diary paths", () => {
 });
 
 test("dream promotion rejects traversal and paths outside allowed roots", async () => {
-  const rpc = { call: async <T>() => ({ promoted: 0 }) as T };
+  const client = fakeClient();
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;
   delete process.env.OPENCLAW_STATE_DIR;
 
   try {
     await assert.rejects(
-      () => promoteDreamDiaryFile(rpc, {
+      () => promoteDreamDiaryFile(client, {
         userId: "fixed-user",
         diaryPath: `${os.tmpdir()}/../etc/passwd`,
         text: "",
@@ -104,7 +114,7 @@ test("dream promotion rejects traversal and paths outside allowed roots", async 
     );
 
     await assert.rejects(
-      () => promoteDreamDiaryFile(rpc, {
+      () => promoteDreamDiaryFile(client, {
         userId: "fixed-user",
         diaryPath: "/etc/passwd",
         text: "",
@@ -121,13 +131,13 @@ test("dream promotion rejects traversal and paths outside allowed roots", async 
 });
 
 test("dream promotion accepts explicit diary files under an allowed root", async () => {
-  const calls: Array<{ method: string; params: unknown }> = [];
-  const rpc = {
-    call: async <T>(method: string, params: unknown): Promise<T> => {
-      calls.push({ method, params });
-      return { promoted: 1 } as T;
+  const calls: Array<{ params: unknown }> = [];
+  const client = fakeClient({
+    promoteDreamEntries: async (params: unknown) => {
+      calls.push({ params });
+      return { promoted: 1 };
     },
-  };
+  });
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "libravdb-state-"));
   process.env.OPENCLAW_STATE_DIR = stateDir;
@@ -135,7 +145,7 @@ test("dream promotion accepts explicit diary files under an allowed root", async
   try {
     const diaryPath = path.join(stateDir, "libravdb-dreams.md");
 
-    await promoteDreamDiaryFile(rpc, {
+    await promoteDreamDiaryFile(client, {
       userId: "fixed-user",
       diaryPath,
       text: [

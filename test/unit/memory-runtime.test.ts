@@ -7,60 +7,47 @@ import type { PluginConfig, SearchResult } from "../../src/types.js";
 class FakeRpc {
   public calls: Array<{ method: string; params: Record<string, unknown> }> = [];
 
-  async call<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    this.calls.push({ method, params });
+  async status() {
+    this.calls.push({ method: "status", params: {} });
+    return {
+      ok: true,
+      message: "ok",
+      turnCount: 12,
+      memoryCount: 4,
+      gatingThreshold: 0.35,
+      abstractiveReady: false,
+      embeddingProfile: "all-minilm-l6-v2",
+      sessionTurnCount: 7,
+    };
+  }
 
-    switch (method) {
-      case "search_text":
-        return {
-          results: [
-            {
-              id: "dream-1",
-              score: 0.93,
-              text: "dream recall item",
-              metadata: { collection: String(params.collection) },
-            },
-          ],
-        } as T;
-      case "search_text_collections":
+  async searchText(params: Record<string, unknown>) {
+    this.calls.push({ method: "searchText", params });
+    return {
+      results: [
         {
-          const collections = params.collections as string[] | undefined;
-        return {
-          results: [
-            {
-              id: "m1",
-              score: 0.91,
-              text: "remembered item",
-              metadata: { collection: collections?.[0] ?? "user:u1" },
-            },
-          ],
-        } as T;
-        }
-      case "status":
-        return {
-          ok: true,
-          message: "ok",
-          turnCount: 12,
-          memoryCount: 4,
-          gatingThreshold: 0.35,
-          abstractiveReady: false,
-          embeddingProfile: "all-minilm-l6-v2",
-          sessionTurnCount: 7,
-        } as T;
-      case "list_collection":
-        return {
-          results: [
-            {
-              id: "m1",
-              score: 0.91,
-              text: "remembered item",
-              metadata: { collection: String(params.collection) },
-            },
-          ],
-        } as T;
-      default:
-        throw new Error(`unexpected rpc method: ${method}`);
-    }
+          id: "dream-1",
+          score: 0.93,
+          text: "dream recall item",
+          metadata: { collection: String(params.collection) },
+        },
+      ],
+    };
+  }
+
+  async searchTextCollections(params: Record<string, unknown>) {
+    this.calls.push({ method: "searchTextCollections", params });
+    const collections = params.collections as string[] | undefined;
+    return {
+      results: [
+        {
+          id: "m1",
+          score: 0.91,
+          text: "remembered item",
+          metadata: { collection: collections?.[0] ?? "user:u1" },
+        },
+      ],
+    };
   }
 }
 
@@ -75,7 +62,7 @@ test("memory runtime bridge searches the resolved durable namespace under the la
   assert.ok(Array.isArray(result));
 
   assert.equal(rpc.calls[0]?.method, "status");
-  assert.equal(rpc.calls[1]?.method, "search_text_collections");
+  assert.equal(rpc.calls[1]?.method, "searchTextCollections");
 
   const collections = rpc.calls[1]?.params.collections as string[] | undefined;
   assert.ok(Array.isArray(collections));
@@ -96,9 +83,9 @@ test("memory runtime bridge routes dream queries to the dream collection when cr
     const result = await manager.search({ query: "tell me about your dreams from last week", userId: "u1" });
 
     assert.ok(Array.isArray(result));
-    assert.equal(rpc.calls[1]?.method, "search_text");
+    assert.equal(rpc.calls[1]?.method, "searchText");
     assert.deepEqual(rpc.calls[1]?.params.collection, "dream:u1");
-    assert.equal(rpc.calls.some((call) => call.method === "search_text_collections"), false);
+    assert.equal(rpc.calls.some((call) => call.method === "searchTextCollections"), false);
     assert.equal(result.length, 1);
     assert.equal(result[0]?.snippet, "dream recall item");
   }
@@ -117,7 +104,7 @@ test("memory runtime bridge rejects invalid dream collections before daemon sear
     /Invalid collection namespace/,
   );
   assert.equal(
-    rpc.calls.some((call) => call.method === "search_text"),
+    rpc.calls.some((call) => call.method === "searchText"),
     false,
     "invalid dream collection should not be sent to the daemon",
   );
@@ -135,7 +122,7 @@ test("memory runtime bridge treats dream queries as session-scoped searches when
   });
 
   assert.ok(Array.isArray(result));
-  assert.equal(rpc.calls[1]?.method, "search_text");
+  assert.equal(rpc.calls[1]?.method, "searchText");
   assert.equal(rpc.calls[1]?.params.collection, "session:s1");
   assert.equal(rpc.calls.some((call) => call.params.collection === "dream:u1"), false);
   assert.equal(rpc.calls.some((call) => Array.isArray(call.params.collections)), false);
@@ -161,7 +148,7 @@ test("memory runtime bridge falls back to session-scoped namespace when no other
   const result = await manager.search({ query: "find prior context", sessionId: "s-fallback" });
 
   assert.ok(Array.isArray(result));
-  assert.equal(rpc.calls[1]?.method, "search_text_collections");
+  assert.equal(rpc.calls[1]?.method, "searchTextCollections");
   const collections = rpc.calls[1]?.params.collections as string[] | undefined;
   assert.ok(Array.isArray(collections));
   assert.equal(collections[0], "session:s-fallback");
@@ -195,7 +182,7 @@ test("memory runtime bridge does not authorize hidden paths from legacy search r
   );
 
   assert.equal(
-    rpc.calls.some((call) => call.method === "list_collection"),
+    rpc.calls.some((call) => call.method === "listCollection"),
     false,
     "legacy searches should not authorize paths they did not return",
   );
@@ -212,9 +199,9 @@ test("memory runtime bridge respects disabled cross-session recall", async () =>
   const result = await manager.search({ query: "find session context", sessionId: "s1", userId: "u1" });
 
   assert.ok(Array.isArray(result));
-  assert.equal(rpc.calls[1]?.method, "search_text");
+  assert.equal(rpc.calls[1]?.method, "searchText");
   assert.equal(rpc.calls[1]?.params.collection, "session_recall:s1");
-  assert.equal(rpc.calls.some((call) => call.method === "search_text_collections"), false);
+  assert.equal(rpc.calls.some((call) => call.method === "searchTextCollections"), false);
   assert.equal(result.length, 1);
 });
 
@@ -241,7 +228,7 @@ test("memory runtime bridge trims query and scope strings before searching", asy
   });
 
   assert.ok(Array.isArray(result));
-  assert.equal(rpc.calls[1]?.method, "search_text_collections");
+  assert.equal(rpc.calls[1]?.method, "searchTextCollections");
   assert.deepEqual(rpc.calls[1]?.params.collections, ["session:s1", "user:u1", "global"]);
   assert.equal(rpc.calls[1]?.params.text, "find prior context");
 });
@@ -292,7 +279,7 @@ test("memory runtime bridge rejects readFile paths not returned by search", asyn
   );
 
   assert.equal(
-    rpc.calls.some((call) => call.method === "list_collection"),
+    rpc.calls.some((call) => call.method === "listCollection"),
     false,
     "crafted paths should be rejected before collection listing",
   );

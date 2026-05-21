@@ -1,6 +1,6 @@
 import type { MemoryPromptSectionBuilder } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginConfig } from "./types.js";
-import type { RpcGetter } from "./plugin-runtime.js";
+import type { ClientGetter } from "./plugin-runtime.js";
 
 const MEMORY_PROMPT_HEADER = [
   "## Memory",
@@ -10,7 +10,7 @@ const MEMORY_PROMPT_HEADER = [
 ] as const;
 
 export function buildMemoryPromptSection(
-  _getRpc: RpcGetter,
+  _getClient: ClientGetter,
   _cfg: PluginConfig,
 ): MemoryPromptSectionBuilder {
   return function memoryPromptSection({

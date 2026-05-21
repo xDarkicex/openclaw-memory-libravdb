@@ -70,12 +70,16 @@
     "@grpc/proto-loader": "^0.8.0",
     "@openclaw/plugin-inspector": "0.3.7",
     "@types/node": "^20.11.0",
-    "@xdarkicex/libravdb-contracts": "^0.0.7",
+    "@xdarkicex/libravdb-contracts": "^0.2.0",
     "esbuild": "^0.27.0",
     "openclaw": "2026.4.11",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
     "openclaw": ">=2026.3.22"
+  },
+  "dependencies": {
+    "@connectrpc/connect": "^1.7.0",
+    "@connectrpc/connect-node": "^1.7.0"
   }
 }

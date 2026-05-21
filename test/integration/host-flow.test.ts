@@ -66,8 +66,31 @@ function buildContextEngineFactory(
   cfg: Parameters<typeof createContextEngineFactory>[1],
   logger: LoggerLike = NOOP_LOGGER,
 ) {
+  const rpcPromise = getRpc();
   const runtime = {
-    getRpc,
+    getClient: async () => {
+      const rpc = await rpcPromise;
+      return {
+        async bootstrapSessionKernel(params: any) {
+          return rpc.call("bootstrap_session_kernel", params);
+        },
+        async ingestMessageKernel(params: any) {
+          return rpc.call("ingest_message_kernel", params);
+        },
+        async afterTurnKernel(params: any) {
+          return rpc.call("after_turn_kernel", params);
+        },
+        async compactSession(params: any) {
+          return rpc.call("compact_session", params);
+        },
+        async assembleContextInternal(params: any) {
+          return rpc.call("assemble_context_internal", params);
+        },
+        async searchTextCollections(params: any) {
+          return rpc.call("search_text_collections", params);
+        },
+      };
+    },
     getKernel: async () => null,
     emitLifecycleHint: async () => {},
     onShutdown: () => {},
