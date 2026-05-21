@@ -57,10 +57,11 @@ export function createPluginRuntime(
       throw new Error("LibraVDB plugin runtime has been shut down");
     }
     if (!started) {
+      let client: LibravDBClient | undefined;
       started = (async () => {
         validateTlsConfig(cfg, logger);
 
-        const client = new LibravDBClient({
+        client = new LibravDBClient({
           endpoint: cfg.grpcEndpoint,
           timeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
           tlsCaPath: cfg.grpcEndpointTlsCa,
@@ -73,6 +74,7 @@ export function createPluginRuntime(
         return client;
       })().catch((error) => {
         started = null;
+        client?.close();
         throw enrichStartupError(error);
       });
     }
