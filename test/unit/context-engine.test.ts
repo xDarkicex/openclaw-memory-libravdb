@@ -342,15 +342,15 @@ test("context engine assemble drops messages when system prompt leaves no wrappe
 });
 
 test("context engine clamps predictive context additions against the token budget", async () => {
-  const rpc = new FakeRpc();
-  rpc.assembleResponse = {
+  const client = new FakeClient();
+  client.assembleResponse = {
     messages: [
       { role: "assistant", content: "this message should be dropped after predictive context is added" },
     ],
     estimatedTokens: 0,
     systemPromptAddition: "x".repeat(100),
   };
-  rpc.afterTurnResponse = {
+  client.afterTurnResponse = {
     ok: true,
     turnCount: 1,
     predictions: [
@@ -361,7 +361,7 @@ test("context engine clamps predictive context additions against the token budge
       },
     ],
   };
-  const engine = buildContextEngineFactory(fakeRuntime(rpc), { userId: "fixed-user" });
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
 
   await engine.afterTurn({
     sessionId: "s1",
