@@ -977,7 +977,7 @@ test("exact recall injects facts item-by-item, dropping tail items when budget i
     sessionKey: "sk1",
     messages: [makeMessage("user", `What do ${ma} ${mb} ${mc} mean?`)],
     prompt: `What do ${ma} ${mb} ${mc} mean?`,
-    tokenBudget: 380,
+    tokenBudget: 530,
   });
 
   const sp = assembled.systemPromptAddition;
@@ -1011,7 +1011,7 @@ test("exact recall inner-truncates a single oversized fact with [truncated] mark
     sessionKey: "sk1",
     messages: [makeMessage("user", `What does ${marker} mean?`)],
     prompt: `What does ${marker} mean?`,
-    tokenBudget: 400,
+    tokenBudget: 530,
   });
 
   const sp = assembled.systemPromptAddition;
@@ -1054,7 +1054,7 @@ test("predictive context injects items item-by-item, dropping tail items when bu
     sessionKey: "sk1",
     messages: [makeMessage("user", "continue")],
     prompt: "continue",
-    tokenBudget: 370,
+    tokenBudget: 520,
   });
 
   const sp = assembled.systemPromptAddition;
@@ -1092,7 +1092,7 @@ test("predictive context inner-truncates an oversized prediction with [truncated
     sessionKey: "sk1",
     messages: [makeMessage("user", "continue")],
     prompt: "continue",
-    tokenBudget: 400,
+    tokenBudget: 520,
   });
 
   const sp = assembled.systemPromptAddition;

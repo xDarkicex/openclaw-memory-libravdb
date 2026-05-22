@@ -42,6 +42,7 @@ const DISTINCTIVE_IDENTIFIER_RE = /\b([A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+){1
 const QUOTED_PHRASE_RE = /"([^"]{4,})"|'([^']{4,})'/g;
 const EXACT_RECALL_SEARCH_K = 32;
 const EXACT_RECALL_MAX_TOKENS = 4;
+const RESERVED_CURRENT_TURN_TOKENS = 150;
 const COMMON_QUERY_WORDS = new Set([
   "what", "does", "mean", "remember", "recall", "about", "this", "that",
   "the", "and", "for", "with", "from", "your", "have", "been", "were",
@@ -783,7 +784,7 @@ export function buildContextEngineFactory(
       ? resolveEffectiveAssembleBudget(args.tokenBudget)
       : undefined;
     const availableBudget = effectiveBudget != null
-      ? Math.max(0, effectiveBudget - assembled.estimatedTokens)
+      ? Math.max(0, effectiveBudget - approximateTokenCount(assembled.systemPromptAddition) - RESERVED_CURRENT_TURN_TOKENS)
       : Number.MAX_SAFE_INTEGER;
 
     const section = adaptivelyBuildWrappedSection(
@@ -1062,7 +1063,7 @@ export function buildContextEngineFactory(
             ? resolveEffectiveAssembleBudget(args.tokenBudget)
             : undefined;
           const availableBudget = effectiveBudget != null
-            ? Math.max(0, effectiveBudget - enforced.estimatedTokens)
+            ? Math.max(0, effectiveBudget - approximateTokenCount(enforced.systemPromptAddition) - RESERVED_CURRENT_TURN_TOKENS)
             : Number.MAX_SAFE_INTEGER;
 
           const section = adaptivelyBuildWrappedSection(
