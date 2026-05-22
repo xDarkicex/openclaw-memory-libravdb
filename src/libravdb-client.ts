@@ -87,6 +87,59 @@ export function resolveClientEndpoint(configuredEndpoint?: string): string {
   return `unix:${path.join(os.homedir(), ".libravdbd", "run", sockName)}`;
 }
 
+export function isLegacyJsonRpcHealthResponse(payload: string): boolean {
+  try {
+    const parsed = JSON.parse(payload.trim()) as { jsonrpc?: unknown; result?: { ok?: unknown } };
+    return parsed.jsonrpc === "2.0" && parsed.result?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function detectLegacyJsonRpcDaemon(endpoint: string, timeoutMs = 500): Promise<boolean> {
+  if (!endpoint.startsWith("unix:")) {
+    return false;
+  }
+  const socketPath = endpoint.slice(5);
+  if (!socketPath) {
+    return false;
+  }
+
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    let response = "";
+    const socket = net.createConnection(socketPath);
+    const finish = (value: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), Math.max(1, timeoutMs));
+    timer.unref?.();
+
+    socket.setEncoding("utf8");
+    socket.on("connect", () => {
+      socket.write('{"jsonrpc":"2.0","id":1,"method":"health","params":{}}\n');
+    });
+    socket.on("data", (chunk) => {
+      response += chunk;
+      if (isLegacyJsonRpcHealthResponse(response)) {
+        finish(true);
+      } else if (response.length > 4096) {
+        finish(false);
+      }
+    });
+    socket.on("end", () => finish(isLegacyJsonRpcHealthResponse(response)));
+    socket.on("close", () => finish(isLegacyJsonRpcHealthResponse(response)));
+    socket.on("error", () => finish(false));
+  });
+}
+
 type PromiseClient = ReturnType<typeof createPromiseClient<typeof LibravDB>>;
 
 // ---------------------------------------------------------------------------
@@ -176,6 +229,8 @@ export function createAuthInterceptor(
 export class LibravDBClient {
   private client: PromiseClient;
   private readonly secret: string | undefined;
+  private readonly endpoint: string;
+  private readonly legacyProbeTimeoutMs: number;
   private nonceHex: string | undefined;
   private closed = false;
 
@@ -183,6 +238,8 @@ export class LibravDBClient {
     this.secret = options.secret ?? loadSecretFromEnv();
 
     const rawEndpoint = resolveClientEndpoint(options.endpoint);
+    this.endpoint = rawEndpoint;
+    this.legacyProbeTimeoutMs = Math.min(options.timeoutMs ?? 30000, 1000);
     const isUnix = rawEndpoint.startsWith("unix:");
     const socketPath = isUnix ? rawEndpoint.slice(5) : undefined;
     const credMode = resolveCredentialMode(rawEndpoint, options.tlsMode);
@@ -245,8 +302,16 @@ export class LibravDBClient {
         },
       );
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (detail.includes("Protocol error") && await detectLegacyJsonRpcDaemon(this.endpoint, this.legacyProbeTimeoutMs)) {
+        throw new Error(
+          `LibraVDB: failed to handshake with daemon: ${detail}. ` +
+          "The endpoint answered legacy JSON-RPC health; this plugin requires a gRPC-compatible libravdbd daemon. " +
+          "Update or restart libravdbd with gRPC support, or pin the plugin to a daemon-compatible release.",
+        );
+      }
       throw new Error(
-        `LibraVDB: failed to handshake with daemon: ${error instanceof Error ? error.message : String(error)}`,
+        `LibraVDB: failed to handshake with daemon: ${detail}`,
       );
     }
   }

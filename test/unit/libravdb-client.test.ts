@@ -1,17 +1,53 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
   resolveClientEndpoint,
   createAuthInterceptor,
+  detectLegacyJsonRpcDaemon,
+  isLegacyJsonRpcHealthResponse,
   LibravDBClient,
   loadSecretFromEnv,
 } from "../../src/libravdb-client.js";
 
 import type { AuthInterceptorState } from "../../src/libravdb-client.js";
+
+async function withLegacyJsonRpcSocket(run: (endpoint: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(path.join(tmpdir(), "libravdb-legacy-jsonrpc-"));
+  const socketPath = path.join(dir, "libravdb.sock");
+  const server = net.createServer((socket) => {
+    let replied = false;
+    socket.setEncoding("utf8");
+    socket.on("data", () => {
+      if (replied) {
+        return;
+      }
+      replied = true;
+      socket.end('{"jsonrpc":"2.0","id":1,"result":{"ok":true,"message":"ok"}}\n');
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+
+  try {
+    await run(`unix:${socketPath}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // resolveClientEndpoint
@@ -108,6 +144,21 @@ test("loadSecretFromEnv ignores whitespace direct secrets without file fallback"
   }
 });
 
+test("isLegacyJsonRpcHealthResponse recognizes legacy health responses", () => {
+  assert.equal(
+    isLegacyJsonRpcHealthResponse('{"jsonrpc":"2.0","id":1,"result":{"ok":true,"message":"ok"}}'),
+    true,
+  );
+  assert.equal(isLegacyJsonRpcHealthResponse('{"jsonrpc":"2.0","result":{"ok":false}}'), false);
+  assert.equal(isLegacyJsonRpcHealthResponse("not json"), false);
+});
+
+test("detectLegacyJsonRpcDaemon probes legacy JSON-RPC unix health", { skip: process.platform === "win32" }, async () => {
+  await withLegacyJsonRpcSocket(async (endpoint) => {
+    assert.equal(await detectLegacyJsonRpcDaemon(endpoint, 500), true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Client lifecycle
 // ---------------------------------------------------------------------------
@@ -123,6 +174,17 @@ test("close prevents RPC methods", async () => {
 test("bootstrapHandshake wraps transport errors", async () => {
   const client = new LibravDBClient({ secret: "test" });
   await assert.rejects(client.bootstrapHandshake(), /LibraVDB: failed to handshake/);
+});
+
+test("bootstrapHandshake reports legacy JSON-RPC daemon compatibility", { skip: process.platform === "win32" }, async () => {
+  await withLegacyJsonRpcSocket(async (endpoint) => {
+    const client = new LibravDBClient({ endpoint, timeoutMs: 500 });
+    await assert.rejects(
+      client.bootstrapHandshake(),
+      /legacy JSON-RPC health; this plugin requires a gRPC-compatible libravdbd daemon/,
+    );
+    client.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
