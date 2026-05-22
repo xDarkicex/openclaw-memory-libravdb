@@ -772,6 +772,7 @@ test("resume cursor invalidates when target file is deleted during pause", async
     return { acceptMore: true, retryAfterMs: 0 };
   };
 
+  const fsApi = new FakeFsApi();
   const handle = createMarkdownIngestionHandle(
     {
       markdownIngestionEnabled: true,
@@ -782,6 +783,7 @@ test("resume cursor invalidates when target file is deleted during pause", async
     },
     async () => rpc as never,
     { error() {}, warn() {}, info() {} },
+    fsApi as never,
   );
 
   try {
@@ -789,6 +791,11 @@ test("resume cursor invalidates when target file is deleted during pause", async
 
     const afterFirstPass = rpc.calls.filter((call) => call.method === "ingest_markdown_document");
     assert.equal(afterFirstPass.length, 1, "first file should be ingested before backpressure");
+    assert.equal(
+      (afterFirstPass[0].params as { sourceDoc: string }).sourceDoc,
+      firstPath,
+      "first ingested file is the newest file",
+    );
 
     await fsp.rm(secondPath);
     await handle.refresh();
