@@ -246,8 +246,9 @@ test("assemble clamps oversized daemon context to token budget", async () => {
     tokenBudget: 512,
   });
 
-  assert.ok(assembled.estimatedTokens <= 256);
+  assert.ok(assembled.estimatedTokens <= 410);
   assert.equal(assembled.messages[0]?.role, "user");
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
 });
 
 test("assemble fail-closed on sidecar errors with budget-clamped fallback", async () => {
@@ -268,12 +269,13 @@ test("assemble fail-closed on sidecar errors with budget-clamped fallback", asyn
     tokenBudget: 512,
   });
 
-  assert.ok(assembled.estimatedTokens <= 256);
+  assert.ok(assembled.estimatedTokens <= 410);
   // User turn reinjection takes priority; when the fallback user dominates the
   // budget, downstream tool_calls may be dropped to preserve the user turn.
   assert.ok(assembled.messages.length >= 1);
   assert.equal(assembled.messages[0]?.role, "user");
   assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
 });
 
 test("assemble triggers force compaction at dynamic 80% threshold before daemon assembly", async () => {
@@ -343,6 +345,35 @@ test("assemble prefers authoritative currentTokenCount for predictive compaction
   assert.equal(compactParams.targetSize, 799);
 });
 
+test("assemble uses source pressure estimate when currentTokenCount underreports", async () => {
+  const rpc = new StaticContractRpc();
+  rpc.mockResponses.set("compact_session", { didCompact: true });
+  rpc.mockResponses.set("assemble_context_internal", {
+    messages: [{ role: "assistant", content: "ok" }],
+    estimatedTokens: 32,
+    systemPromptAddition: "",
+  });
+
+  const cfg: PluginConfig = {
+    rpcTimeoutMs: 1000,
+    compactionThresholdFraction: 0.8,
+  };
+  const context = buildContextEngineFactory(async () => rpc as never, cfg);
+
+  await context.assemble({
+    sessionId: "test-session",
+    userId: "test-user",
+    messages: [{ role: "assistant", content: "X".repeat(4000) }],
+    tokenBudget: 1000,
+    currentTokenCount: 100,
+  });
+
+  const compactParams = rpc.getLastCall("compact_session");
+  assert.ok(compactParams, "Expected compact_session to be called");
+  assert.equal(compactParams.currentTokenCount, 1008);
+  assert.equal(compactParams.targetSize, 799);
+});
+
 test("assemble proceeds to assembly when server legitimately declines compaction", async () => {
   const rpc = new StaticContractRpc();
   rpc.mockResponses.set("compact_session", { didCompact: false });
@@ -395,8 +426,9 @@ test("assemble blocks daemon assembly when predictive compaction fails", async (
     tokenBudget: 1000,
   });
 
-  assert.ok(assembled.estimatedTokens <= 744);
+  assert.ok(assembled.estimatedTokens <= 800);
   assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
   const assembleCalls = rpc.calls.filter((call) => call.method === "assemble_context_internal");
   assert.equal(assembleCalls.length, 0, "assemble_context_internal must be blocked on compaction failure");
 });

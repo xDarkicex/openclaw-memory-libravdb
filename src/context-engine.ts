@@ -27,14 +27,19 @@ type OpenClawCompatibleMessage = {
   [key: string]: unknown;
 };
 
+type OpenClawCompatiblePromptAuthority = "preassembly_may_overflow";
+
 type OpenClawCompatibleAssembleResult = {
   messages: OpenClawCompatibleMessage[];
   estimatedTokens: number;
   systemPromptAddition: string;
+  promptAuthority: OpenClawCompatiblePromptAuthority;
   debug?: AssembleContextInternalResponse["debug"];
 };
 
 const APPROX_CHARS_PER_TOKEN = 4;
+const PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW: OpenClawCompatiblePromptAuthority =
+  "preassembly_may_overflow";
 const ASSEMBLE_BUDGET_HEADROOM_TOKENS = 256;
 const ASSEMBLE_BUDGET_HEADROOM_FRACTION = 0.2;
 const DEFAULT_COMPACTION_THRESHOLD_FRACTION = 0.8;
@@ -395,6 +400,7 @@ function buildBudgetFallbackContext(
     messages: fallbackMessages,
     estimatedTokens: approximateMessagesTokens(fallbackMessages),
     systemPromptAddition: "",
+    promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
   };
 }
 
@@ -403,10 +409,17 @@ function resolvePredictiveCompactionTokenCount(args: {
   messages: OpenClawCompatibleMessage[];
   prompt?: string;
 }): number {
-  return (
-    normalizeCurrentTokenCount(args.currentTokenCount) ??
-    approximateMessagesTokens(args.messages) + approximateTokenCount(args.prompt ?? "")
+  const currentTokenCount = normalizeCurrentTokenCount(args.currentTokenCount);
+  const sourcePressureEstimate = normalizeCurrentTokenCount(
+    approximateMessagesTokens(args.messages) + approximateTokenCount(args.prompt ?? ""),
   );
+  if (currentTokenCount == null) {
+    return sourcePressureEstimate ?? 1;
+  }
+  if (sourcePressureEstimate == null) {
+    return currentTokenCount;
+  }
+  return Math.max(currentTokenCount, sourcePressureEstimate);
 }
 
 function resolveAfterTurnPredictiveCompactionTokenCount(args: {
@@ -745,6 +758,7 @@ export function normalizeAssembleResult(result: {
       typeof result.estimatedTokens === "number" ? result.estimatedTokens : 0,
     systemPromptAddition:
       typeof result.systemPromptAddition === "string" ? result.systemPromptAddition : "",
+    promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
     ...(result.debug != null ? { debug: result.debug } : {}),
   };
 }
