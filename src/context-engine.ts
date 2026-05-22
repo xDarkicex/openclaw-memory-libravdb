@@ -43,6 +43,7 @@ const QUOTED_PHRASE_RE = /"([^"]{4,})"|'([^']{4,})'/g;
 const EXACT_RECALL_SEARCH_K = 32;
 const EXACT_RECALL_MAX_TOKENS = 4;
 const RESERVED_CURRENT_TURN_TOKENS = 150;
+const AFTER_TURN_INGEST_MAX_TOKENS = 2048;
 const COMMON_QUERY_WORDS = new Set([
   "what", "does", "mean", "remember", "recall", "about", "this", "that",
   "the", "and", "for", "with", "from", "your", "have", "been", "were",
@@ -340,6 +341,26 @@ function trimMessagesToBudget(
     return [];
   }
   return [{ ...last, content: truncated }];
+}
+
+function boundAfterTurnMessagesForIngest(
+  messages: KernelCompatibleMessage[],
+  logger: LoggerLike,
+  sessionId: string,
+): KernelCompatibleMessage[] {
+  const estimatedTokens = approximateMessagesTokens(messages);
+  if (estimatedTokens <= AFTER_TURN_INGEST_MAX_TOKENS) {
+    return messages;
+  }
+
+  const bounded = trimMessagesToBudget(messages, AFTER_TURN_INGEST_MAX_TOKENS)
+    .map((message) => normalizeKernelMessage(message));
+  logger.warn?.(
+    `LibraVDB afterTurn trimmed oversized ingest payload sessionId=${sessionId} ` +
+    `estimatedTokens=${estimatedTokens} maxTokens=${AFTER_TURN_INGEST_MAX_TOKENS} ` +
+    `forwardedMessages=${bounded.length}`,
+  );
+  return bounded;
 }
 
 function enforceTokenBudgetInvariant(
@@ -1126,6 +1147,7 @@ export function buildContextEngineFactory(
       });
       const afterTurnMessages = selectAfterTurnMessages(args.messages, args.prePromptMessageCount, logger);
       const messages = normalizeKernelMessages(afterTurnMessages);
+      const ingestMessages = boundAfterTurnMessagesForIngest(messages, logger, sessionId);
       const msgCount = messages.length;
       logger.info?.(
         `LibraVDB afterTurn sessionId=${sessionId} userId=${userId} ` +
@@ -1144,7 +1166,7 @@ export function buildContextEngineFactory(
           sessionId,
           sessionKey: args.sessionKey,
           userId,
-          messages,
+          messages: ingestMessages,
           isHeartbeat: args.isHeartbeat,
         });
         await performAfterTurnPredictiveCompaction({

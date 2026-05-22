@@ -156,6 +156,39 @@ test("context engine afterTurn resolves config userId and passes messages to dae
   assert.equal(msgs.length, 2);
 });
 
+test("context engine bounds oversized afterTurn payloads before daemon ingest", async () => {
+  const client = new FakeClient();
+  const cfg: PluginConfig = { userId: "fixed-user" };
+  const engine = buildContextEngineFactory(fakeRuntime(client), cfg);
+  const oversized = "x".repeat(50_000);
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("assistant", oversized)],
+    tokenBudget: 1000,
+    runtimeContext: { currentTokenCount: Number.NaN },
+  });
+
+  const afterTurnCall = client.calls.find((c) => c.method === "afterTurnKernel");
+  assert.ok(afterTurnCall, "after_turn_kernel RPC was called");
+  const messages = afterTurnCall.params.messages as Array<{ content: string }>;
+  assert.equal(messages.length, 1);
+  assert.ok(messages[0]!.content.length < oversized.length, "daemon ingest payload is bounded");
+  assert.equal(
+    oversized.endsWith(messages[0]!.content),
+    true,
+    "trimming preserves the newest tail of the oversized turn",
+  );
+
+  const compactCall = client.calls.find((c) => c.method === "compactSession");
+  assert.ok(compactCall, "oversized original payload still triggers predictive compaction");
+  assert.ok(
+    Number(compactCall.params.currentTokenCount) > 10_000,
+    "compaction sizing uses the original payload, not the bounded ingest copy",
+  );
+});
+
 test("context engine assemble resolves config userId and passes it to daemon", async () => {
   const client = new FakeClient();
   const cfg: PluginConfig = { userId: "fixed-user" };
