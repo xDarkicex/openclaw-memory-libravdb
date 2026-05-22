@@ -755,6 +755,7 @@ export function buildContextEngineFactory(
   logger: LoggerLike = console,
 ) {
   const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
+  const PREDICTIVE_CACHE_MAX_SIZE = 100;
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
 
@@ -1040,6 +1041,7 @@ export function buildContextEngineFactory(
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
+      predictiveContextCache.delete(sessionId);
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -1276,6 +1278,10 @@ export function buildContextEngineFactory(
         });
         const predictions = (result as any).predictions;
         if (Array.isArray(predictions) && predictions.length > 0) {
+          if (predictiveContextCache.size >= PREDICTIVE_CACHE_MAX_SIZE) {
+            const oldest = predictiveContextCache.keys().next().value;
+            if (oldest !== undefined) predictiveContextCache.delete(oldest);
+          }
           predictiveContextCache.set(sessionId, predictions);
         }
         return result;
@@ -1286,6 +1292,9 @@ export function buildContextEngineFactory(
         );
         throw error;
       }
-    }
+    },
+    async dispose() {
+      predictiveContextCache.clear();
+    },
   };
 }
