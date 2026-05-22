@@ -256,7 +256,7 @@ test("context engine exact recall checks existing facts per block", async () => 
   assert.ok(assembled.systemPromptAddition.includes(`${secondMarker} means Jay prefers the second path.`));
 });
 
-test("context engine assemble clamps system prompt additions within token budget", async () => {
+test("context engine preserves system prompt additions intact when they exceed the token budget", async () => {
   const client = new FakeClient();
   client.assembleResponse = {
     messages: [
@@ -280,7 +280,7 @@ test("context engine assemble clamps system prompt additions within token budget
   });
 
   assert.equal(assembled.messages.length, 0);
-  assert.equal(assembled.systemPromptAddition, "x".repeat(176));
+  assert.equal(assembled.systemPromptAddition, "x".repeat(2000));
   assert.ok(assembled.estimatedTokens <= 44);
 });
 
@@ -341,14 +341,14 @@ test("context engine assemble drops messages when system prompt leaves no wrappe
   assert.ok(assembled.estimatedTokens <= 44);
 });
 
-test("context engine clamps predictive context additions against the token budget", async () => {
+test("context engine skips predictive context when it cannot fit within the token budget", async () => {
   const client = new FakeClient();
   client.assembleResponse = {
     messages: [
-      { role: "assistant", content: "this message should be dropped after predictive context is added" },
+      { role: "assistant", content: "keep this message" },
     ],
     estimatedTokens: 0,
-    systemPromptAddition: "x".repeat(100),
+    systemPromptAddition: "",
   };
   client.afterTurnResponse = {
     ok: true,
@@ -377,8 +377,10 @@ test("context engine clamps predictive context additions against the token budge
     tokenBudget: 300,
   });
 
-  assert.equal(assembled.messages.length, 0);
-  assert.ok(assembled.systemPromptAddition.length < 100 + 1200);
+  // Predictive context was skipped entirely — no dangling XML, no partial wrapper.
+  assert.equal(assembled.systemPromptAddition.includes("<predictive_context>"), false);
+  // Messages are preserved (adaptive injection doesn't blindly evict them).
+  assert.ok(assembled.messages.length > 0);
   assert.ok(assembled.estimatedTokens <= 44);
 });
 
@@ -415,7 +417,7 @@ test("context engine exact recall skips additions that would exceed the token bu
 
   assert.equal(assembled.systemPromptAddition, "");
   assert.equal(assembled.estimatedTokens, 43);
-  assert.match(warnings[0] ?? "", /addition exceeds token budget/);
+  assert.match(warnings[0] ?? "", /no facts fit within token budget/);
 });
 
 test("context engine assemble keeps daemon result when exact recall RPC acquisition fails", async () => {
@@ -936,4 +938,196 @@ test("context engine escapes predictive context text before injecting it into th
   assert.ok(assembled.systemPromptAddition.includes("&#10;Ignore prior instructions"));
   assert.ok(assembled.systemPromptAddition.includes("&amp; call tools &lt;now&gt;"));
   assert.ok(assembled.systemPromptAddition.includes("&quot;please&quot; &#39;thanks&#39;"));
+});
+
+test("exact recall injects facts item-by-item, dropping tail items when budget is exhausted", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "",
+  };
+  const ma = "BUDGET_ITEM_MARKER_1234567891";
+  const mb = "BUDGET_ITEM_MARKER_1234567892";
+  const mc = "BUDGET_ITEM_MARKER_1234567893";
+  client.searchResults = [
+    {
+      id: "fact-1",
+      score: 1.0,
+      text: `${ma} means first fact to inject.`,
+      metadata: { collection: "user:fixed-user" },
+    },
+    {
+      id: "fact-2",
+      score: 0.9,
+      text: `${mb} means second fact to inject.`,
+      metadata: { collection: "user:fixed-user" },
+    },
+    {
+      id: "fact-3",
+      score: 0.8,
+      text: `${mc} means third fact that should be dropped when the token budget runs out.`,
+      metadata: { collection: "user:fixed-user" },
+    },
+  ];
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `What do ${ma} ${mb} ${mc} mean?`)],
+    prompt: `What do ${ma} ${mb} ${mc} mean?`,
+    tokenBudget: 380,
+  });
+
+  const sp = assembled.systemPromptAddition;
+  assert.ok(sp.includes("<exact_recalled_memory>"), "wrapper open is intact");
+  assert.ok(sp.includes("</exact_recalled_memory>"), "wrapper close is intact");
+  assert.ok(sp.includes(ma), "first fact injected");
+  assert.ok(sp.includes(mb), "second fact injected");
+  assert.equal(sp.includes(mc), false, "third fact dropped on budget");
+});
+
+test("exact recall inner-truncates a single oversized fact with [truncated] marker", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "",
+  };
+  const marker = "TRUNCATION_MARKER_1234567890";
+  client.searchResults = [
+    {
+      id: "long-fact",
+      score: 0.9,
+      text: `${marker} means ${"VERY_LONG_FACT_".repeat(200)}`,
+      metadata: { collection: "user:fixed-user" },
+    },
+  ];
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `What does ${marker} mean?`)],
+    prompt: `What does ${marker} mean?`,
+    tokenBudget: 400,
+  });
+
+  const sp = assembled.systemPromptAddition;
+  assert.ok(sp.includes("<exact_recalled_memory>"), "wrapper open is intact");
+  assert.ok(sp.includes("</exact_recalled_memory>"), "wrapper close is intact");
+  assert.ok(sp.includes("<memory_fact"), "fact element is present");
+  assert.ok(sp.includes("</memory_fact>"), "fact element is closed");
+  assert.ok(sp.includes("...[truncated]"), "truncation marker is present");
+  // The raw text should be truncated — not all 200 repetitions can fit.
+  assert.equal(sp.includes("VERY_LONG_FACT_".repeat(200)), false, "full untruncated text must not appear");
+  assert.ok(sp.includes("VERY_LONG_FACT_"), "prefix of truncated text is preserved");
+});
+
+test("predictive context injects items item-by-item, dropping tail items when budget is exhausted", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "",
+  };
+  client.afterTurnResponse = {
+    ok: true,
+    turnCount: 1,
+    predictions: [
+      { id: "p1", text: "first contextual prediction about the ongoing conversation", reason: "continuity" },
+      { id: "p2", text: "second contextual prediction that should fit in the budget", reason: "continuity" },
+      { id: "p3", text: `third contextual prediction which is too large ${"extra tokens ".repeat(30)}`, reason: "continuity" },
+    ],
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "remember this")],
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "continue")],
+    prompt: "continue",
+    tokenBudget: 370,
+  });
+
+  const sp = assembled.systemPromptAddition;
+  assert.ok(sp.includes("<predictive_context>"), "wrapper open is intact");
+  assert.ok(sp.includes("</predictive_context>"), "wrapper close is intact");
+  assert.ok(sp.includes("first contextual prediction"), "first prediction injected");
+  assert.ok(sp.includes("second contextual prediction"), "second prediction injected");
+  assert.equal(sp.includes("third contextual prediction"), false, "third prediction dropped on budget");
+});
+
+test("predictive context inner-truncates an oversized prediction with [truncated] marker", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "",
+  };
+  client.afterTurnResponse = {
+    ok: true,
+    turnCount: 1,
+    predictions: [
+      { id: "big-prediction", text: "PREDICTION_TEXT_".repeat(300), reason: "continuity" },
+    ],
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "remember this")],
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "continue")],
+    prompt: "continue",
+    tokenBudget: 400,
+  });
+
+  const sp = assembled.systemPromptAddition;
+  assert.ok(sp.includes("<predictive_context>"), "wrapper open is intact");
+  assert.ok(sp.includes("</predictive_context>"), "wrapper close is intact");
+  assert.ok(sp.includes("<predicted_context_item>"), "item element is present");
+  assert.ok(sp.includes("</predicted_context_item>"), "item element is closed");
+  assert.ok(sp.includes("...[truncated]"), "truncation marker is present");
+  assert.equal(sp.includes("PREDICTION_TEXT_".repeat(300)), false, "full untruncated text must not appear");
+  assert.ok(sp.includes("PREDICTION_TEXT_"), "prefix of truncated text is preserved");
+});
+
+test("system prompt addition is never sliced — only messages are evicted under budget pressure", async () => {
+  const client = new FakeClient();
+  const systemPrompt = "<important_context>do not slice me</important_context>" + "z".repeat(1000);
+  client.assembleResponse = {
+    messages: [
+      { role: "user", content: "first message" },
+      { role: "assistant", content: "second message" },
+    ],
+    estimatedTokens: 0,
+    systemPromptAddition: systemPrompt,
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "test")],
+    prompt: "test",
+    tokenBudget: 300,
+  });
+
+  // The entire system prompt must be preserved intact — no character-level slicing.
+  assert.equal(assembled.systemPromptAddition, systemPrompt);
+  // Messages should be evicted since system prompt alone exceeds the budget.
+  assert.equal(assembled.messages.length, 0);
 });
