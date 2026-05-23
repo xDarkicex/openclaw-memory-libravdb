@@ -20,13 +20,19 @@ export interface PluginConfig {
   /** Optional ONNX execution provider override passed through to libravdbd.
    *  Use "cpu" to bypass CoreML/MPS on Intel Macs or fragile GPU/NPU providers. */
   onnxDevice?: "auto" | "cpu" | "cuda" | "coreml" | "directml" | "openvino";
-  embeddingBackend?: "bundled" | "onnx-local" | "custom-local";
+  embeddingBackend?: "bundled" | "onnx-local" | "custom-local" | "remote";
   embeddingProfile?: string;
   fallbackProfile?: string;
   embeddingModelPath?: string;
   embeddingTokenizerPath?: string;
   embeddingDimensions?: number;
   embeddingNormalize?: boolean;
+  /** HTTP endpoint URL for the remote embedder backend (when embeddingBackend is 'remote') */
+  embeddingEndpoint?: string;
+  /** Model identifier for the remote embedder backend */
+  embeddingRemoteModel?: string;
+  /** API key for the remote embedder endpoint */
+  embeddingAPIKey?: string;
   summarizerBackend?: "bundled" | "onnx-local" | "ollama-local" | "custom-local";
   summarizerProfile?: string;
   summarizerRuntimePath?: string;

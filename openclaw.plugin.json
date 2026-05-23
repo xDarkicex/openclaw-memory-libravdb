@@ -19,6 +19,13 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
+    "if": {
+      "properties": { "embeddingBackend": { "const": "remote" } },
+      "required": ["embeddingBackend"]
+    },
+    "then": {
+      "required": ["embeddingEndpoint"]
+    },
     "properties": {
       "dbPath": {
         "type": "string"
@@ -142,8 +149,10 @@
         "enum": [
           "bundled",
           "onnx-local",
-          "custom-local"
-        ]
+          "custom-local",
+          "remote"
+        ],
+        "description": "Embedder backend: bundled (built-in ONNX), onnx-local (local ONNX model), custom-local (custom ONNX), remote (HTTP API)"
       },
       "embeddingProfile": {
         "type": "string",
@@ -164,6 +173,18 @@
       },
       "embeddingNormalize": {
         "type": "boolean"
+      },
+      "embeddingEndpoint": {
+        "type": "string",
+        "description": "HTTP endpoint URL for the remote embedder backend (required when embeddingBackend is 'remote')"
+      },
+      "embeddingRemoteModel": {
+        "type": "string",
+        "description": "Model identifier used when embeddingBackend is 'remote', e.g. 'nomic-embed-text-v1.5'"
+      },
+      "embeddingAPIKey": {
+        "type": "string",
+        "description": "API key for the remote embedder endpoint (when embeddingBackend is 'remote')"
       },
       "summarizerBackend": {
         "type": "string",
