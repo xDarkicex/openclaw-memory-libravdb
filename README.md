@@ -49,6 +49,9 @@ brew services start libravdbd
 **Linux (APT)**
 
 ```bash
+curl -fsSL https://xDarkicex.github.io/apt-libravdbd/gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/libravdbd.gpg
+echo "deb https://xDarkicex.github.io/apt-libravdbd stable main" | sudo tee /etc/apt/sources.list.d/libravdbd.list
+sudo apt update
 sudo apt install libravdbd
 systemctl --user enable --now libravdbd
 ```
