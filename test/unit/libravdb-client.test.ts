@@ -12,7 +12,6 @@ import {
   isLegacyJsonRpcHealthResponse,
   LibravDBClient,
   loadSecretFromEnv,
-  loadSecretFromEnv,
 } from "../../src/libravdb-client.js";
 
 import type { AuthInterceptorState } from "../../src/libravdb-client.js";

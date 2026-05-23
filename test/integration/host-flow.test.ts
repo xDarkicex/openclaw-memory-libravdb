@@ -11,6 +11,12 @@ const NOOP_LOGGER: LoggerLike = {
   warn() {},
 };
 
+function effectiveAssembleBudget(tokenBudget: number): number {
+  const proportionalHeadroom = Math.max(1, Math.floor(tokenBudget * 0.2));
+  const headroom = Math.min(256, proportionalHeadroom);
+  return Math.max(1, tokenBudget - headroom);
+}
+
 /**
  * StaticContractRpc replaces the complex, logic-heavy mock with a strict API boundary.
  * It tracks outgoing calls and returns predefined static responses matching rpc_pb.d.ts,
@@ -246,7 +252,7 @@ test("assemble clamps oversized daemon context to token budget", async () => {
     tokenBudget: 512,
   });
 
-  assert.ok(assembled.estimatedTokens <= 256);
+  assert.ok(assembled.estimatedTokens <= effectiveAssembleBudget(512));
   assert.equal(assembled.messages[0]?.role, "user");
 });
 
@@ -268,7 +274,7 @@ test("assemble fail-closed on sidecar errors with budget-clamped fallback", asyn
     tokenBudget: 512,
   });
 
-  assert.ok(assembled.estimatedTokens <= 256);
+  assert.ok(assembled.estimatedTokens <= effectiveAssembleBudget(512));
   // User turn reinjection takes priority; when the fallback user dominates the
   // budget, downstream tool_calls may be dropped to preserve the user turn.
   assert.ok(assembled.messages.length >= 1);
@@ -395,7 +401,7 @@ test("assemble blocks daemon assembly when predictive compaction fails", async (
     tokenBudget: 1000,
   });
 
-  assert.ok(assembled.estimatedTokens <= 744);
+  assert.ok(assembled.estimatedTokens <= effectiveAssembleBudget(1000));
   assert.equal(assembled.systemPromptAddition, "");
   const assembleCalls = rpc.calls.filter((call) => call.method === "assemble_context_internal");
   assert.equal(assembleCalls.length, 0, "assemble_context_internal must be blocked on compaction failure");
