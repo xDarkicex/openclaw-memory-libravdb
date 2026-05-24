@@ -267,6 +267,18 @@ function resolvePredictiveCompactionTarget(params: {
     : Math.max(1, currentTokenCount - 1);
 }
 
+function readRuntimeNumber(
+  runtimeContext: Record<string, unknown> | undefined,
+  key: string,
+): number | undefined {
+  const value = runtimeContext?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isManualCompactionRequested(runtimeContext: Record<string, unknown> | undefined): boolean {
+  return runtimeContext?.manualCompaction === true;
+}
+
 function logPredictiveCompactionAttempt(params: {
   logger: LoggerLike;
   phase: "assemble" | "afterTurn";
@@ -1264,8 +1276,43 @@ export function buildContextEngineFactory(
       targetSize?: number;
       tokenBudget?: number;
       currentTokenCount?: number;
+      compactionTarget?: "budget" | "threshold";
+      runtimeContext?: Record<string, unknown>;
+      abortSignal?: AbortSignal;
     }) {
-      return await runCompaction(args);
+      const tokenBudget = normalizeTokenBudget(
+        args.tokenBudget ?? readRuntimeNumber(args.runtimeContext, "tokenBudget"),
+      );
+      const currentTokenCount = normalizeCurrentTokenCount(
+        args.currentTokenCount ?? readRuntimeNumber(args.runtimeContext, "currentTokenCount"),
+      );
+      const forceCompaction = args.force === true || isManualCompactionRequested(args.runtimeContext);
+      const threshold = getDynamicCompactThreshold(tokenBudget);
+      if (
+        !forceCompaction &&
+        currentTokenCount != null &&
+        threshold != null &&
+        currentTokenCount < threshold
+      ) {
+        return {
+          ok: true,
+          compacted: false,
+          reason: "below threshold",
+          result: {
+            tokensBefore: currentTokenCount,
+            details: {
+              threshold,
+              targetTokens: args.compactionTarget === "threshold" ? threshold : tokenBudget,
+            },
+          },
+        };
+      }
+      return await runCompaction({
+        ...args,
+        force: forceCompaction || args.force,
+        ...(tokenBudget != null ? { tokenBudget } : {}),
+        ...(currentTokenCount != null ? { currentTokenCount } : {}),
+      });
     },
     async afterTurn(args: {
       sessionId: string;
