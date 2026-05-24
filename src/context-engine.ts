@@ -1280,11 +1280,13 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
       abortSignal?: AbortSignal;
     }) {
+      const rawTokenBudget = args.tokenBudget;
+      const rawCurrentTokenCount = args.currentTokenCount;
       const tokenBudget = normalizeTokenBudget(
-        args.tokenBudget ?? readRuntimeNumber(args.runtimeContext, "tokenBudget"),
+        rawTokenBudget != null ? rawTokenBudget : readRuntimeNumber(args.runtimeContext, "tokenBudget"),
       );
       const currentTokenCount = normalizeCurrentTokenCount(
-        args.currentTokenCount ?? readRuntimeNumber(args.runtimeContext, "currentTokenCount"),
+        rawCurrentTokenCount != null ? rawCurrentTokenCount : readRuntimeNumber(args.runtimeContext, "currentTokenCount"),
       );
       const forceCompaction = args.force === true || isManualCompactionRequested(args.runtimeContext);
       const threshold = getDynamicCompactThreshold(tokenBudget);
@@ -1307,12 +1309,16 @@ export function buildContextEngineFactory(
           },
         };
       }
-      return await runCompaction({
+      const runArgs: Parameters<typeof runCompaction>[0] = {
         ...args,
         force: forceCompaction || args.force,
         ...(tokenBudget != null ? { tokenBudget } : {}),
         ...(currentTokenCount != null ? { currentTokenCount } : {}),
-      });
+        ...(args.compactionTarget === "threshold" && threshold != null
+          ? { targetSize: threshold }
+          : {}),
+      };
+      return await runCompaction(runArgs);
     },
     async afterTurn(args: {
       sessionId: string;

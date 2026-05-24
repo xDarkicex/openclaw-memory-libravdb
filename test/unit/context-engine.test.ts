@@ -148,6 +148,68 @@ test("context engine direct compact honors forced compaction below threshold", a
   assert.match(result.reason ?? "", /client unavailable/);
 });
 
+test("context engine direct compact via runtimeContext short-circuits below threshold without acquiring client", async () => {
+  let clientCalls = 0;
+  const runtime: PluginRuntime = {
+    getClient: async () => {
+      clientCalls += 1;
+      throw new Error("client should not be acquired");
+    },
+    emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
+    shutdown: async () => {},
+  };
+  const engine = buildContextEngineFactory(runtime, {
+    userId: "fixed-user",
+    compactionThresholdFraction: 0.8,
+  });
+
+  // Omit top-level tokenBudget/currentTokenCount — drive entirely through runtimeContext
+  const result = await engine.compact({
+    sessionId: "s1",
+    runtimeContext: {
+      tokenBudget: 200_000,
+      currentTokenCount: 57_000,
+      manualCompaction: false,
+    },
+  });
+
+  assert.equal(clientCalls, 0, "runtime.getClient must not be called");
+  assert.equal(result.ok, true);
+  assert.equal(result.compacted, false);
+  assert.equal(result.reason, "below threshold");
+  assert.equal(result.result?.tokensBefore, 57_000);
+});
+
+test("context engine direct compact via runtimeContext.manualCompaction honors forced compaction below threshold", async () => {
+  const runtime: PluginRuntime = {
+    getClient: async () => {
+      throw new Error("client unavailable");
+    },
+    emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
+    shutdown: async () => {},
+  };
+  const engine = buildContextEngineFactory(runtime, {
+    userId: "fixed-user",
+    compactionThresholdFraction: 0.8,
+  });
+
+  // Omit top-level force — use runtimeContext.manualCompaction to force the path
+  const result = await engine.compact({
+    sessionId: "s1",
+    runtimeContext: {
+      tokenBudget: 200_000,
+      currentTokenCount: 57_000,
+      manualCompaction: true,
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.compacted, false);
+  assert.match(result.reason ?? "", /client unavailable/);
+});
+
 function makeMessage(role: string, content: string, id?: string) {
   return { role, content, ...(id ? { id } : {}) };
 }
