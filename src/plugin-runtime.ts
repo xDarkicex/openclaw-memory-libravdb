@@ -1,6 +1,8 @@
 import { LibravDBClient } from "./libravdb-client.js";
 import type { LoggerLike, PluginConfig } from "./types.js";
 import { formatError } from "./format-error.js";
+import { existsSync, statSync } from "node:fs";
+import path from "node:path";
 
 export type ClientGetter = () => Promise<LibravDBClient>;
 export const DEFAULT_RPC_TIMEOUT_MS = 30000;
@@ -43,6 +45,37 @@ export function daemonProvisioningHint(): string {
   return "If you installed the npm package, install and start libravdbd separately; the package does not provision the daemon binary, ONNX Runtime, or model assets.";
 }
 
+export function validateEmbeddingConfig(cfg: PluginConfig): void {
+  if (cfg.embeddingBackend !== "onnx-local") {
+    return;
+  }
+
+  const runtimePath = cfg.embeddingRuntimePath?.trim();
+  const modelPath = cfg.embeddingModelPath?.trim();
+  if (!runtimePath || !modelPath) {
+    throw new Error(
+      `LibraVDB: embeddingBackend="onnx-local" requires embeddingRuntimePath and embeddingModelPath. ` +
+      `Start libravdbd with matching LIBRAVDB_ONNX_RUNTIME and LIBRAVDB_EMBEDDING_MODEL values.`,
+    );
+  }
+
+  if (!shouldValidateLocalEmbeddingPaths(cfg)) {
+    return;
+  }
+
+  if (!pathExistsAsFile(runtimePath)) {
+    throw new Error(
+      `LibraVDB: embeddingRuntimePath must point to a readable ONNX Runtime library: ${runtimePath}`,
+    );
+  }
+
+  if (!pathExistsAsDirectory(modelPath) || !pathExistsAsFile(path.join(modelPath, "embedding.json"))) {
+    throw new Error(
+      `LibraVDB: embeddingModelPath must point to a directory containing embedding.json: ${modelPath}`,
+    );
+  }
+}
+
 export function createPluginRuntime(
   cfg: PluginConfig,
   logger: LoggerLike = console,
@@ -59,6 +92,7 @@ export function createPluginRuntime(
     if (!started) {
       let client: LibravDBClient | undefined;
       started = (async () => {
+        validateEmbeddingConfig(cfg);
         validateTlsConfig(cfg, logger);
 
         client = new LibravDBClient({
@@ -133,6 +167,38 @@ export function createPluginRuntime(
       }
     },
   };
+}
+
+function shouldValidateLocalEmbeddingPaths(cfg: PluginConfig): boolean {
+  const endpoint = (cfg.grpcEndpoint || cfg.sidecarPath || "auto").trim();
+  if (!endpoint || endpoint === "auto" || endpoint.startsWith("unix:")) {
+    return true;
+  }
+  if (!endpoint.startsWith("tcp:")) {
+    return false;
+  }
+
+  const target = endpoint.slice("tcp:".length);
+  const host = target.startsWith("[")
+    ? target.slice(1, target.indexOf("]"))
+    : target.split(":")[0];
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+function pathExistsAsFile(filePath: string): boolean {
+  try {
+    return existsSync(filePath) && statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function pathExistsAsDirectory(dirPath: string): boolean {
+  try {
+    return existsSync(dirPath) && statSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function validateTlsConfig(cfg: PluginConfig, logger: LoggerLike): void {

@@ -60,20 +60,22 @@ or run `libravdbd serve` in a terminal for validation.
 
 ## Activation
 
-Assign `libravdb-memory` to the OpenClaw memory slot:
+Assign `libravdb-memory` to the OpenClaw memory and context-engine slots:
 
 ```json
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     }
   }
 }
 ```
 
-The plugin registers both memory and context-engine capabilities at runtime;
-current OpenClaw config only needs the `memory` slot assignment.
+The memory slot owns `openclaw memory ...` and memory-runtime calls. The
+context-engine slot enables automatic bootstrap, ingest, after-turn, and recall
+hooks during sessions.
 
 If the daemon uses a non-default endpoint, add `sidecarPath`:
 
@@ -81,7 +83,8 @@ If the daemon uses a non-default endpoint, add `sidecarPath`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     },
     "entries": {
       "libravdb-memory": {
@@ -97,7 +100,7 @@ If the daemon uses a non-default endpoint, add `sidecarPath`:
 
 When `sidecarPath` is `"auto"`, macOS/Linux endpoint resolution checks:
 
-1. `LIBRAVDB_RPC_ENDPOINT`
+1. `LIBRAVDB_GRPC_ENDPOINT`
 2. `$HOME/.libravdbd/run/libravdb.sock`
 3. `/opt/homebrew/var/libravdbd/run/libravdb.sock`
 4. `/usr/local/var/libravdbd/run/libravdb.sock`
@@ -116,6 +119,59 @@ Default data path:
 ```text
 $HOME/.libravdbd/data_nomic-embed-text-v1_5.libravdb
 ```
+
+## Container Layout
+
+In Docker, keep the daemon, model assets, socket, logs, and database in the
+same mounted OpenClaw state volume. A typical container-side layout is:
+
+```text
+/home/node/.openclaw/bin/libravdbd
+/home/node/.openclaw/libravdbd/run/libravdb.sock
+/home/node/.openclaw/libravdbd/data.libravdb
+/home/node/.openclaw/libravdbd/models/onnxruntime/lib/libonnxruntime.so
+/home/node/.openclaw/libravdbd/models/nomic-embed-text-v1.5/embedding.json
+```
+
+Start the daemon with explicit local ONNX paths before starting the gateway:
+
+```sh
+LIBRAVDB_GRPC_ENDPOINT=unix:/home/node/.openclaw/libravdbd/run/libravdb.sock \
+LIBRAVDB_DB_PATH=/home/node/.openclaw/libravdbd/data.libravdb \
+LIBRAVDB_ONNX_RUNTIME=/home/node/.openclaw/libravdbd/models/onnxruntime/lib/libonnxruntime.so \
+LIBRAVDB_EMBEDDING_MODEL=/home/node/.openclaw/libravdbd/models/nomic-embed-text-v1.5 \
+LIBRAVDB_ONNX_DEVICE=cpu \
+  /home/node/.openclaw/bin/libravdbd serve
+```
+
+Then configure the plugin with the same socket and asset paths:
+
+```json
+{
+  "plugins": {
+    "slots": {
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
+    },
+    "entries": {
+      "libravdb-memory": {
+        "enabled": true,
+        "config": {
+          "sidecarPath": "unix:/home/node/.openclaw/libravdbd/run/libravdb.sock",
+          "embeddingBackend": "onnx-local",
+          "embeddingRuntimePath": "/home/node/.openclaw/libravdbd/models/onnxruntime/lib/libonnxruntime.so",
+          "embeddingModelPath": "/home/node/.openclaw/libravdbd/models/nomic-embed-text-v1.5",
+          "onnxDevice": "cpu"
+        }
+      }
+    }
+  }
+}
+```
+
+Do not let a container initialize a database with deterministic fallback
+embeddings and later switch the same file to ONNX embeddings. Move the fallback
+database aside first, then let the daemon create a fresh ONNX-backed store.
 
 ## Verification
 
@@ -157,6 +213,8 @@ Common causes:
 - `sidecarPath` points at the wrong endpoint
 - ONNX Runtime assets are missing or unpacked in the wrong place
 - a model asset failed checksum validation
+- `embeddingBackend` is set to `onnx-local` but `embeddingRuntimePath` or
+  `embeddingModelPath` is missing from plugin config
 
 Check the daemon first:
 
@@ -170,6 +228,15 @@ For foreground debugging:
 ```bash
 libravdbd serve
 ```
+
+### Deterministic fallback embeddings
+
+If daemon logs mention deterministic fallback mode, the daemon did not find the
+configured ONNX runtime or model manifest. Stop the daemon, set
+`LIBRAVDB_ONNX_RUNTIME` and `LIBRAVDB_EMBEDDING_MODEL`, confirm the model
+directory contains `embedding.json`, then restart. If a database was created
+while fallback mode was active, move that `.libravdb` file and its adjacent
+`.embedding.json` aside before starting with ONNX assets.
 
 ### Incompatible database or embedding profile
 
@@ -202,9 +269,10 @@ setup, or republish the release with corrected checksums.
 
 ### Default memory still appears active
 
-Confirm that `libravdb-memory` is assigned to `plugins.slots.memory`.
-Without that slot entry, OpenClaw's default memory path can continue to run in
-parallel.
+Confirm that `libravdb-memory` is assigned to both `plugins.slots.memory` and
+`plugins.slots.contextEngine`. Without the memory slot, OpenClaw's default
+memory path can continue to run in parallel. Without the context-engine slot,
+automatic session ingest and recall may not run.
 
 ### Lifecycle journal looks empty
 

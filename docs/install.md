@@ -37,7 +37,8 @@ openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 ```
 
 If you use the OpenClaw.ai plugin UI instead of the CLI, install the same
-package and then assign the plugin id `libravdb-memory` to the `memory` slot.
+package and then assign the plugin id `libravdb-memory` to the `memory` and
+`contextEngine` slots.
 
 Activate the plugin in `~/.openclaw/openclaw.json`:
 
@@ -45,7 +46,8 @@ Activate the plugin in `~/.openclaw/openclaw.json`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     }
   }
 }
@@ -57,7 +59,8 @@ If you run the daemon on a non-default endpoint, add a plugin config:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     },
     "entries": {
       "libravdb-memory": {
@@ -73,7 +76,7 @@ If you run the daemon on a non-default endpoint, add a plugin config:
 
 When `sidecarPath` is set to `"auto"`, the plugin resolves endpoints in this order on macOS/Linux:
 
-1. `LIBRAVDB_RPC_ENDPOINT` if it is set to a valid daemon endpoint
+1. `LIBRAVDB_GRPC_ENDPOINT` if it is set to a valid daemon endpoint
 2. `$HOME/.libravdbd/run/libravdb.sock` if it exists
 3. `/opt/homebrew/var/libravdbd/run/libravdb.sock` if it exists
 4. `/usr/local/var/libravdbd/run/libravdb.sock` if it exists
@@ -81,7 +84,7 @@ When `sidecarPath` is set to `"auto"`, the plugin resolves endpoints in this ord
 
 ## Sidecar Daemon Install
 
-The daemon owns the local database, embeddings, and JSON-RPC endpoint.
+The daemon owns the local database, embeddings, and gRPC endpoint.
 
 Default endpoints:
 
@@ -155,12 +158,61 @@ libravdbd serve
 That mode is useful for debugging or validating a local release asset before
 you wrap it in `brew services`, `systemd`, or `launchd`.
 
+### Containers and Docker
+
+The npm plugin does not start `libravdbd`. In a container, either run a separate
+daemon sidecar or use a small entrypoint wrapper that starts the daemon before
+the OpenClaw gateway.
+
+Keep the daemon assets and database in a mounted volume and point both the
+daemon and plugin at paths inside the container:
+
+```sh
+export LIBRAVDB_GRPC_ENDPOINT=unix:/home/node/.openclaw/libravdbd/run/libravdb.sock
+export LIBRAVDB_DB_PATH=/home/node/.openclaw/libravdbd/data.libravdb
+export LIBRAVDB_ONNX_RUNTIME=/home/node/.openclaw/libravdbd/models/onnxruntime/lib/libonnxruntime.so
+export LIBRAVDB_EMBEDDING_MODEL=/home/node/.openclaw/libravdbd/models/nomic-embed-text-v1.5
+export LIBRAVDB_ONNX_DEVICE=cpu
+libravdbd serve &
+node dist/index.js gateway --bind lan --port 18789
+```
+
+Use matching plugin config:
+
+```json
+{
+  "plugins": {
+    "slots": {
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
+    },
+    "entries": {
+      "libravdb-memory": {
+        "enabled": true,
+        "config": {
+          "sidecarPath": "unix:/home/node/.openclaw/libravdbd/run/libravdb.sock",
+          "embeddingBackend": "onnx-local",
+          "embeddingRuntimePath": "/home/node/.openclaw/libravdbd/models/onnxruntime/lib/libonnxruntime.so",
+          "embeddingModelPath": "/home/node/.openclaw/libravdbd/models/nomic-embed-text-v1.5",
+          "onnxDevice": "cpu"
+        }
+      }
+    }
+  }
+}
+```
+
+For public bots, deny manual memory tools unless users are supposed to query the
+store directly. The context engine can still use LibraVDB for recall while
+`memory_search` and `memory_get` remain unavailable to channel users.
+
 ## Lifecycle Management
 
 ### Plugin Lifecycle
 
 - Install the package with `openclaw plugins install`.
-- Activate it by assigning `libravdb-memory` to the `memory` slot.
+- Activate it by assigning `libravdb-memory` to the `memory` and
+  `contextEngine` slots.
 - Update it with your normal OpenClaw plugin update flow.
 - Disable it by removing the slot assignment from `~/.openclaw/openclaw.json`.
 
@@ -185,7 +237,7 @@ openclaw memory status
 Healthy output should show that:
 
 - the daemon answered the local health check
-- the memory slot is active
+- the memory and context-engine slots are active
 - the plugin can read stored counts and runtime settings
 
 If OpenClaw cannot reach the daemon, verify the endpoint first:

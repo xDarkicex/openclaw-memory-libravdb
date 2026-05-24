@@ -19,21 +19,43 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "if": {
-      "properties": {
-        "embeddingBackend": {
-          "const": "remote"
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "embeddingBackend": {
+              "const": "remote"
+            }
+          },
+          "required": [
+            "embeddingBackend"
+          ]
+        },
+        "then": {
+          "required": [
+            "embeddingEndpoint"
+          ]
         }
       },
-      "required": [
-        "embeddingBackend"
-      ]
-    },
-    "then": {
-      "required": [
-        "embeddingEndpoint"
-      ]
-    },
+      {
+        "if": {
+          "properties": {
+            "embeddingBackend": {
+              "const": "onnx-local"
+            }
+          },
+          "required": [
+            "embeddingBackend"
+          ]
+        },
+        "then": {
+          "required": [
+            "embeddingRuntimePath",
+            "embeddingModelPath"
+          ]
+        }
+      }
+    ],
     "properties": {
       "dbPath": {
         "type": "string"
@@ -137,7 +159,8 @@
         "type": "number"
       },
       "embeddingRuntimePath": {
-        "type": "string"
+        "type": "string",
+        "description": "Path to the ONNX Runtime library visible to the daemon, for example /opt/homebrew/opt/libravdbd/models/onnxruntime/lib/libonnxruntime.dylib or /home/node/.openclaw/libravdbd/models/onnxruntime/lib/libonnxruntime.so."
       },
       "onnxDevice": {
         "type": "string",
@@ -171,7 +194,8 @@
         "default": "bge-small-en-v1.5"
       },
       "embeddingModelPath": {
-        "type": "string"
+        "type": "string",
+        "description": "Directory visible to the daemon containing embedding.json, model.onnx, and tokenizer.json for the selected embeddingProfile."
       },
       "embeddingTokenizerPath": {
         "type": "string"

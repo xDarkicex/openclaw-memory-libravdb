@@ -57,6 +57,33 @@ test("manifest schema includes runtime-consumed context tuning keys", async () =
   }
 });
 
+test("manifest schema requires explicit assets for onnx-local embedding setup", async () => {
+  const manifest = JSON.parse(await readFile(path.join(repoRoot, "openclaw.plugin.json"), "utf8"));
+  const allOf = manifest.configSchema.allOf as Array<{
+    if?: { properties?: Record<string, { const?: string }> };
+    then?: { required?: string[] };
+  }>;
+  const onnxLocalRule = allOf.find((rule) => rule.if?.properties?.embeddingBackend?.const === "onnx-local");
+
+  assert.ok(onnxLocalRule, "onnx-local config rule must exist");
+  assert.deepEqual(
+    onnxLocalRule.then?.required?.sort(),
+    ["embeddingModelPath", "embeddingRuntimePath"],
+  );
+});
+
+test("manifest schema requires a remote endpoint for remote embedding setup", async () => {
+  const manifest = JSON.parse(await readFile(path.join(repoRoot, "openclaw.plugin.json"), "utf8"));
+  const allOf = manifest.configSchema.allOf as Array<{
+    if?: { properties?: Record<string, { const?: string }> };
+    then?: { required?: string[] };
+  }>;
+  const remoteRule = allOf.find((rule) => rule.if?.properties?.embeddingBackend?.const === "remote");
+
+  assert.ok(remoteRule, "remote config rule must exist");
+  assert.deepEqual(remoteRule.then?.required, ["embeddingEndpoint"]);
+});
+
 test("source checklist invariants are present in host code", async () => {
   const indexTs = await readFile(path.join(repoRoot, "src/index.ts"), "utf8");
   const memoryProviderTs = await readFile(path.join(repoRoot, "src/memory-provider.ts"), "utf8");

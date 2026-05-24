@@ -87,10 +87,10 @@ address, explicitly set `grpcEndpointTlsMode: "tls"` to match:
 |---|---|---|---|
 | `embeddingProfile` | string | `nomic-embed-text-v1.5` | Primary embedding model |
 | `fallbackProfile` | string | `bge-small-en-v1.5` | Fallback when primary model fails dimension checks |
-| `embeddingBackend` | string | — | `bundled`, `onnx-local`, or `custom-local` |
+| `embeddingBackend` | string | — | `bundled`, `onnx-local`, `custom-local`, or `remote` |
 | `onnxDevice` | string | `auto` | ONNX execution provider: `auto`, `cpu`, `coreml` (macOS), `cuda` (Linux/Windows), `directml` (Windows), `openvino` (Linux) |
-| `embeddingRuntimePath` | string | — | Path to ONNX runtime library (maps to `LIBRAVDB_ONNX_RUNTIME`) |
-| `embeddingModelPath` | string | — | Path to custom embedding model `.onnx` file |
+| `embeddingRuntimePath` | string | — | Path to ONNX runtime library visible to the daemon (maps to `LIBRAVDB_ONNX_RUNTIME`; required with `embeddingBackend: "onnx-local"`) |
+| `embeddingModelPath` | string | — | Path to the model directory containing `embedding.json`, `model.onnx`, and `tokenizer.json` (maps to `LIBRAVDB_EMBEDDING_MODEL`; required with `embeddingBackend: "onnx-local"`) |
 | `embeddingTokenizerPath` | string | — | Path to custom tokenizer file |
 | `embeddingDimensions` | number | — | Embedding dimension override |
 | `embeddingNormalize` | boolean | — | Enable embedding normalization |

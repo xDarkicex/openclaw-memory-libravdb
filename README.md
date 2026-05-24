@@ -75,7 +75,8 @@ Then activate the plugin in `~/.openclaw/openclaw.json`:
 {
   "plugins": {
     "slots": {
-      "memory": "libravdb-memory"
+      "memory": "libravdb-memory",
+      "contextEngine": "libravdb-memory"
     },
     "entries": {
       "libravdb-memory": {
@@ -185,6 +186,8 @@ All keys are optional. For the full reference, see [Configuration](./docs/config
 | `sidecarPath` | string | `auto` | `"auto"` probes standard paths; set `unix:/path` or `tcp:host:port` to override |
 | `embeddingProfile` | string | `nomic-embed-text-v1.5` | Primary embedding model |
 | `fallbackProfile` | string | `bge-small-en-v1.5` | Fallback profile for dimension mismatches |
+| `embeddingRuntimePath` | string | — | Required with `embeddingBackend: "onnx-local"`; path to `libonnxruntime` visible to `libravdbd` |
+| `embeddingModelPath` | string | — | Required with `embeddingBackend: "onnx-local"`; directory containing `embedding.json`, `model.onnx`, and `tokenizer.json` |
 | `onnxDevice` | string | `auto` | ONNX execution provider; set `cpu` to bypass CoreML/MPS on Intel Macs |
 | `userId` | string | auto-derived | Stable identity for cross-session durable memory |
 | `crossSessionRecall` | boolean | `true` | When `false`, only session-scoped memories are retrieved |

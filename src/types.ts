@@ -16,6 +16,8 @@ export interface PluginConfig {
   crossSessionRecall?: boolean;
   useSessionRecallProjection?: boolean;
   useSessionSummarySearchExperiment?: boolean;
+  /** Path to the daemon-visible ONNX Runtime library.
+   * Required when embeddingBackend is "onnx-local". */
   embeddingRuntimePath?: string;
   /** Optional ONNX execution provider override passed through to libravdbd.
    *  Use "cpu" to bypass CoreML/MPS on Intel Macs or fragile GPU/NPU providers. */
@@ -23,6 +25,8 @@ export interface PluginConfig {
   embeddingBackend?: "bundled" | "onnx-local" | "custom-local" | "remote";
   embeddingProfile?: string;
   fallbackProfile?: string;
+  /** Path to a daemon-visible model directory containing embedding.json.
+   * Required when embeddingBackend is "onnx-local". */
   embeddingModelPath?: string;
   embeddingTokenizerPath?: string;
   embeddingDimensions?: number;

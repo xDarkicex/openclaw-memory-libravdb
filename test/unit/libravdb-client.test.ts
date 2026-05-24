@@ -172,7 +172,10 @@ test("close prevents RPC methods", async () => {
 });
 
 test("bootstrapHandshake wraps transport errors", async () => {
-  const client = new LibravDBClient({ secret: "test" });
+  const endpoint = process.platform === "win32"
+    ? "tcp:127.0.0.1:9"
+    : `unix:${path.join(tmpdir(), `libravdb-missing-${process.pid}-${Date.now()}.sock`)}`;
+  const client = new LibravDBClient({ endpoint, secret: "test", timeoutMs: 250 });
   await assert.rejects(client.bootstrapHandshake(), /LibraVDB: failed to handshake/);
 });
 
