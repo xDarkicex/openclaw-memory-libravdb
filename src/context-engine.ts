@@ -1280,14 +1280,12 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
       abortSignal?: AbortSignal;
     }) {
-      const rawTokenBudget = args.tokenBudget;
-      const rawCurrentTokenCount = args.currentTokenCount;
-      const tokenBudget = normalizeTokenBudget(
-        rawTokenBudget != null ? rawTokenBudget : readRuntimeNumber(args.runtimeContext, "tokenBudget"),
-      );
-      const currentTokenCount = normalizeCurrentTokenCount(
-        rawCurrentTokenCount != null ? rawCurrentTokenCount : readRuntimeNumber(args.runtimeContext, "currentTokenCount"),
-      );
+      const tokenBudget =
+        normalizeTokenBudget(args.tokenBudget) ??
+        normalizeTokenBudget(readRuntimeNumber(args.runtimeContext, "tokenBudget"));
+      const currentTokenCount =
+        normalizeCurrentTokenCount(args.currentTokenCount) ??
+        normalizeCurrentTokenCount(readRuntimeNumber(args.runtimeContext, "currentTokenCount"));
       const forceCompaction = args.force === true || isManualCompactionRequested(args.runtimeContext);
       const threshold = getDynamicCompactThreshold(tokenBudget);
       if (

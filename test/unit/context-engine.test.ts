@@ -210,6 +210,41 @@ test("context engine direct compact via runtimeContext.manualCompaction honors f
   assert.match(result.reason ?? "", /client unavailable/);
 });
 
+test("context engine direct compact falls back to runtimeContext on sentinel top-level values", async () => {
+  let clientCalls = 0;
+  const runtime: PluginRuntime = {
+    getClient: async () => {
+      clientCalls += 1;
+      throw new Error("client should not be acquired");
+    },
+    emitLifecycleHint: async () => {},
+    onShutdown: async () => {},
+    shutdown: async () => {},
+  };
+  const engine = buildContextEngineFactory(runtime, {
+    userId: "fixed-user",
+    compactionThresholdFraction: 0.8,
+  });
+
+  // Sentinel top-level values must not block fallback to valid runtimeContext
+  const result = await engine.compact({
+    sessionId: "s1",
+    tokenBudget: 0,
+    currentTokenCount: Number.NaN,
+    runtimeContext: {
+      tokenBudget: 200_000,
+      currentTokenCount: 57_000,
+      manualCompaction: false,
+    },
+  });
+
+  assert.equal(clientCalls, 0, "runtime.getClient must not be called");
+  assert.equal(result.ok, true);
+  assert.equal(result.compacted, false);
+  assert.equal(result.reason, "below threshold");
+  assert.equal(result.result?.tokensBefore, 57_000);
+});
+
 function makeMessage(role: string, content: string, id?: string) {
   return { role, content, ...(id ? { id } : {}) };
 }
