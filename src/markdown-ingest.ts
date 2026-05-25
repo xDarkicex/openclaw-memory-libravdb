@@ -323,6 +323,14 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     if (!this.started || this.stopping) {
       return;
     }
+    // Cancel any pending scheduled scans so they don't race with this refresh
+    for (const state of this.states.values()) {
+      if (state.scanState.timer) {
+        clearTimeout(state.scanState.timer);
+        state.scanState.timer = null;
+      }
+      state.scanState.dirty = false;
+    }
     for (const root of this.roots) {
       await this.scanRoot(root);
     }
@@ -480,11 +488,11 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         continue;
       }
       stats.filesIncluded++;
-      currentFiles.add(child);
       const stat = await this.safeStatWithCtime(child);
       if (!stat) {
         continue;
       }
+      currentFiles.add(child);
       candidates.push({ path: child, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ordinal: candidates.length });
     }
   }
@@ -647,18 +655,6 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       this.fileStates.delete(sourceDoc);
       this.snapshotDirty = true;
       return "deleted";
-    }
-
-    // For pre-computed candidates, verify the file still exists on disk.
-    // A stale initialStat can cause us to skip the delete path for removed files.
-    if (initialStat) {
-      const freshStat = await this.safeStatWithCtime(filePath);
-      if (!freshStat) {
-        await this.deleteSourceDocument(sourceDoc);
-        this.fileStates.delete(sourceDoc);
-        this.snapshotDirty = true;
-        return "deleted";
-      }
     }
 
     const cached = this.fileStates.get(sourceDoc);
