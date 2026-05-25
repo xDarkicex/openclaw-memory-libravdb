@@ -79,6 +79,6 @@
   "dependencies": {
     "@connectrpc/connect": "^1.7.0",
     "@connectrpc/connect-node": "^1.7.0",
-    "@xdarkicex/libravdb-contracts": "^0.3.0"
+    "@xdarkicex/libravdb-contracts": "^2.0.8"
   }
 }

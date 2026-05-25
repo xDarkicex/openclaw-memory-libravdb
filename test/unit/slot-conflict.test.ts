@@ -82,6 +82,7 @@ test("slot check — ours: register succeeds", () => {
   assert.deepEqual(api.registrations.memoryCapabilities, [MEMORY_ID]);
   assert.deepEqual(api.registrations.contextEngines, [MEMORY_ID]);
   assert.deepEqual(api.registrations.embeddingProviders, [
+    "libravdb-gguf",
     "libravdb-bundled",
     "libravdb-onnx",
   ]);
@@ -119,6 +120,7 @@ test("slot check — unset: register succeeds with warning", () => {
   assert.deepEqual(api.registrations.memoryCapabilities, [MEMORY_ID]);
   assert.deepEqual(api.registrations.contextEngines, [MEMORY_ID]);
   assert.deepEqual(api.registrations.embeddingProviders, [
+    "libravdb-gguf",
     "libravdb-bundled",
     "libravdb-onnx",
   ]);

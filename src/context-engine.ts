@@ -62,6 +62,7 @@ type OpenClawCompatibleCompactResult = {
   reason?: string;
   result?: {
     summary?: string;
+    summaryText?: string;
     firstKeptEntryId?: string;
     tokensBefore: number;
     tokensAfter?: number;
@@ -97,6 +98,10 @@ function normalizeCompactResult(
         : undefined,
     meanConfidence:
       typeof response?.meanConfidence === "number" ? response.meanConfidence : undefined,
+    summaryText:
+      typeof response?.summaryText === "string" && response.summaryText.length > 0
+        ? response.summaryText
+        : undefined,
   };
   return {
     ok: true,
@@ -105,6 +110,7 @@ function normalizeCompactResult(
     result: {
       tokensBefore,
       ...(details.summaryMethod ? { summary: details.summaryMethod } : {}),
+      ...(details.summaryText ? { summaryText: details.summaryText } : {}),
       details,
     },
   };
