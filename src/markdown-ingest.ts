@@ -499,7 +499,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         this.lastAcceptMore = true;
         this.lastRetryAfterMs = 0;
       } else {
+        // Resume cursor target was deleted — clear it and resume normal processing
         rootState.scanState.resumeFromPath = null;
+        this.lastAcceptMore = true;
+        this.lastRetryAfterMs = 0;
       }
     }
     for (const candidate of sorted) {
@@ -635,12 +638,27 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   ): Promise<SyncMarkdownResult> {
     const sourceDoc = filePath;
     const relativePath = toPosixPath(path.relative(rootState.root, filePath));
+
+    // Re-check existence when initialStat is provided — the file may have been
+    // deleted between the scan pass and the sync pass.
     const stat = initialStat ?? (await this.safeStatWithCtime(filePath));
     if (!stat) {
       await this.deleteSourceDocument(sourceDoc);
       this.fileStates.delete(sourceDoc);
       this.snapshotDirty = true;
       return "deleted";
+    }
+
+    // For pre-computed candidates, verify the file still exists on disk.
+    // A stale initialStat can cause us to skip the delete path for removed files.
+    if (initialStat) {
+      const freshStat = await this.safeStatWithCtime(filePath);
+      if (!freshStat) {
+        await this.deleteSourceDocument(sourceDoc);
+        this.fileStates.delete(sourceDoc);
+        this.snapshotDirty = true;
+        return "deleted";
+      }
     }
 
     const cached = this.fileStates.get(sourceDoc);
