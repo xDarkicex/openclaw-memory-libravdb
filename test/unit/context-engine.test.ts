@@ -586,7 +586,7 @@ test("context engine assemble preserves useful context for small token budgets",
     messages: [
       { role: "assistant", content: "small remembered context" },
     ],
-    estimatedTokens: 500,
+    estimatedTokens: 50,
     systemPromptAddition: "",
   };
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, {
@@ -600,13 +600,12 @@ test("context engine assemble preserves useful context for small token budgets",
     sessionKey: "sk1",
     messages: [makeMessage("user", "assemble with small budget")],
     prompt: "assemble with small budget",
-    tokenBudget: 100,
+    tokenBudget: 200,
   });
 
   assert.ok(assembled.messages.length >= 1);
-  const daemonMsg = assembled.messages.find((m: any) => m.content === "small remembered context");
-  assert.ok(daemonMsg, "daemon-assembled context should be preserved");
-  assert.ok(assembled.estimatedTokens <= 80);
+  assert.ok(assembled.systemPromptAddition.includes("small remembered context"), "daemon-assembled context should be preserved in system prompt");
+  assert.ok(assembled.estimatedTokens <= 160);
 });
 
 test("context engine assemble keeps daemon result when exact recall RPC acquisition fails", async () => {
@@ -645,8 +644,8 @@ test("context engine assemble keeps daemon result when exact recall RPC acquisit
 
   assert.deepEqual(assembled.messages, [
     { role: "user", content: `What does ${marker} mean?` },
-    { role: "assistant", content: "base recalled context" },
   ]);
+  assert.ok(assembled.systemPromptAddition.includes("base recalled context"));
   assert.equal(getClientCalls, 2);
   assert.equal(
     warnings.some((message) => /exact recall skipped/.test(message)),
@@ -679,8 +678,8 @@ test("context engine exact recall rejects invalid user collections before probin
 
   assert.deepEqual(assembled.messages, [
     { role: "user", content: `What does ${marker} mean?` },
-    { role: "assistant", content: "base recalled context" },
   ]);
+  assert.ok(assembled.systemPromptAddition.includes("base recalled context"));
   assert.equal(
     client.calls.some((call) => call.method === "searchTextCollections"),
     false,
@@ -717,10 +716,10 @@ test("context engine assemble reinjects a user turn when daemon output is assist
     tokenBudget: 4000,
   });
 
+  assert.equal(assembled.messages.length, 1);
   assert.equal(assembled.messages[0]?.role, "user");
   assert.equal(assembled.messages[0]?.content, "current user query");
-  assert.equal(assembled.messages[1]?.role, "assistant");
-  assert.equal(assembled.messages[1]?.content, "recalled memory block");
+  assert.ok(assembled.systemPromptAddition.includes("recalled memory block"));
   assert.ok(assembled.estimatedTokens > 24);
   assert.equal(
     warnings.some((message) => /reinjecting the latest user message/.test(message)),

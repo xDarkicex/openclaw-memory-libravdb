@@ -20,7 +20,7 @@ export interface PluginConfig {
   /** Optional ONNX execution provider override passed through to libravdbd.
    *  Use "cpu" to bypass CoreML/MPS on Intel Macs or fragile GPU/NPU providers. */
   onnxDevice?: "auto" | "cpu" | "cuda" | "coreml" | "directml" | "openvino";
-  embeddingBackend?: "bundled" | "onnx-local" | "custom-local" | "remote";
+  embeddingBackend?: "bundled" | "onnx-local" | "gguf" | "custom-local" | "remote";
   embeddingProfile?: string;
   fallbackProfile?: string;
   embeddingModelPath?: string;

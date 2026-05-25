@@ -104,6 +104,7 @@ export function register(api: OpenClawPluginApi) {
   // embedding backends for config resolution. Actual embeddings run inside
   // the vector service — these are declarative discovery entries only.
   const embeddingAdapters = [
+    { id: "libravdb-gguf", transport: "local" as const, profile: cfg.embeddingProfile ?? "nomic-embed-text-v1.5" },
     { id: "libravdb-bundled", transport: "local" as const, profile: cfg.embeddingProfile ?? "nomic-embed-text-v1.5" },
     { id: "libravdb-onnx", transport: "local" as const, profile: cfg.fallbackProfile ?? "bge-small-en-v1.5" },
   ];
