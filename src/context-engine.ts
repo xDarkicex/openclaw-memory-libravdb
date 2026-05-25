@@ -627,13 +627,15 @@ function rankExactRecallCandidate(result: { text: string; score: number }, token
 
 /**
  * Extracts the exact recall fact text starting at the token marker.
+ * Tool-call patterns are sanitized to prevent loop-priming.
  */
 function extractExactRecallFactText(text: string, token: string): string {
   const markerStart = text.indexOf(token);
   if (markerStart < 0) return text.trim();
   const tail = text.slice(markerStart).trim();
   const factSentence = tail.match(/^[\s\S]*?\bmeans\b[\s\S]*?[.!?](?:\s|$)/i)?.[0]?.trim();
-  return factSentence ?? tail.split("\n")[0]?.trim() ?? tail;
+  const extracted = factSentence ?? tail.split("\n")[0]?.trim() ?? tail;
+  return sanitizeToolCallPatterns(extracted);
 }
 
 /**
@@ -649,6 +651,47 @@ function escapeMemoryFactText(text: string): string {
     .replaceAll("\r", "&#13;")
     .replaceAll("\n", "&#10;")
     .replaceAll("\t", "&#9;");
+}
+
+// Tool-call pattern detection for sanitization
+const TOOL_CALL_BRACKET_RE = /\[tool:([^\]]+)\]/gi;
+const TOOL_CALL_JSON_RE = /\{\s*"name"\s*:\s*"([^"]+)"[^}]*\}/g;
+const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\](?:\s*[^{\[]*)?/g;
+
+/**
+ * Sanitizes text that may contain tool-call syntax to prevent loop-priming.
+ * Replaces executable-looking patterns with neutral summaries rather than
+ * replaying them verbatim, so the model cannot pattern-match and repeat them.
+ */
+function sanitizeToolCallPatterns(text: string): string {
+  let sanitized = text;
+
+  // Replace [tool:name] patterns with a neutral summary
+  sanitized = sanitized.replace(TOOL_CALL_BRACKET_RE, (_match, toolName) => {
+    return `[historical tool call: ${toolName}]`;
+  });
+
+  // Replace JSON tool-call objects with a neutral summary
+  sanitized = sanitized.replace(TOOL_CALL_JSON_RE, (_match, toolName) => {
+    return `[historical tool call: ${toolName}]`;
+  });
+
+  // Replace remaining tool-result annotations
+  sanitized = sanitized.replace(TOOL_RESULT_ANNOTATION_RE, "[historical tool call]");
+
+  // Detect and summarize repeated tool calls (loop indicator)
+  const toolCallCount = (sanitized.match(/\[historical tool call:\s*([^\]]+)\]/gi) || []).length;
+  if (toolCallCount > 2) {
+    const uniqueTools = new Set(
+      [...sanitized.matchAll(/\[historical tool call:\s*([^\]]+)\]/gi)].map((m) => m[1]),
+    );
+    if (uniqueTools.size === 1) {
+      // Single tool repeated multiple times — likely a loop, summarize aggressively
+      sanitized = `[Historical tool activity: repeated ${[...uniqueTools][0]} call ${toolCallCount} times. Do not repeat this pattern.]`;
+    }
+  }
+
+  return sanitized;
 }
 
 const TRUNCATION_MARKER = "...[truncated]";
@@ -919,8 +962,9 @@ export function normalizeAssembleResult(
         });
       } else {
         if (content.trim().length > 0) {
+          const sanitizedContent = sanitizeToolCallPatterns(content);
           const roleAttr = message.role ? ` role="${escapeMemoryFactText(message.role)}"` : "";
-          extractedMemoryItems.push(`<memory_item source="recalled"${roleAttr} provenance="durable_memory">${escapeMemoryFactText(content)}</memory_item>`);
+          extractedMemoryItems.push(`<memory_item source="recalled"${roleAttr} provenance="durable_memory">${escapeMemoryFactText(sanitizedContent)}</memory_item>`);
         }
       }
     }
