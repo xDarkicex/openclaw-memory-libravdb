@@ -80,6 +80,10 @@ function requireSessionId(sessionId: string | undefined, operation: string): str
   );
 }
 
+/**
+ * Normalizes a compact session response into the OpenClaw-compatible format.
+ * Handles missing/undefined fields and provides sensible defaults.
+ */
 function normalizeCompactResult(
   response: Partial<CompactSessionResponse> | undefined,
   options: { tokensBefore?: number } = {},
@@ -117,6 +121,9 @@ function normalizeCompactResult(
 }
 
 
+/**
+ * Converts a kernel block to its string representation.
+ */
 function stringifyKernelBlock(block: unknown): string {
   if (!block || typeof block !== "object") {
     return "";
@@ -149,6 +156,9 @@ function stringifyKernelBlock(block: unknown): string {
   }
 }
 
+/**
+ * Normalizes kernel content (string or block array) to a flat string.
+ */
 function normalizeKernelContent(content: unknown): string {
   if (typeof content === "string") {
     return content;
@@ -159,6 +169,9 @@ function normalizeKernelContent(content: unknown): string {
   return content.map(stringifyKernelBlock).filter((part) => part.length > 0).join("\n");
 }
 
+/**
+ * Approximates token count for a text string.
+ */
 function approximateTokenCount(text: unknown): number {
   if (typeof text === "string") {
     return Math.ceil(text.length / APPROX_CHARS_PER_TOKEN);
@@ -169,15 +182,24 @@ function approximateTokenCount(text: unknown): number {
   return Math.ceil(normalizeKernelContent(text).length / APPROX_CHARS_PER_TOKEN);
 }
 
+/**
+ * Approximates tokens for a single message including wrapper overhead.
+ */
 function approximateMessageTokens(message: OpenClawCompatibleMessage): number {
   // Approximate per-message wrapper overhead so trimming is conservative.
   return approximateTokenCount(message.content) + 8;
 }
 
+/**
+ * Sums approximate tokens across an array of messages.
+ */
 function approximateMessagesTokens(messages: OpenClawCompatibleMessage[]): number {
   return messages.reduce((sum, message) => sum + approximateMessageTokens(message), 0);
 }
 
+/**
+ * Selects messages after the pre-prompt boundary for after-turn processing.
+ */
 function selectAfterTurnMessages<T>(
   messages: T[],
   prePromptMessageCount: number | undefined,
@@ -227,6 +249,9 @@ function normalizeTokenBudget(tokenBudget: number | undefined): number | undefin
   return Math.max(1, Math.floor(tokenBudget));
 }
 
+/**
+ * Resolves the effective assemble budget from token budget configuration.
+ */
 function resolveEffectiveAssembleBudget(tokenBudget: number | undefined): number {
   const normalized = normalizeTokenBudget(tokenBudget) ?? 1;
   const proportionalHeadroom = Math.max(1, Math.floor(normalized * ASSEMBLE_BUDGET_HEADROOM_FRACTION));
@@ -241,6 +266,9 @@ function normalizeThresholdFraction(fraction: number | undefined): number {
   return Math.min(0.99, Math.max(0.05, fraction));
 }
 
+/**
+ * Resolves the dynamic compaction threshold from budget and threshold params.
+ */
 function resolveDynamicCompactThreshold(
   tokenBudget: number | undefined,
   compactThreshold: number | undefined,
@@ -273,6 +301,9 @@ function resolvePredictiveCompactionTarget(params: {
     : Math.max(1, currentTokenCount - 1);
 }
 
+/**
+ * Reads a runtime numeric config value with fallback defaults.
+ */
 function readRuntimeNumber(
   runtimeContext: Record<string, unknown> | undefined,
   key: string,
@@ -281,10 +312,16 @@ function readRuntimeNumber(
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * Checks if manual compaction was explicitly requested via runtime context.
+ */
 function isManualCompactionRequested(runtimeContext: Record<string, unknown> | undefined): boolean {
   return runtimeContext?.manualCompaction === true;
 }
 
+/**
+ * Logs a predictive compaction attempt with phase and sizing info.
+ */
 function logPredictiveCompactionAttempt(params: {
   logger: LoggerLike;
   phase: "assemble" | "afterTurn";
@@ -301,6 +338,9 @@ function logPredictiveCompactionAttempt(params: {
   );
 }
 
+/**
+ * Logs the outcome of a predictive compaction attempt.
+ */
 function logPredictiveCompactionOutcome(params: {
   logger: LoggerLike;
   phase: "assemble" | "afterTurn";
@@ -324,6 +364,9 @@ function logPredictiveCompactionOutcome(params: {
   params.logger.warn?.(message);
 }
 
+/**
+ * Truncates content to fit within token budget, preserving the tail.
+ */
 function truncateContentToTokenBudget(content: unknown, tokenBudget: number): string {
   if (tokenBudget <= 0) return "";
   const maxChars = Math.max(1, tokenBudget * APPROX_CHARS_PER_TOKEN);
@@ -333,6 +376,9 @@ function truncateContentToTokenBudget(content: unknown, tokenBudget: number): st
   return normalized.slice(normalized.length - maxChars);
 }
 
+/**
+ * Trims messages from the end to fit within token budget.
+ */
 function trimMessagesToBudget(
   messages: OpenClawCompatibleMessage[],
   tokenBudget: number,
@@ -369,6 +415,9 @@ function trimMessagesToBudget(
   return [{ ...last, content: truncated }];
 }
 
+/**
+ * Bounds after-turn messages for ingest, trimming if over max tokens.
+ */
 function boundAfterTurnMessagesForIngest(
   messages: KernelCompatibleMessage[],
   logger: LoggerLike,
@@ -389,6 +438,9 @@ function boundAfterTurnMessagesForIngest(
   return bounded;
 }
 
+/**
+ * Enforces token budget invariant by trimming messages and system prompt.
+ */
 function enforceTokenBudgetInvariant(
   result: OpenClawCompatibleAssembleResult,
   tokenBudget: number | undefined,
@@ -443,6 +495,9 @@ function buildBudgetFallbackContext(
   };
 }
 
+/**
+ * Resolves token count for predictive compaction from messages and prompt.
+ */
 function resolvePredictiveCompactionTokenCount(args: {
   currentTokenCount?: number;
   messages: OpenClawCompatibleMessage[];
@@ -461,6 +516,9 @@ function resolvePredictiveCompactionTokenCount(args: {
   return Math.max(currentTokenCount, sourcePressureEstimate);
 }
 
+/**
+ * Resolves token count for after-turn predictive compaction.
+ */
 function resolveAfterTurnPredictiveCompactionTokenCount(args: {
   currentTokenCount?: number;
   messages: OpenClawCompatibleMessage[];
@@ -478,6 +536,9 @@ function resolveAfterTurnPredictiveCompactionTokenCount(args: {
   return Math.max(currentTokenCount, forwardedMessageTokens);
 }
 
+/**
+ * Normalizes a single kernel message into the kernel-compatible format.
+ */
 export function normalizeKernelMessage(message: {
   role: string;
   content: unknown;
@@ -490,12 +551,18 @@ export function normalizeKernelMessage(message: {
   };
 }
 
+/**
+ * Normalizes an array of kernel messages.
+ */
 export function normalizeKernelMessages(
   messages: Array<{ role: string; content: unknown; id?: string }>,
 ): KernelCompatibleMessage[] {
   return messages.map((message) => normalizeKernelMessage(message));
 }
 
+/**
+ * Extracts tokens for exact recall matching from text.
+ */
 function extractExactRecallTokens(text: string): string[] {
   const tokens = new Set<string>();
 
@@ -521,6 +588,9 @@ function extractExactRecallTokens(text: string): string[] {
   return Array.from(tokens).slice(0, EXACT_RECALL_MAX_TOKENS);
 }
 
+/**
+ * Checks if text is an exact recall fact containing the token.
+ */
 function isExactRecallFact(text: string, token: string): boolean {
   return (
     text.includes(token) &&
@@ -529,6 +599,9 @@ function isExactRecallFact(text: string, token: string): boolean {
   );
 }
 
+/**
+ * Checks if text appears to be a question-shaped recall candidate.
+ */
 function isQuestionShapedRecallCandidate(text: string): boolean {
   const normalized = text.trim();
   return (
@@ -538,6 +611,9 @@ function isQuestionShapedRecallCandidate(text: string): boolean {
   );
 }
 
+/**
+ * Ranks a recall candidate by relevance to the token.
+ */
 function rankExactRecallCandidate(result: { text: string; score: number }, token: string): number {
   if (typeof result.text !== "string" || !result.text.includes(token)) {
     return Number.NEGATIVE_INFINITY;
@@ -549,6 +625,9 @@ function rankExactRecallCandidate(result: { text: string; score: number }, token
   return rank;
 }
 
+/**
+ * Extracts the exact recall fact text starting at the token marker.
+ */
 function extractExactRecallFactText(text: string, token: string): string {
   const markerStart = text.indexOf(token);
   if (markerStart < 0) return text.trim();
@@ -557,6 +636,9 @@ function extractExactRecallFactText(text: string, token: string): string {
   return factSentence ?? tail.split("\n")[0]?.trim() ?? tail;
 }
 
+/**
+ * Escapes special characters in memory fact text for safe rendering.
+ */
 function escapeMemoryFactText(text: string): string {
   return text
     .replaceAll("&", "&amp;")
@@ -571,6 +653,9 @@ function escapeMemoryFactText(text: string): string {
 
 const TRUNCATION_MARKER = "...[truncated]";
 
+/**
+ * Attempts to truncate an item to fit within token budget.
+ */
 function tryTruncateItem(
   rawText: string,
   tag: string,
@@ -606,6 +691,9 @@ interface AdaptiveInjectionItem {
   attributes: string;
 }
 
+/**
+ * Builds a wrapped section adaptively injecting items within token budget.
+ */
 function adaptivelyBuildWrappedSection(
   wrapperOpen: string,
   instruction: string,
@@ -656,24 +744,36 @@ function adaptivelyBuildWrappedSection(
   return { text: sectionText, tokens: sectionTokens, injectedCount };
 }
 
+/**
+ * Builds a single item element with escaped text content.
+ */
 function buildItemElement(item: AdaptiveInjectionItem): string {
   return item.attributes
     ? `<${item.tag}${item.attributes}>${escapeMemoryFactText(item.rawText)}</${item.tag}>`
     : `<${item.tag}>${escapeMemoryFactText(item.rawText)}</${item.tag}>`;
 }
 
+/**
+ * Appends a system prompt addition to existing content.
+ */
 function appendSystemPromptAddition(existing: string, addition: string): string {
   const trimmedExisting = existing.trim();
   if (trimmedExisting.length === 0) return addition;
   return `${trimmedExisting}\n\n${addition}`;
 }
 
+/**
+ * Checks if messages contain a replay-safe user turn with content.
+ */
 function hasReplaySafeUserTurn(messages: OpenClawCompatibleMessage[]): boolean {
   return messages.some(
     (message) => message.role === "user" && normalizeKernelContent(message.content).trim().length > 0,
   );
 }
 
+/**
+ * Finds the last replay-safe user message from the array.
+ */
 function findLastReplaySafeUserMessage(
   messages: OpenClawCompatibleMessage[],
 ): OpenClawCompatibleMessage | null {
@@ -691,6 +791,9 @@ function findLastReplaySafeUserMessage(
   return null;
 }
 
+/**
+ * Truncates system prompt addition to fit within token budget.
+ */
 function truncateSystemPromptAdditionToTokenBudget(value: string, tokenBudget: number): string {
   if (tokenBudget <= 0) return "";
   const maxChars = Math.max(1, tokenBudget * APPROX_CHARS_PER_TOKEN);
@@ -698,6 +801,9 @@ function truncateSystemPromptAdditionToTokenBudget(value: string, tokenBudget: n
   return value.slice(0, maxChars);
 }
 
+/**
+ * Ensures assemble result has a replay-safe user turn, reinjecting if needed.
+ */
 function ensureReplaySafeUserTurn(
   assembled: OpenClawCompatibleAssembleResult,
   sourceMessages: OpenClawCompatibleMessage[],
@@ -774,6 +880,9 @@ function ensureReplaySafeUserTurn(
   };
 }
 
+/**
+ * Normalizes a compact result into the OpenClaw-compatible assemble result format.
+ */
 export function normalizeAssembleResult(
   result: {
     messages?: Array<{ role: string; content?: unknown; id?: string }>;
@@ -832,6 +941,9 @@ export function normalizeAssembleResult(
   };
 }
 
+/**
+ * Builds the context engine factory with the given client getter.
+ */
 export function buildContextEngineFactory(
   runtime: PluginRuntime,
   cfg: PluginConfig,
