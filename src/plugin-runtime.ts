@@ -1,4 +1,4 @@
-import { LibravDBClient } from "./libravdb-client.js";
+import { LibravDBClient, resolveClientEndpoint } from "./libravdb-client.js";
 import type { LoggerLike, PluginConfig } from "./types.js";
 import { formatError } from "./format-error.js";
 import { existsSync, statSync } from "node:fs";
@@ -170,7 +170,8 @@ export function createPluginRuntime(
 }
 
 function shouldValidateLocalEmbeddingPaths(cfg: PluginConfig): boolean {
-  const endpoint = (cfg.grpcEndpoint || cfg.sidecarPath || "auto").trim();
+  // Resolve the same endpoint the client will use — respects LIBRAVDB_GRPC_ENDPOINT env var
+  const endpoint = resolveClientEndpoint(cfg.grpcEndpoint || cfg.sidecarPath).trim();
   if (!endpoint || endpoint === "auto" || endpoint.startsWith("unix:")) {
     return true;
   }

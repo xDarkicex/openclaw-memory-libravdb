@@ -174,6 +174,13 @@ export LIBRAVDB_ONNX_RUNTIME=/home/node/.openclaw/libravdbd/models/onnxruntime/l
 export LIBRAVDB_EMBEDDING_MODEL=/home/node/.openclaw/libravdbd/models/nomic-embed-text-v1.5
 export LIBRAVDB_ONNX_DEVICE=cpu
 libravdbd serve &
+
+# Wait for socket to be ready
+for i in {1..30}; do
+  [ -S "$LIBRAVDB_GRPC_ENDPOINT" ] && break
+  sleep 0.5
+done
+
 node dist/index.js gateway --bind lan --port 18789
 ```
 
