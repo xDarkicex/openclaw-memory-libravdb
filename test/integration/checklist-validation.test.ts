@@ -14,9 +14,10 @@ test("manifest and package metadata satisfy checklist structure", async () => {
   assert.equal(manifest.configSchema.additionalProperties, false);
   assert.deepEqual(
     Object.keys(manifest).sort(),
-    ["activation", "configSchema", "contracts", "description", "id", "kind", "name", "version"],
+    ["activation", "configSchema", "contracts", "description", "id", "kind", "name", "skills", "version"],
   );
   assert.deepEqual(manifest.activation, { onCommands: ["memory"] });
+  assert.deepEqual(manifest.skills, ["./skills"]);
   assert.equal(manifest.version, pkg.version);
 
   assert.equal(pkg.main, "./dist/index.js");
@@ -25,7 +26,21 @@ test("manifest and package metadata satisfy checklist structure", async () => {
   assert.ok(pkg.openclaw.extensions.includes("./dist/index.js"));
   assert.equal(pkg.exports["."].import, "./dist/index.js");
   assert.ok(pkg.files.includes("cli-metadata.js"));
+  assert.ok(pkg.files.includes("skills/"));
   assert.match(hookMd, /name:\s*libravdb-memory/);
+});
+
+test("bundled review skill is packaged for plugin installs", async () => {
+  const skillMd = await readFile(
+    path.join(repoRoot, "skills/libravdb-autoreview/SKILL.md"),
+    "utf8",
+  );
+
+  assert.match(skillMd, /^---\nname:\s*libravdb-autoreview/m);
+  assert.match(skillMd, /description:\s*Use when closing out review or PR readiness work/m);
+  assert.match(skillMd, /codex review --base origin\/main/);
+  assert.match(skillMd, /plugin-inspector ci --no-openclaw --runtime --mock-sdk --allow-execute/);
+  assert.match(skillMd, /--real-sdk/);
 });
 
 test("manifest schema includes runtime-consumed context tuning keys", async () => {

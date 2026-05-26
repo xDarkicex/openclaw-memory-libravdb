@@ -24,6 +24,7 @@
     "openclaw.plugin.json",
     "package.json",
     "docs/",
+    "skills/",
     "dist/"
   ],
   "engines": {
