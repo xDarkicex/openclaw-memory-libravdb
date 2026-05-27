@@ -245,7 +245,7 @@ test("context engine direct compact falls back to runtimeContext on sentinel top
   assert.equal(result.result?.tokensBefore, 57_000);
 });
 
-function makeMessage(role: string, content: string, id?: string) {
+function makeMessage(role: string, content: string | unknown[], id?: string) {
   return { role, content, ...(id ? { id } : {}) };
 }
 
@@ -420,6 +420,130 @@ test("context engine assemble strips OpenClaw untrusted metadata envelope from p
   const call = client.calls.find((c) => c.method === "assembleContextInternal");
   assert.ok(call, "assemble_context_internal RPC was called");
   assert.equal(call.params.prompt, "@Clawdius Reply with exactly PONG.");
+});
+
+test("context engine normalizes structured toolCall blocks as inert history", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+      makeMessage("assistant", [
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "web_search",
+          arguments: { query: "example", count: 5 },
+        },
+      ]),
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.equal(messages[1]?.role, "assistant");
+  assert.equal(messages[1]?.content, "[historical tool activity: web_search called]");
+  assert.doesNotMatch(messages[1]?.content ?? "", /\[tool:/);
+  assert.doesNotMatch(messages[1]?.content ?? "", /"query"/);
+});
+
+test("context engine normalizes toolResult messages without replaying raw JSON", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+      {
+        role: "toolResult",
+        toolName: "web_search",
+        content: [
+          {
+            type: "text",
+            text: '{ "results": [{ "title": "Example", "url": "https://example.test" }], "provider": "search-searxng" }',
+          },
+        ],
+      },
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.equal(messages[1]?.role, "toolResult");
+  assert.equal(messages[1]?.content, "[historical tool activity: web_search returned a result]");
+  assert.doesNotMatch(messages[1]?.content ?? "", /"results"/);
+  assert.doesNotMatch(messages[1]?.content ?? "", /https:\/\/example\.test/);
+});
+
+test("context engine assemble projection does not replay tool activity as assistant text", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [
+      { role: "assistant", content: "[historical tool activity: web_search called]" },
+      {
+        role: "toolResult",
+        content: "[historical tool activity: web_search returned a result]",
+      },
+      {
+        role: "assistant",
+        content: '{ "results": [{ "title": "Example", "url": "https://example.test" }], "provider": "search-searxng" }',
+      },
+      {
+        role: "assistant",
+        content: "[tool:web_search]\n<parameter=query>\nexample\n</parameter>\n</tool_call>",
+      },
+    ],
+    estimatedTokens: 500,
+    systemPromptAddition: "",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+      makeMessage("assistant", [
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "web_search",
+          arguments: { query: "example", count: 5 },
+        },
+      ]),
+      {
+        role: "toolResult",
+        toolName: "web_search",
+        content: [
+          {
+            type: "text",
+            text: '{ "results": [{ "title": "Example", "url": "https://example.test" }], "provider": "search-searxng" }',
+          },
+        ],
+      },
+    ],
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "find examples" },
+  ]);
+  assert.match(assembled.systemPromptAddition, /historical tool activity: web_search called/);
+  assert.match(assembled.systemPromptAddition, /historical tool activity: tool returned a result/);
+  assert.doesNotMatch(JSON.stringify(assembled.messages), /\[tool:/);
+  assert.doesNotMatch(JSON.stringify(assembled.messages), /"results"/);
+  assert.doesNotMatch(assembled.systemPromptAddition, /\[tool:/);
+  assert.doesNotMatch(assembled.systemPromptAddition, /<parameter=/);
+  assert.doesNotMatch(assembled.systemPromptAddition, /https:\/\/example\.test/);
 });
 
 test("context engine assemble fallback strips OpenClaw metadata from messages", async () => {

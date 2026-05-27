@@ -140,18 +140,15 @@ function stringifyKernelBlock(block: unknown): string {
       return typeof record.thinking === "string" ? record.thinking : "";
     case "toolCall": {
       const name = typeof record.name === "string" ? record.name : "tool";
-      const args = record.arguments;
-      let renderedArgs = "";
-      if (typeof args === "string") {
-        renderedArgs = args;
-      } else if (args !== undefined) {
-        try {
-          renderedArgs = JSON.stringify(args);
-        } catch {
-          renderedArgs = String(args);
-        }
-      }
-      return renderedArgs ? `[tool:${name}] ${renderedArgs}` : `[tool:${name}]`;
+      return formatHistoricalToolActivity(name, "called");
+    }
+    case "toolResult": {
+      const name = typeof record.name === "string"
+        ? record.name
+        : typeof record.toolName === "string"
+          ? record.toolName
+          : "tool";
+      return formatHistoricalToolActivity(name, "returned a result");
     }
     case "image":
       return "[image omitted]";
@@ -170,6 +167,20 @@ function normalizeKernelContent(content: unknown): string {
       ? content.map(stringifyKernelBlock).filter((part) => part.length > 0).join("\n")
       : "";
   return stripOpenClawUntrustedMetadataEnvelope(text);
+}
+
+function normalizeKernelContentForRole(role: string, content: unknown, message?: Record<string, unknown>): string {
+  if (role === "toolResult" || role === "tool") {
+    const toolName = typeof message?.toolName === "string"
+      ? message.toolName
+      : typeof message?.name === "string"
+        ? message.name
+        : "tool";
+    return formatHistoricalToolActivity(toolName, "returned a result");
+  }
+
+  const normalized = normalizeKernelContent(content);
+  return role === "assistant" ? sanitizeToolCallPatterns(normalized) : normalized;
 }
 
 function stripOpenClawUntrustedMetadataEnvelope(text: string): string {
@@ -596,10 +607,11 @@ export function normalizeKernelMessage(message: {
   role: string;
   content: unknown;
   id?: string;
+  [key: string]: unknown;
 }): KernelCompatibleMessage {
   return {
     role: message.role,
-    content: normalizeKernelContent(message.content),
+    content: normalizeKernelContentForRole(message.role, message.content, message),
     ...(typeof message.id === "string" ? { id: message.id } : {}),
   };
 }
@@ -710,6 +722,55 @@ function escapeMemoryFactText(text: string): string {
 const TOOL_CALL_BRACKET_RE = /\[tool:([^\]]+)\]/gi;
 const TOOL_CALL_JSON_RE = /\{\s*"name"\s*:\s*"([^"]+)"[^}]*\}/g;
 const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\](?:\s*[^{\[]*)?/g;
+const TOOL_XML_SYNTAX_RE = /<\/?(?:tool_call|function|parameter)(?:\s|>|=)/i;
+const HISTORICAL_TOOL_ACTIVITY_RE = /^\[historical tool activity:[^\]]+\]$/i;
+
+function formatHistoricalToolActivity(toolName: string, action: string): string {
+  const safeName = toolName.trim().replace(/[^\w.-]+/g, "_") || "tool";
+  return `[historical tool activity: ${safeName} ${action}]`;
+}
+
+function summarizeHistoricalToolSyntax(text: string): string | null {
+  const names = new Set<string>();
+  for (const match of text.matchAll(TOOL_CALL_BRACKET_RE)) {
+    if (match[1]) names.add(match[1]);
+  }
+  for (const match of text.matchAll(TOOL_CALL_JSON_RE)) {
+    if (match[1]) names.add(match[1]);
+  }
+
+  if (names.size > 0) {
+    return formatHistoricalToolActivity([...names].join(","), "called");
+  }
+
+  if (TOOL_XML_SYNTAX_RE.test(text)) {
+    return formatHistoricalToolActivity("tool", "called");
+  }
+
+  return null;
+}
+
+function looksLikeSerializedToolResult(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    return (
+      Array.isArray(parsed.results) &&
+      (Array.isArray(parsed.content) ||
+        typeof parsed.provider === "string" ||
+        parsed.filtering != null)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isHistoricalToolActivityText(text: string): boolean {
+  return HISTORICAL_TOOL_ACTIVITY_RE.test(text.trim());
+}
 
 /**
  * Sanitizes text that may contain tool-call syntax to prevent loop-priming.
@@ -717,30 +778,39 @@ const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\](?:\s*[^{\[]*)?/g;
  * replaying them verbatim, so the model cannot pattern-match and repeat them.
  */
 function sanitizeToolCallPatterns(text: string): string {
+  const syntaxSummary = summarizeHistoricalToolSyntax(text);
+  if (syntaxSummary) {
+    return syntaxSummary;
+  }
+
+  if (looksLikeSerializedToolResult(text)) {
+    return formatHistoricalToolActivity("tool", "returned a result");
+  }
+
   let sanitized = text;
 
   // Replace [tool:name] patterns with a neutral summary
   sanitized = sanitized.replace(TOOL_CALL_BRACKET_RE, (_match, toolName) => {
-    return `[historical tool call: ${toolName}]`;
+    return formatHistoricalToolActivity(toolName, "called");
   });
 
   // Replace JSON tool-call objects with a neutral summary
   sanitized = sanitized.replace(TOOL_CALL_JSON_RE, (_match, toolName) => {
-    return `[historical tool call: ${toolName}]`;
+    return formatHistoricalToolActivity(toolName, "called");
   });
 
   // Replace remaining tool-result annotations
-  sanitized = sanitized.replace(TOOL_RESULT_ANNOTATION_RE, "[historical tool call]");
+  sanitized = sanitized.replace(TOOL_RESULT_ANNOTATION_RE, formatHistoricalToolActivity("tool", "called"));
 
   // Detect and summarize repeated tool calls (loop indicator)
-  const toolCallCount = (sanitized.match(/\[historical tool call:\s*([^\]]+)\]/gi) || []).length;
+  const toolCallCount = (sanitized.match(/\[historical tool activity:\s*([^\]]+)\]/gi) || []).length;
   if (toolCallCount > 2) {
     const uniqueTools = new Set(
-      [...sanitized.matchAll(/\[historical tool call:\s*([^\]]+)\]/gi)].map((m) => m[1]),
+      [...sanitized.matchAll(/\[historical tool activity:\s*([^\]]+)\]/gi)].map((m) => m[1]),
     );
     if (uniqueTools.size === 1) {
       // Single tool repeated multiple times — likely a loop, summarize aggressively
-      sanitized = `[Historical tool activity: repeated ${[...uniqueTools][0]} call ${toolCallCount} times. Do not repeat this pattern.]`;
+      sanitized = formatHistoricalToolActivity("tool", `repeated ${toolCallCount} times`);
     }
   }
 
@@ -994,17 +1064,24 @@ export function normalizeAssembleResult(
 
   if (Array.isArray(result.messages)) {
     for (const message of result.messages) {
-      const content = normalizeKernelContent(message.content);
+      const messageRecord = message as Record<string, unknown>;
+      const content = normalizeKernelContentForRole(message.role, message.content, messageRecord);
       let isRealTranscript = false;
+      const replayEligibleRole = message.role === "user" || message.role === "assistant";
+      const replaySafeAssistantText =
+        message.role !== "assistant" || !isHistoricalToolActivityText(content);
 
-      if (sourceMessages) {
+      if (replayEligibleRole && replaySafeAssistantText && sourceMessages) {
         isRealTranscript = sourceMessages.some((sm) => {
           if (message.id && sm.id === message.id) return true;
-          if (sm.role === message.role && normalizeKernelContent(sm.content) === content) return true;
+          if (
+            sm.role === message.role &&
+            normalizeKernelContentForRole(sm.role, sm.content, sm) === content
+          ) return true;
           return false;
         });
       } else {
-        isRealTranscript = message.role === "user" || message.role === "assistant";
+        isRealTranscript = replayEligibleRole && replaySafeAssistantText;
       }
 
       if (isRealTranscript) {
@@ -1456,7 +1533,7 @@ export function buildContextEngineFactory(
           config: buildAssemblyConfig(args.tokenBudget),
           emitDebug: true,
         });
-        const assembled = normalizeAssembleResult(resp, args.messages);
+        const assembled = normalizeAssembleResult(resp, messages);
         let enforced = enforceTokenBudgetInvariant(
           await augmentWithExactRecall(assembled, {
             queryText: prompt || messages[messages.length - 1]?.content || "",
