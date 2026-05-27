@@ -202,7 +202,12 @@ function stripOneOpenClawMetadataBlock(text: string): string {
   const afterHeader = offsetText.slice(header.length);
   const fenceStartMatch = afterHeader.match(/^\n```(?:json)?\n/i);
   if (!fenceStartMatch) {
-    return text;
+    const afterHeaderLines = afterHeader.replace(/^\n?/, "").split("\n");
+    const firstBlankIndex = afterHeaderLines.findIndex((line) => line.trim() === "");
+    if (firstBlankIndex < 0) {
+      return "";
+    }
+    return afterHeaderLines.slice(firstBlankIndex + 1).join("\n");
   }
   const bodyStart = header.length + fenceStartMatch[0].length;
   const fenceEnd = offsetText.indexOf("\n```", bodyStart);
