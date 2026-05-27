@@ -626,7 +626,9 @@ export function normalizeKernelMessage(message: {
 export function normalizeKernelMessages(
   messages: Array<{ role: string; content: unknown; id?: string }>,
 ): KernelCompatibleMessage[] {
-  return messages.map((message) => normalizeKernelMessage(message));
+  return messages
+    .map((message) => normalizeKernelMessage(message))
+    .filter((message) => message.role === "user" || message.content.trim().length > 0);
 }
 
 /**
@@ -732,10 +734,12 @@ const TOOL_XML_BLOCK_RE = /<tool_call\b[\s\S]*?<\/tool_call>/gi;
 const TOOL_FUNCTION_BLOCK_RE = /<function\b[\s\S]*?<\/function>/gi;
 const TOOL_PARAMETER_BLOCK_RE = /<parameter\b[^>]*>[\s\S]*?<\/parameter>/gi;
 const HISTORICAL_TOOL_ACTIVITY_RE = /^\[historical tool activity:[^\]]+\]$/i;
+const HISTORICAL_TOOL_ACTIVITY_INLINE_RE = /\s*\[historical tool activity:[^\]]+\]\s*/gi;
 
 function formatHistoricalToolActivity(toolName: string, action: string): string {
-  const safeName = toolName.trim().replace(/[^\w.-]+/g, "_") || "tool";
-  return `[historical tool activity: ${safeName} ${action}]`;
+  void toolName;
+  void action;
+  return "";
 }
 
 function summarizeHistoricalToolSyntax(text: string): string | null {
@@ -813,7 +817,7 @@ function isStandaloneHistoricalToolSyntax(text: string): boolean {
  */
 function sanitizeToolCallPatterns(text: string): string {
   if (isHistoricalToolActivityText(text)) {
-    return text;
+    return "";
   }
 
   const syntaxSummary = summarizeHistoricalToolSyntax(text);
@@ -826,6 +830,7 @@ function sanitizeToolCallPatterns(text: string): string {
   }
 
   let sanitized = text;
+  sanitized = sanitized.replace(HISTORICAL_TOOL_ACTIVITY_INLINE_RE, " ");
 
   // Replace bracket tool calls and same-line JSON args with a neutral summary.
   sanitized = sanitized.replace(TOOL_CALL_BRACKET_WITH_PAYLOAD_RE, (_match, toolName) => {
@@ -857,7 +862,7 @@ function sanitizeToolCallPatterns(text: string): string {
     }
   }
 
-  return sanitized;
+  return sanitized.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 const TRUNCATION_MARKER = "...[truncated]";
@@ -1136,8 +1141,10 @@ export function normalizeAssembleResult(
       } else {
         if (content.trim().length > 0) {
           const sanitizedContent = sanitizeToolCallPatterns(content);
-          const roleAttr = message.role ? ` role="${escapeMemoryFactText(message.role)}"` : "";
-          extractedMemoryItems.push(`<memory_item source="recalled"${roleAttr} provenance="durable_memory">${escapeMemoryFactText(sanitizedContent)}</memory_item>`);
+          if (sanitizedContent.trim().length > 0) {
+            const roleAttr = message.role ? ` role="${escapeMemoryFactText(message.role)}"` : "";
+            extractedMemoryItems.push(`<memory_item source="recalled"${roleAttr} provenance="durable_memory">${escapeMemoryFactText(sanitizedContent)}</memory_item>`);
+          }
         }
       }
     }
