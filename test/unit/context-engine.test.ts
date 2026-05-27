@@ -422,6 +422,28 @@ test("context engine assemble strips OpenClaw untrusted metadata envelope from p
   assert.equal(call.params.prompt, "@Clawdius Reply with exactly PONG.");
 });
 
+test("context engine assemble fallback strips OpenClaw metadata from messages", async () => {
+  const client = new FakeClient();
+  client.assembleContextInternal = async (params: Record<string, unknown>) => {
+    client.calls.push({ method: "assembleContextInternal", params });
+    throw new Error("sidecar unavailable");
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", openClawMetadataEnvelope("@Clawdius Reply with exactly PONG.")),
+    ],
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "@Clawdius Reply with exactly PONG." },
+  ]);
+});
+
 test("context engine assemble injects exact factual recall for marker tokens", async () => {
   const client = new FakeClient();
   const marker = "CROSS_SESSION_MEMORY_MARKER_1234567890";

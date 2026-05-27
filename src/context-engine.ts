@@ -91,22 +91,25 @@ function normalizeCompactResult(
 ): OpenClawCompatibleCompactResult {
   const didCompact = response?.didCompact === true;
   const tokensBefore = normalizeCurrentTokenCount(options.tokensBefore) ?? 0;
+  const summaryText =
+    typeof response?.summaryText === "string" && response.summaryText.length > 0
+      ? response.summaryText
+      : undefined;
   const details = {
-    clustersFormed:
-      typeof response?.clustersFormed === "number" ? response.clustersFormed : undefined,
-    clustersDeclined:
-      typeof response?.clustersDeclined === "number" ? response.clustersDeclined : undefined,
-    turnsRemoved: typeof response?.turnsRemoved === "number" ? response.turnsRemoved : undefined,
-    summaryMethod:
-      typeof response?.summaryMethod === "string" && response.summaryMethod.length > 0
-        ? response.summaryMethod
-        : undefined,
-    meanConfidence:
-      typeof response?.meanConfidence === "number" ? response.meanConfidence : undefined,
-    summaryText:
-      typeof response?.summaryText === "string" && response.summaryText.length > 0
-        ? response.summaryText
-        : undefined,
+    ...(typeof response?.clustersFormed === "number"
+      ? { clustersFormed: response.clustersFormed }
+      : {}),
+    ...(typeof response?.clustersDeclined === "number"
+      ? { clustersDeclined: response.clustersDeclined }
+      : {}),
+    ...(typeof response?.turnsRemoved === "number" ? { turnsRemoved: response.turnsRemoved } : {}),
+    ...(typeof response?.summaryMethod === "string" && response.summaryMethod.length > 0
+      ? { summaryMethod: response.summaryMethod }
+      : {}),
+    ...(typeof response?.meanConfidence === "number"
+      ? { meanConfidence: response.meanConfidence }
+      : {}),
+    ...(summaryText ? { summaryText } : {}),
   };
   return {
     ok: true,
@@ -115,7 +118,7 @@ function normalizeCompactResult(
     result: {
       tokensBefore,
       ...(details.summaryMethod ? { summary: details.summaryMethod } : {}),
-      ...(details.summaryText ? { summaryText: details.summaryText } : {}),
+      ...(summaryText ? { summaryText } : {}),
       details,
     },
   };
@@ -1438,7 +1441,7 @@ export function buildContextEngineFactory(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
             `(threshold=${dynamicCompactThreshold}): ${compactionResult.reason ?? "compaction failed"}`,
           );
-          return buildBudgetFallbackContext(args.messages, args.tokenBudget);
+          return buildBudgetFallbackContext(messages, args.tokenBudget);
         }
       }
       try {
@@ -1500,14 +1503,14 @@ export function buildContextEngineFactory(
           }
         }
         enforced = enforceTokenBudgetInvariant(enforced, args.tokenBudget);
-        return ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
+        return ensureReplaySafeUserTurn(enforced, messages, logger, args.tokenBudget);
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
         return ensureReplaySafeUserTurn(
-          buildBudgetFallbackContext(args.messages, args.tokenBudget),
-          args.messages,
+          buildBudgetFallbackContext(messages, args.tokenBudget),
+          messages,
           logger,
           args.tokenBudget,
         );

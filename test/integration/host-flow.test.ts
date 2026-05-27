@@ -222,10 +222,11 @@ test("assemble passes correct configuration mapping and returns expected payload
 
   // Verify inbound response handling — user turn is reinjected for replay safety
   assert.ok(assembled.estimatedTokens >= 150);
-  assert.equal(assembled.systemPromptAddition, "<recalled_memories>static memory data</recalled_memories>");
+  assert.match(assembled.systemPromptAddition, /<recalled_memories>static memory data<\/recalled_memories>/);
+  assert.match(assembled.systemPromptAddition, /<retrieved_memory>/);
+  assert.match(assembled.systemPromptAddition, /Mocked recalled context/);
   assert.deepEqual(assembled.messages, [
     { role: "user", content: "what do you remember?" },
-    { role: "assistant", content: "Mocked recalled context" },
   ]);
   assert.equal(assembled.debug?.recoveryTriggerFired, true);
 });
@@ -314,7 +315,9 @@ test("assemble triggers force compaction at dynamic 80% threshold before daemon 
 
   const assembleParams = rpc.getLastCall("assemble_context_internal");
   assert.ok(assembleParams, "Expected assemble_context_internal to be called after compaction");
-  assert.equal(assembled.messages[0]?.content, "ok");
+  assert.equal(assembled.messages.length, 0);
+  assert.match(assembled.systemPromptAddition, /<retrieved_memory>/);
+  assert.match(assembled.systemPromptAddition, /ok/);
   assert.equal(logger.warns.length, 0);
   assert.match(logger.infos[0] ?? "", /predictive compaction trigger phase=assemble/);
   assert.match(logger.infos[1] ?? "", /predictive compaction completed phase=assemble/);
@@ -374,8 +377,10 @@ test("assemble proceeds to assembly when server legitimately declines compaction
 
   const assembleParams = rpc.getLastCall("assemble_context_internal");
   assert.ok(assembleParams, "assemble_context_internal must be called when compaction declines");
-  assert.equal(assembled.messages[0]?.content, "recalled");
-  assert.equal(assembled.systemPromptAddition, "<recalled>x</recalled>");
+  assert.equal(assembled.messages.length, 0);
+  assert.match(assembled.systemPromptAddition, /<recalled>x<\/recalled>/);
+  assert.match(assembled.systemPromptAddition, /<retrieved_memory>/);
+  assert.match(assembled.systemPromptAddition, /recalled/);
   assert.match(logger.warns[0] ?? "", /did not compact.*phase=assemble/);
 });
 
