@@ -729,9 +729,10 @@ function escapeMemoryFactText(text: string): string {
 // Tool-call pattern detection for sanitization
 const TOOL_CALL_BRACKET_RE = /\[tool:([^\]]+)\]/gi;
 const TOOL_CALL_BRACKET_WITH_PAYLOAD_RE = /\[tool:([^\]]+)\](?:\s*\{[^\n]*\})?/gi;
-const TOOL_CALL_JSON_RE = /\{\s*"name"\s*:\s*"([^"]+)"[^}]*\}/g;
+const TOOL_CALL_JSON_RE =
+  /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|parameters|args|input)"\s*:\s*(?:\{[^{}]*\}|"[^"]*"|[^}])*\}/g;
 const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\](?:\s*[^{\[]*)?/g;
-const TOOL_XML_SYNTAX_RE = /<\/?(?:tool_call|function|parameter)(?:\s|>|=)/i;
+const TOOL_XML_SYNTAX_RE = /<\/?(?:tool_call|function|parameter)(?:\s|>|=)/gi;
 const TOOL_XML_BLOCK_RE = /<tool_call\b[\s\S]*?<\/tool_call>/gi;
 const TOOL_FUNCTION_BLOCK_RE = /<function\b[\s\S]*?<\/function>/gi;
 const TOOL_PARAMETER_BLOCK_RE = /<parameter\b[^>]*>[\s\S]*?<\/parameter>/gi;
@@ -758,8 +759,10 @@ function summarizeHistoricalToolSyntax(text: string): string | null {
   }
 
   if (TOOL_XML_SYNTAX_RE.test(text)) {
+    TOOL_XML_SYNTAX_RE.lastIndex = 0;
     return formatHistoricalToolActivity("tool", "called");
   }
+  TOOL_XML_SYNTAX_RE.lastIndex = 0;
 
   return null;
 }

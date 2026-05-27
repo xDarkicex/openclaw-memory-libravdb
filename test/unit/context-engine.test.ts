@@ -606,6 +606,86 @@ test("context engine strips generated historical tool annotations from assistant
   assert.doesNotMatch(JSON.stringify(messages), /historical tool activity/);
 });
 
+test("context engine preserves ordinary assistant JSON with name fields", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "show example JSON"),
+      makeMessage("assistant", 'Return JSON like {"name":"Alice","age":30} exactly.'),
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.deepEqual(messages, [
+    { role: "user", content: "show example JSON" },
+    { role: "assistant", content: 'Return JSON like {"name":"Alice","age":30} exactly.' },
+  ]);
+});
+
+test("context engine removes executable-looking tool-call JSON while preserving prose", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+      makeMessage(
+        "assistant",
+        'I tried {"name":"web_search","arguments":{"query":"example"}} and found no stable answer.',
+      ),
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.deepEqual(messages, [
+    { role: "user", content: "find examples" },
+    { role: "assistant", content: "I tried and found no stable answer." },
+  ]);
+  assert.doesNotMatch(JSON.stringify(messages), /web_search/);
+  assert.doesNotMatch(JSON.stringify(messages), /"query"/);
+});
+
+test("context engine preserves ordinary recalled assistant JSON with name fields", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [
+      { role: "assistant", content: 'The example record is {"name":"Alice","age":30}.' },
+    ],
+    estimatedTokens: 500,
+    systemPromptAddition: "",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "show example JSON"),
+    ],
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "show example JSON" },
+  ]);
+  assert.match(
+    assembled.systemPromptAddition,
+    /\{&quot;name&quot;:&quot;Alice&quot;,&quot;age&quot;:30\}/,
+  );
+});
+
 test("context engine strips OpenClaw reply directive prefixes while preserving assistant prose", async () => {
   const client = new FakeClient();
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
@@ -1752,7 +1832,6 @@ test("exact recall injects facts item-by-item, dropping tail items when budget i
   });
 
   const sp = assembled.systemPromptAddition;
-  console.log("DEBUG_SP_OUTPUT:", JSON.stringify({ sp, length: sp.length, messages: assembled.messages, tokens: assembled.estimatedTokens }));
   assert.ok(sp.includes("<exact_recalled_memory>"), "wrapper open is intact");
   assert.ok(sp.includes("</exact_recalled_memory>"), "wrapper close is intact");
   assert.ok(sp.includes(ma), "first fact injected");
