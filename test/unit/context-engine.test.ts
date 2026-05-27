@@ -435,7 +435,7 @@ test("context engine normalizes structured toolCall blocks as inert history", as
         {
           type: "toolCall",
           id: "call-1",
-          name: "web_search",
+          toolName: "web_search",
           arguments: { query: "example", count: 5 },
         },
       ]),
@@ -450,6 +450,39 @@ test("context engine normalizes structured toolCall blocks as inert history", as
   assert.equal(messages[1]?.content, "[historical tool activity: web_search called]");
   assert.doesNotMatch(messages[1]?.content ?? "", /\[tool:/);
   assert.doesNotMatch(messages[1]?.content ?? "", /"query"/);
+});
+
+test("context engine sanitizes embedded tool syntax without erasing assistant prose", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [
+      {
+        role: "assistant",
+        content: 'I checked [tool:web_search] {"query":"example","count":5} and found no stable answer.',
+      },
+    ],
+    estimatedTokens: 500,
+    systemPromptAddition: "",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+    ],
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "find examples" },
+  ]);
+  assert.match(assembled.systemPromptAddition, /I checked/);
+  assert.match(assembled.systemPromptAddition, /historical tool activity: web_search called/);
+  assert.match(assembled.systemPromptAddition, /and found no stable answer/);
+  assert.doesNotMatch(assembled.systemPromptAddition, /\[tool:/);
+  assert.doesNotMatch(assembled.systemPromptAddition, /"query"/);
 });
 
 test("context engine normalizes toolResult messages without replaying raw JSON", async () => {

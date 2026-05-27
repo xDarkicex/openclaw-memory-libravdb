@@ -139,7 +139,11 @@ function stringifyKernelBlock(block: unknown): string {
     case "thinking":
       return typeof record.thinking === "string" ? record.thinking : "";
     case "toolCall": {
-      const name = typeof record.name === "string" ? record.name : "tool";
+      const name = typeof record.name === "string"
+        ? record.name
+        : typeof record.toolName === "string"
+          ? record.toolName
+          : "tool";
       return formatHistoricalToolActivity(name, "called");
     }
     case "toolResult": {
@@ -720,9 +724,13 @@ function escapeMemoryFactText(text: string): string {
 
 // Tool-call pattern detection for sanitization
 const TOOL_CALL_BRACKET_RE = /\[tool:([^\]]+)\]/gi;
+const TOOL_CALL_BRACKET_WITH_PAYLOAD_RE = /\[tool:([^\]]+)\](?:\s*\{[^\n]*\})?/gi;
 const TOOL_CALL_JSON_RE = /\{\s*"name"\s*:\s*"([^"]+)"[^}]*\}/g;
 const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\](?:\s*[^{\[]*)?/g;
 const TOOL_XML_SYNTAX_RE = /<\/?(?:tool_call|function|parameter)(?:\s|>|=)/i;
+const TOOL_XML_BLOCK_RE = /<tool_call\b[\s\S]*?<\/tool_call>/gi;
+const TOOL_FUNCTION_BLOCK_RE = /<function\b[\s\S]*?<\/function>/gi;
+const TOOL_PARAMETER_BLOCK_RE = /<parameter\b[^>]*>[\s\S]*?<\/parameter>/gi;
 const HISTORICAL_TOOL_ACTIVITY_RE = /^\[historical tool activity:[^\]]+\]$/i;
 
 function formatHistoricalToolActivity(toolName: string, action: string): string {
@@ -772,14 +780,44 @@ function isHistoricalToolActivityText(text: string): boolean {
   return HISTORICAL_TOOL_ACTIVITY_RE.test(text.trim());
 }
 
+function isStandaloneHistoricalToolSyntax(text: string): boolean {
+  const trimmed = text.trim();
+  if (TOOL_CALL_BRACKET_WITH_PAYLOAD_RE.test(trimmed)) {
+    TOOL_CALL_BRACKET_WITH_PAYLOAD_RE.lastIndex = 0;
+    const remainder = trimmed.replace(TOOL_CALL_BRACKET_WITH_PAYLOAD_RE, "").trim();
+    return remainder.length === 0;
+  }
+  TOOL_CALL_BRACKET_WITH_PAYLOAD_RE.lastIndex = 0;
+
+  if (TOOL_CALL_JSON_RE.test(trimmed)) {
+    TOOL_CALL_JSON_RE.lastIndex = 0;
+    const remainder = trimmed.replace(TOOL_CALL_JSON_RE, "").trim();
+    return remainder.length === 0;
+  }
+  TOOL_CALL_JSON_RE.lastIndex = 0;
+
+  if (TOOL_XML_BLOCK_RE.test(trimmed)) {
+    TOOL_XML_BLOCK_RE.lastIndex = 0;
+    const remainder = trimmed.replace(TOOL_XML_BLOCK_RE, "").trim();
+    return remainder.length === 0;
+  }
+  TOOL_XML_BLOCK_RE.lastIndex = 0;
+
+  return false;
+}
+
 /**
  * Sanitizes text that may contain tool-call syntax to prevent loop-priming.
  * Replaces executable-looking patterns with neutral summaries rather than
  * replaying them verbatim, so the model cannot pattern-match and repeat them.
  */
 function sanitizeToolCallPatterns(text: string): string {
+  if (isHistoricalToolActivityText(text)) {
+    return text;
+  }
+
   const syntaxSummary = summarizeHistoricalToolSyntax(text);
-  if (syntaxSummary) {
+  if (syntaxSummary && isStandaloneHistoricalToolSyntax(text)) {
     return syntaxSummary;
   }
 
@@ -789,8 +827,8 @@ function sanitizeToolCallPatterns(text: string): string {
 
   let sanitized = text;
 
-  // Replace [tool:name] patterns with a neutral summary
-  sanitized = sanitized.replace(TOOL_CALL_BRACKET_RE, (_match, toolName) => {
+  // Replace bracket tool calls and same-line JSON args with a neutral summary.
+  sanitized = sanitized.replace(TOOL_CALL_BRACKET_WITH_PAYLOAD_RE, (_match, toolName) => {
     return formatHistoricalToolActivity(toolName, "called");
   });
 
@@ -798,6 +836,11 @@ function sanitizeToolCallPatterns(text: string): string {
   sanitized = sanitized.replace(TOOL_CALL_JSON_RE, (_match, toolName) => {
     return formatHistoricalToolActivity(toolName, "called");
   });
+
+  sanitized = sanitized.replace(TOOL_XML_BLOCK_RE, formatHistoricalToolActivity("tool", "called"));
+  sanitized = sanitized.replace(TOOL_FUNCTION_BLOCK_RE, formatHistoricalToolActivity("tool", "called"));
+  sanitized = sanitized.replace(TOOL_PARAMETER_BLOCK_RE, formatHistoricalToolActivity("tool", "called"));
+  sanitized = sanitized.replace(TOOL_XML_SYNTAX_RE, formatHistoricalToolActivity("tool", "called"));
 
   // Replace remaining tool-result annotations
   sanitized = sanitized.replace(TOOL_RESULT_ANNOTATION_RE, formatHistoricalToolActivity("tool", "called"));
