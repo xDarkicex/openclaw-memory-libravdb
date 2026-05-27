@@ -606,6 +606,152 @@ test("context engine strips generated historical tool annotations from assistant
   assert.doesNotMatch(JSON.stringify(messages), /historical tool activity/);
 });
 
+test("context engine strips OpenClaw reply directive prefixes while preserving assistant prose", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+      makeMessage("assistant", "[[reply_to_current]]\n\nHere are the useful results."),
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.deepEqual(messages, [
+    { role: "user", content: "find examples" },
+    { role: "assistant", content: "Here are the useful results." },
+  ]);
+  assert.doesNotMatch(JSON.stringify(messages), /\[\[reply_to_current\]\]/);
+});
+
+test("context engine drops marker-only OpenClaw assistant directives from replay", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+      makeMessage("assistant", "[[reply_to_current]]"),
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.deepEqual(messages, [
+    { role: "user", content: "find examples" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(messages), /\[\[reply_to_current\]\]/);
+});
+
+test("context engine strips repeated OpenClaw reply directives from assistant replay", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+      makeMessage("assistant", "[[reply_to_current]][[reply_to_current]]\n\nDone."),
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.deepEqual(messages, [
+    { role: "user", content: "find examples" },
+    { role: "assistant", content: "Done." },
+  ]);
+  assert.doesNotMatch(JSON.stringify(messages), /\[\[reply_to_current\]\]/);
+});
+
+test("context engine strips reply target and audio directives from assistant replay", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "voice reply"),
+      makeMessage("assistant", "[[reply_to:1509105635126415472]]\n[[audio_as_voice]]\nVoice answer."),
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.deepEqual(messages, [
+    { role: "user", content: "voice reply" },
+    { role: "assistant", content: "Voice answer." },
+  ]);
+  assert.doesNotMatch(JSON.stringify(messages), /\[\[(?:reply_to|audio_as_voice)/);
+});
+
+test("context engine preserves user mentions of OpenClaw directives in source messages", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "Please explain [[reply_to_current]] literally."),
+    ],
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  const messages = call.params.messages as Array<{ role: string; content: string }>;
+  assert.deepEqual(messages, [
+    { role: "user", content: "Please explain [[reply_to_current]] literally." },
+  ]);
+});
+
+test("context engine strips OpenClaw directives from recalled assemble items", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [
+      { role: "assistant", content: "[[reply_to_current]]\n\nHere are remembered results." },
+      { role: "assistant", content: "[[reply_to_current]][[reply_to_current]]" },
+    ],
+    estimatedTokens: 500,
+    systemPromptAddition: "[[audio_as_voice]]\nExisting recalled context.",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+    ],
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "find examples" },
+  ]);
+  assert.match(assembled.systemPromptAddition, /Here are remembered results\./);
+  assert.match(assembled.systemPromptAddition, /Existing recalled context\./);
+  assert.doesNotMatch(assembled.systemPromptAddition, /\[\[reply_to_current\]\]/);
+  assert.doesNotMatch(assembled.systemPromptAddition, /\[\[audio_as_voice\]\]/);
+});
+
 test("context engine assemble fallback strips OpenClaw metadata from messages", async () => {
   const client = new FakeClient();
   client.assembleContextInternal = async (params: Record<string, unknown>) => {

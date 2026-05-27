@@ -51,6 +51,8 @@ const EXACT_RECALL_MAX_TOKENS = 4;
 const RESERVED_CURRENT_TURN_TOKENS = 150;
 const AFTER_TURN_INGEST_MAX_TOKENS = 2048;
 const OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] */;
+const OPENCLAW_OUTPUT_DIRECTIVE_RE =
+  /\[\[(?:reply_to_current|reply_to:[^\]\r\n]+|audio_as_voice)\]\]/gi;
 const COMMON_QUERY_WORDS = new Set([
   "what", "does", "mean", "remember", "recall", "about", "this", "that",
   "the", "and", "for", "with", "from", "your", "have", "been", "were",
@@ -810,26 +812,46 @@ function isStandaloneHistoricalToolSyntax(text: string): boolean {
   return false;
 }
 
+function stripOpenClawOutputDirectives(text: string): string {
+  if (!OPENCLAW_OUTPUT_DIRECTIVE_RE.test(text)) {
+    OPENCLAW_OUTPUT_DIRECTIVE_RE.lastIndex = 0;
+    return text;
+  }
+  OPENCLAW_OUTPUT_DIRECTIVE_RE.lastIndex = 0;
+  return text
+    .replace(OPENCLAW_OUTPUT_DIRECTIVE_RE, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /**
  * Sanitizes text that may contain tool-call syntax to prevent loop-priming.
  * Replaces executable-looking patterns with neutral summaries rather than
  * replaying them verbatim, so the model cannot pattern-match and repeat them.
  */
 function sanitizeToolCallPatterns(text: string): string {
-  if (isHistoricalToolActivityText(text)) {
+  const directiveSanitized = stripOpenClawOutputDirectives(text);
+  if (directiveSanitized.trim().length === 0) {
     return "";
   }
 
-  const syntaxSummary = summarizeHistoricalToolSyntax(text);
-  if (syntaxSummary && isStandaloneHistoricalToolSyntax(text)) {
+  if (isHistoricalToolActivityText(directiveSanitized)) {
+    return "";
+  }
+
+  const syntaxSummary = summarizeHistoricalToolSyntax(directiveSanitized);
+  if (syntaxSummary && isStandaloneHistoricalToolSyntax(directiveSanitized)) {
     return syntaxSummary;
   }
 
-  if (looksLikeSerializedToolResult(text)) {
+  if (looksLikeSerializedToolResult(directiveSanitized)) {
     return formatHistoricalToolActivity("tool", "returned a result");
   }
 
-  let sanitized = text;
+  let sanitized = directiveSanitized;
   sanitized = sanitized.replace(HISTORICAL_TOOL_ACTIVITY_INLINE_RE, " ");
 
   // Replace bracket tool calls and same-line JSON args with a neutral summary.
@@ -1106,7 +1128,9 @@ export function normalizeAssembleResult(
   },
   sourceMessages?: OpenClawCompatibleMessage[]
 ): OpenClawCompatibleAssembleResult {
-  let systemPromptAddition = typeof result.systemPromptAddition === "string" ? result.systemPromptAddition : "";
+  let systemPromptAddition = stripOpenClawOutputDirectives(
+    typeof result.systemPromptAddition === "string" ? result.systemPromptAddition : "",
+  );
   const messages: OpenClawCompatibleMessage[] = [];
   const extractedMemoryItems: string[] = [];
 
