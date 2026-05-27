@@ -50,6 +50,7 @@ const EXACT_RECALL_SEARCH_K = 32;
 const EXACT_RECALL_MAX_TOKENS = 4;
 const RESERVED_CURRENT_TURN_TOKENS = 150;
 const AFTER_TURN_INGEST_MAX_TOKENS = 2048;
+const OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] */;
 const COMMON_QUERY_WORDS = new Set([
   "what", "does", "mean", "remember", "recall", "about", "this", "that",
   "the", "and", "for", "with", "from", "your", "have", "been", "were",
@@ -160,13 +161,57 @@ function stringifyKernelBlock(block: unknown): string {
  * Normalizes kernel content (string or block array) to a flat string.
  */
 function normalizeKernelContent(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
+  const text = typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.map(stringifyKernelBlock).filter((part) => part.length > 0).join("\n")
+      : "";
+  return stripOpenClawUntrustedMetadataEnvelope(text);
+}
+
+function stripOpenClawUntrustedMetadataEnvelope(text: string): string {
+  let remaining = text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "");
+  let stripped = false;
+  while (true) {
+    const next = stripOneOpenClawMetadataBlock(remaining);
+    if (next === remaining) {
+      break;
+    }
+    stripped = true;
+    remaining = next;
   }
-  if (!Array.isArray(content)) {
-    return "";
+  return stripped ? remaining.trimStart() : text;
+}
+
+function stripOneOpenClawMetadataBlock(text: string): string {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const leadingWhitespaceLength = normalized.length - normalized.trimStart().length;
+  const offsetText = normalized.slice(leadingWhitespaceLength);
+  const header = [
+    "Conversation info (untrusted metadata):",
+    "Sender (untrusted metadata):",
+    "Thread starter (untrusted, for context):",
+    "Reply target of current user message (untrusted, for context):",
+    "Forwarded message context (untrusted metadata):",
+    "Chat history since last reply (untrusted, for context):",
+  ].find((candidate) => offsetText.startsWith(candidate)) ?? null;
+  if (!header) {
+    return text;
   }
-  return content.map(stringifyKernelBlock).filter((part) => part.length > 0).join("\n");
+
+  const afterHeader = offsetText.slice(header.length);
+  const fenceStartMatch = afterHeader.match(/^\n```(?:json)?\n/i);
+  if (!fenceStartMatch) {
+    return text;
+  }
+  const bodyStart = header.length + fenceStartMatch[0].length;
+  const fenceEnd = offsetText.indexOf("\n```", bodyStart);
+  if (fenceEnd < 0) {
+    return text;
+  }
+  const afterFence = fenceEnd + "\n```".length;
+  const trailingNewlineLength = offsetText.slice(afterFence).startsWith("\n") ? 1 : 0;
+  return offsetText.slice(afterFence + trailingNewlineLength);
 }
 
 /**
@@ -1340,6 +1385,7 @@ export function buildContextEngineFactory(
         sessionKey: args.sessionKey,
       });
       const messages = normalizeKernelMessages(args.messages);
+      const prompt = stripOpenClawUntrustedMetadataEnvelope(args.prompt ?? "");
       const lastUserMessage = findLastReplaySafeUserMessage(messages);
       const reservedCurrentTurnTokens = lastUserMessage
         ? approximateMessageTokens(lastUserMessage)
@@ -1347,7 +1393,7 @@ export function buildContextEngineFactory(
       const currentContextTokens = resolvePredictiveCompactionTokenCount({
         currentTokenCount: args.currentTokenCount,
         messages,
-        prompt: args.prompt,
+        prompt,
       });
       const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
       const predictiveTargetSize = resolvePredictiveCompactionTarget({
@@ -1396,7 +1442,7 @@ export function buildContextEngineFactory(
           sessionId,
           sessionKey: args.sessionKey,
           userId,
-          prompt: args.prompt ?? "",
+          prompt,
           messages,
           tokenBudget: args.tokenBudget,
           config: buildAssemblyConfig(args.tokenBudget),
@@ -1405,7 +1451,7 @@ export function buildContextEngineFactory(
         const assembled = normalizeAssembleResult(resp, args.messages);
         let enforced = enforceTokenBudgetInvariant(
           await augmentWithExactRecall(assembled, {
-            queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
+            queryText: prompt || messages[messages.length - 1]?.content || "",
             userId,
             sessionId,
             tokenBudget: args.tokenBudget,

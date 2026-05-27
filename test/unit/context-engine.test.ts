@@ -249,6 +249,41 @@ function makeMessage(role: string, content: string, id?: string) {
   return { role, content, ...(id ? { id } : {}) };
 }
 
+function openClawMetadataEnvelope(userText: string): string {
+  return [
+    "Conversation info (untrusted metadata):",
+    "```json",
+    "{",
+    '  "chat_id": "channel:example-channel",',
+    '  "message_id": "example-message",',
+    '  "sender_id": "example-sender",',
+    '  "was_mentioned": true',
+    "}",
+    "```",
+    "",
+    "Sender (untrusted metadata):",
+    "```json",
+    "{",
+    '  "username": "example-user",',
+    '  "tag": "example-user"',
+    "}",
+    "```",
+    "",
+    "Reply target of current user message (untrusted, for context):",
+    "```json",
+    "{",
+    '  "body": "previous iMessage text"',
+    "}",
+    "```",
+    "",
+    userText,
+  ].join("\n");
+}
+
+function timestampedOpenClawMetadataEnvelope(userText: string): string {
+  return `[Wed 2026-03-11 23:51 PDT] ${openClawMetadataEnvelope(userText)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Conformance: every entrypoint path must converge on the same lifecycle hooks
 // with a stable sessionId, sessionKey, and durable userId.
@@ -308,6 +343,25 @@ test("context engine afterTurn resolves config userId and passes messages to dae
   assert.equal(msgs.length, 2);
 });
 
+test("context engine afterTurn strips OpenClaw untrusted metadata envelope before ingest", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", timestampedOpenClawMetadataEnvelope("@Clawdius Reply with exactly PONG.")),
+    ],
+  });
+
+  const call = client.calls.find((c) => c.method === "afterTurnKernel");
+  assert.ok(call, "after_turn_kernel RPC was called");
+  assert.deepEqual(call.params.messages, [
+    { role: "user", content: "@Clawdius Reply with exactly PONG." },
+  ]);
+});
+
 test("context engine assemble resolves config userId and passes it to daemon", async () => {
   const client = new FakeClient();
   const cfg: PluginConfig = { userId: "fixed-user" };
@@ -325,6 +379,23 @@ test("context engine assemble resolves config userId and passes it to daemon", a
   assert.equal(call.params.sessionId, "s1");
   assert.equal(call.params.sessionKey, "sk1");
   assert.equal(call.params.userId, "fixed-user");
+});
+
+test("context engine assemble strips OpenClaw untrusted metadata envelope from prompt", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "query")],
+    prompt: openClawMetadataEnvelope("@Clawdius Reply with exactly PONG."),
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  assert.equal(call.params.prompt, "@Clawdius Reply with exactly PONG.");
 });
 
 test("context engine assemble injects exact factual recall for marker tokens", async () => {
