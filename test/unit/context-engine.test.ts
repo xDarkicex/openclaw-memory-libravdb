@@ -602,6 +602,42 @@ test("context engine assemble projection preserves the live structured tool tail
   assert.doesNotMatch(assembled.systemPromptAddition, /https:\/\/example\.test/);
 });
 
+test("context engine keeps restored live tool tails within the token budget", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "find examples"),
+      makeMessage("assistant", [
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "web_search",
+          arguments: { query: "example", count: 5 },
+        },
+      ]),
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "web_search",
+        content: [
+          {
+            type: "text",
+            text: "R".repeat(10_000),
+          },
+        ],
+      },
+    ],
+    tokenBudget: 256,
+  });
+
+  assert.ok(assembled.estimatedTokens <= 256);
+  assert.doesNotMatch(JSON.stringify(assembled.messages), /R{1000}/);
+});
+
 test("context engine strips generated historical tool annotations from assistant transcript", async () => {
   const client = new FakeClient();
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });

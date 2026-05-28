@@ -1732,22 +1732,28 @@ export function buildContextEngineFactory(
           }
         }
         enforced = enforceTokenBudgetInvariant(enforced, args.tokenBudget);
-        return restoreCurrentToolProtocolTail(
-          ensureReplaySafeUserTurn(enforced, messages, logger, args.tokenBudget),
-          args.messages,
+        return enforceTokenBudgetInvariant(
+          restoreCurrentToolProtocolTail(
+            ensureReplaySafeUserTurn(enforced, messages, logger, args.tokenBudget),
+            args.messages,
+          ),
+          args.tokenBudget,
         );
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
-        return restoreCurrentToolProtocolTail(
-          ensureReplaySafeUserTurn(
-            buildBudgetFallbackContext(messages, args.tokenBudget),
-            messages,
-            logger,
-            args.tokenBudget,
+        return enforceTokenBudgetInvariant(
+          restoreCurrentToolProtocolTail(
+            ensureReplaySafeUserTurn(
+              buildBudgetFallbackContext(messages, args.tokenBudget),
+              messages,
+              logger,
+              args.tokenBudget,
+            ),
+            args.messages,
           ),
-          args.messages,
+          args.tokenBudget,
         );
       }
     },
