@@ -134,7 +134,11 @@ export function createLibraVdbMemoryTools(
           agentId: normalizeOptionalString(ctx.agentId),
           purpose,
         })
-        .then((result) => result.manager);
+        .then((result) => result.manager)
+        .catch((error) => {
+          managers.delete(key);
+          throw error;
+        });
       managers.set(key, manager);
     }
     return await manager;
@@ -167,6 +171,7 @@ export function createLibraVdbMemoryTools(
             const manager = await getManager(ctx, "tool-search");
             const rawResults = await manager.search({
               query,
+              corpus,
               ...(maxResults !== undefined ? { maxResults } : {}),
               ...(minScore !== undefined ? { minScore } : {}),
               ...buildSearchContext(ctx),

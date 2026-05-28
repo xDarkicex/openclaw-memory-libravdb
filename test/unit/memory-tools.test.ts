@@ -62,6 +62,38 @@ class FakeRpc {
   }
 }
 
+class CorpusPriorityRpc extends FakeRpc {
+  override async searchTextCollections(params: Record<string, unknown>) {
+    this.calls.push({ method: "searchTextCollections", params });
+    const encoder = new TextEncoder();
+    return {
+      results: [
+        {
+          id: "durable-top",
+          score: 0.99,
+          text: "durable memory outranks the session hit",
+          metadataJson: encoder.encode(JSON.stringify({ collection: "user:u1" })),
+        },
+      ],
+    };
+  }
+
+  override async searchText(params: Record<string, unknown>) {
+    this.calls.push({ method: "searchText", params });
+    const encoder = new TextEncoder();
+    return {
+      results: [
+        {
+          id: "session-hit",
+          score: 0.72,
+          text: "session hit below durable memory",
+          metadataJson: encoder.encode(JSON.stringify({ collection: String(params.collection) })),
+        },
+      ],
+    };
+  }
+}
+
 test("LibraVDB memory tools expose memory_search and memory_get through the runtime bridge", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { userId: "u1", topK: 4 };
@@ -125,11 +157,75 @@ test("LibraVDB memory_search supports sessions corpus filtering without memory-c
   });
   const details = search.details as { results: Array<{ source: string; snippet: string }> };
 
+  assert.equal(rpc.calls[1]?.method, "searchText");
+  assert.equal(rpc.calls[1]?.params.collection, "session:discord-session");
   assert.deepEqual(
     details.results.map((result) => result.source),
     ["sessions"],
   );
-  assert.equal(details.results[0]?.snippet, "first interaction was in Discord");
+  assert.equal(details.results[0]?.snippet, "single collection result");
+});
+
+test("LibraVDB memory_search constrains sessions corpus before top-k ranking", async () => {
+  const rpc = new CorpusPriorityRpc();
+  const cfg: PluginConfig = { userId: "u1" };
+  const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
+  const searchTool = tools.createSearchTool({
+    agentId: "spartacus",
+    sessionId: "discord-session",
+    sessionKey: "discord-key",
+  });
+
+  const search = await searchTool.execute("call-1", {
+    query: "needle",
+    corpus: "sessions",
+    maxResults: 1,
+  });
+  const details = search.details as { results: Array<{ source: string; snippet: string }> };
+
+  assert.equal(rpc.calls[1]?.method, "searchText");
+  assert.equal(rpc.calls[1]?.params.collection, "session:discord-session");
+  assert.equal(
+    rpc.calls.some((call) => call.method === "searchTextCollections"),
+    false,
+    "sessions corpus must not search mixed durable collections before filtering",
+  );
+  assert.deepEqual(details.results, [
+    {
+      path: "session%3Adiscord-session::session-hit",
+      startLine: 1,
+      endLine: 1,
+      score: 0.72,
+      snippet: "session hit below durable memory",
+      source: "sessions",
+      citation: "session:discord-session:session-hit",
+    },
+  ]);
+});
+
+test("LibraVDB memory_search constrains memory corpus before top-k ranking", async () => {
+  const rpc = new FakeRpc();
+  const cfg: PluginConfig = { userId: "u1" };
+  const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
+  const searchTool = tools.createSearchTool({
+    agentId: "spartacus",
+    sessionId: "discord-session",
+    sessionKey: "discord-key",
+  });
+
+  const search = await searchTool.execute("call-1", {
+    query: "durable",
+    corpus: "memory",
+    maxResults: 1,
+  });
+  const details = search.details as { results: Array<{ source: string; snippet: string }> };
+
+  assert.equal(rpc.calls[1]?.method, "searchTextCollections");
+  assert.deepEqual(rpc.calls[1]?.params.collections, ["user:u1", "global"]);
+  assert.deepEqual(
+    details.results.map((result) => result.source),
+    ["memory", "memory"],
+  );
 });
 
 test("LibraVDB memory_get reports unknown paths as disabled instead of reading arbitrary files", async () => {
