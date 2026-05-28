@@ -170,6 +170,42 @@ test("memory runtime bridge keeps the legacy string search shape", async () => {
   assert.equal(result.results[0]?.content, "remembered item");
 });
 
+test("memory runtime bridge falls back to metadata text when search result text is blank", async () => {
+  const metadataText = "Conversation info\n\n@Spartacus earliest remembered channel turn";
+  const rpc = new FakeRpc();
+  rpc.searchTextCollections = async (params: Record<string, unknown>) => {
+    rpc.calls.push({ method: "searchTextCollections", params });
+    return {
+      results: [
+        {
+          id: "turn-1",
+          score: 0.88,
+          text: "",
+          metadata: { collection: "session:s1" },
+          metadataJson: new TextEncoder().encode(JSON.stringify({
+            collection: "session:s1",
+            text: metadataText,
+          })),
+        },
+      ],
+    };
+  };
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "earliest remembered channel turn", sessionId: "s1" }) as Array<{
+    path: string;
+    snippet: string;
+    source: string;
+  }>;
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.snippet, metadataText);
+  assert.equal(result[0]?.source, "sessions");
+
+  const loaded = await manager.readFile({ relPath: result[0]?.path ?? "", from: 1, lines: 20 });
+  assert.equal(loaded.text, metadataText);
+});
+
 test("memory runtime bridge does not authorize hidden paths from legacy search results", async () => {
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});

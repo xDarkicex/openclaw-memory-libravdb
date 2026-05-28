@@ -125,9 +125,11 @@ function createMemorySearchManager(
 
       const legacyResults = filteredResults.map((item) => {
         const meta = parseMetadataJson(item);
+        const text = resolveSearchResultText(item, meta);
         return {
           ...item,
-          content: item.text || (typeof meta.text === "string" ? meta.text : ""),
+          text,
+          content: text,
         };
       });
       if (legacyCall) {
@@ -136,10 +138,10 @@ function createMemorySearchManager(
       const memoryResults = filteredResults.map((item) => {
         const meta = parseMetadataJson(item);
         const collection = typeof meta.collection === "string" ? meta.collection : "memory";
-        const effectiveText = item.text || (typeof meta.text === "string" ? meta.text : "") || "";
         const relPath = encodeSearchResultPath(collection, item.id);
-        returnedSearchPaths.set(relPath, effectiveText);
-        return toMemorySearchResult(item);
+        const text = resolveSearchResultText(item, meta);
+        returnedSearchPaths.set(relPath, text);
+        return toMemorySearchResult(item, meta, text);
       });
       return memoryResults;
     },
@@ -258,16 +260,28 @@ function parseMetadataJson(item: { metadataJson?: Uint8Array }): Record<string, 
   return {};
 }
 
-function toMemorySearchResult(item: ProtoSearchResult) {
-  const meta = parseMetadataJson(item);
+function resolveSearchResultText(
+  item: ProtoSearchResult,
+  meta: Record<string, unknown> = parseMetadataJson(item),
+): string {
+  if (typeof item.text === "string" && item.text.length > 0) {
+    return item.text;
+  }
+  return typeof meta.text === "string" ? meta.text : item.text;
+}
+
+function toMemorySearchResult(
+  item: ProtoSearchResult,
+  meta: Record<string, unknown> = parseMetadataJson(item),
+  text = resolveSearchResultText(item, meta),
+) {
   const collection = typeof meta.collection === "string" ? meta.collection : "memory";
-  const effectiveText = item.text || (typeof meta.text === "string" ? meta.text : "") || "";
   return {
     path: encodeSearchResultPath(collection, item.id),
     startLine: 1,
-    endLine: Math.max(1, effectiveText.split("\n").length),
+    endLine: Math.max(1, text.split("\n").length),
     score: item.score,
-    snippet: effectiveText,
+    snippet: text,
     source: collection.startsWith("session:") || collection.startsWith("session_") ? "sessions" : "memory",
     citation: `${collection}:${item.id}`,
   };

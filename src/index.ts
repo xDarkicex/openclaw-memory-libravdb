@@ -14,7 +14,7 @@ import type { PluginConfig } from "./types.js";
 export const MEMORY_ID = "libravdb-memory";
 
 const LIGHTWEIGHT_MODES = new Set(["cli-metadata", "setup-only"]);
-const RUNTIME_CLEANUP_SHUTDOWN_REASONS = new Set(["delete", "restart"]);
+const RUNTIME_CLEANUP_SHUTDOWN_REASONS = new Set(["delete"]);
 
 export function shouldShutdownRuntimeForLifecycleCleanup(reason: string): boolean {
   return RUNTIME_CLEANUP_SHUTDOWN_REASONS.has(reason);

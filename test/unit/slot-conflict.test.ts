@@ -200,6 +200,6 @@ test("combined — cli-metadata with conflicting slot: mode gate blocks before s
 test("runtime lifecycle cleanup preserves context-engine runtime on disable", () => {
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("disable"), false);
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("reset"), false);
+  assert.equal(shouldShutdownRuntimeForLifecycleCleanup("restart"), false);
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("delete"), true);
-  assert.equal(shouldShutdownRuntimeForLifecycleCleanup("restart"), true);
 });
