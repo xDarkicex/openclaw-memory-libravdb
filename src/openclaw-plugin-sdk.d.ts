@@ -55,6 +55,37 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
 
   type PluginRegistrationMode = string;
 
+  interface OpenClawPluginToolContext {
+    config?: OpenClawConfig;
+    runtimeConfig?: OpenClawConfig;
+    workspaceDir?: string;
+    agentDir?: string;
+    agentId?: string;
+    sessionKey?: string;
+    sessionId?: string;
+    sandboxed?: boolean;
+  }
+
+  interface OpenClawPluginToolResult {
+    content: Array<{
+      type: "text";
+      text: string;
+    }>;
+    details?: unknown;
+  }
+
+  interface OpenClawPluginTool {
+    name: string;
+    label?: string;
+    description: string;
+    parameters: unknown;
+    execute(toolCallId: string, params: unknown): OpenClawPluginToolResult | Promise<OpenClawPluginToolResult>;
+  }
+
+  type OpenClawPluginToolFactory = (
+    ctx: OpenClawPluginToolContext,
+  ) => OpenClawPluginTool | OpenClawPluginTool[] | null | undefined;
+
   export interface OpenClawPluginApi {
     id: string;
     name: string;
@@ -71,6 +102,14 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
       info?(message: string): void;
       warn?(message: string): void;
     };
+    registerTool(
+      tool: OpenClawPluginTool | OpenClawPluginToolFactory,
+      opts?: {
+        name?: string;
+        names?: string[];
+        optional?: boolean;
+      },
+    ): void;
     registerContextEngine(id: string, factory: () => unknown): void;
     registerMemoryCapability(id: string, capability: {
       promptBuilder?: MemoryPromptSectionBuilder;

@@ -15,6 +15,7 @@ type InstrumentedApi = OpenClawPluginApi & {
     memoryCapabilities: string[];
     contextEngines: string[];
     embeddingProviders: string[];
+    tools: string[];
     runtimeLifecycles: string[];
     services: string[];
     hooks: string[];
@@ -30,6 +31,7 @@ function makeFakeApi(overrides: {
     memoryCapabilities: [],
     contextEngines: [],
     embeddingProviders: [],
+    tools: [],
     runtimeLifecycles: [],
     services: [],
     hooks: [],
@@ -55,6 +57,16 @@ function makeFakeApi(overrides: {
     },
     registerMemoryCapability(id: string, _cap: unknown) {
       registrations.memoryCapabilities.push(id);
+    },
+    registerTool(tool: unknown, opts?: { name?: string; names?: string[] }) {
+      const toolNames = opts?.names ?? (opts?.name ? [opts.name] : []);
+      if (toolNames.length > 0) {
+        registrations.tools.push(...toolNames);
+        return;
+      }
+      if (tool && typeof tool === "object" && "name" in tool) {
+        registrations.tools.push(String((tool as { name: unknown }).name));
+      }
     },
     registerContextEngine(id: string, _factory: () => unknown) {
       registrations.contextEngines.push(id);
@@ -86,6 +98,7 @@ test("slot check — ours: register succeeds", () => {
     "libravdb-bundled",
     "libravdb-onnx",
   ]);
+  assert.deepEqual(api.registrations.tools, ["memory_search", "memory_get"]);
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
     "libravdb-dream-promotion",
@@ -124,6 +137,7 @@ test("slot check — unset: register succeeds with warning", () => {
     "libravdb-bundled",
     "libravdb-onnx",
   ]);
+  assert.deepEqual(api.registrations.tools, ["memory_search", "memory_get"]);
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
     "libravdb-dream-promotion",
@@ -143,6 +157,7 @@ test("slot check — 'none': register succeeds", () => {
   assert.deepEqual(api.registrations.memoryCapabilities, []);
   assert.deepEqual(api.registrations.contextEngines, []);
   assert.deepEqual(api.registrations.embeddingProviders, []);
+  assert.deepEqual(api.registrations.tools, []);
   assert.deepEqual(api.registrations.services, []);
   assert.deepEqual(api.registrations.runtimeLifecycles, []);
   assert.deepEqual(api.registrations.hooks, []);

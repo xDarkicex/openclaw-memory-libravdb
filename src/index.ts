@@ -7,6 +7,7 @@ import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
+import { createLibraVdbMemoryTools } from "./memory-tools.js";
 import { createPluginRuntime } from "./plugin-runtime.js";
 import type { PluginConfig } from "./types.js";
 
@@ -67,6 +68,12 @@ export function register(api: OpenClawPluginApi) {
     ? null
     : createPluginRuntime(cfg, logger);
   registerMemoryCli(api, runtimeOrNull, cfg, logger);
+
+  if (runtimeOrNull) {
+    const memoryTools = createLibraVdbMemoryTools(runtimeOrNull.getClient, cfg, logger);
+    api.registerTool?.((ctx) => memoryTools.createSearchTool(ctx), { names: ["memory_search"] });
+    api.registerTool?.((ctx) => memoryTools.createGetTool(ctx), { names: ["memory_get"] });
+  }
 
   if (isLightweight || isDiscovery) {
     if (!isLightweight) {

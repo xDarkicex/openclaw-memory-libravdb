@@ -9,7 +9,11 @@
   ],
   "contracts": {
     "memory": true,
-    "contextEngine": true
+    "contextEngine": true,
+    "tools": [
+      "memory_search",
+      "memory_get"
+    ]
   },
   "activation": {
     "onCommands": [

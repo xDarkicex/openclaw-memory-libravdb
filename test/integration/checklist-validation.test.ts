@@ -18,6 +18,7 @@ test("manifest and package metadata satisfy checklist structure", async () => {
   );
   assert.deepEqual(manifest.activation, { onCommands: ["memory"] });
   assert.equal(manifest.version, pkg.version);
+  assert.deepEqual(manifest.contracts.tools, ["memory_search", "memory_get"]);
 
   assert.equal(pkg.main, "./dist/index.js");
   assert.equal(pkg.types, "./dist/index.d.ts");
@@ -94,6 +95,8 @@ test("source checklist invariants are present in host code", async () => {
   assert.match(indexTs, /export const MEMORY_ID = "libravdb-memory"/);
   assert.match(indexTs, /registerContextEngine\(\s*MEMORY_ID/s);
   assert.match(indexTs, /registerMemoryCapability\(MEMORY_ID/);
+  assert.match(indexTs, /registerTool\?\.\(\(ctx\) => memoryTools\.createSearchTool\(ctx\)/);
+  assert.match(indexTs, /registerTool\?\.\(\(ctx\) => memoryTools\.createGetTool\(ctx\)/);
   assert.match(indexTs, /api\.config\?\.plugins\?\.slots\?\.memory/);
   assert.match(indexTs, /api\.on\("before_reset"/);
   assert.match(indexTs, /api\.on\("session_end"/);
