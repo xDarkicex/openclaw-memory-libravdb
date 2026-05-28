@@ -137,7 +137,7 @@ test("slot check — unset: register succeeds with warning", () => {
     "libravdb-bundled",
     "libravdb-onnx",
   ]);
-  assert.deepEqual(api.registrations.tools, ["memory_search", "memory_get"]);
+  assert.deepEqual(api.registrations.tools, []);
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
     "libravdb-dream-promotion",

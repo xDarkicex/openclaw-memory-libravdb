@@ -69,7 +69,8 @@ export function register(api: OpenClawPluginApi) {
     : createPluginRuntime(cfg, logger);
   registerMemoryCli(api, runtimeOrNull, cfg, logger);
 
-  if (runtimeOrNull) {
+  const ownsMemorySlot = memSlot === MEMORY_ID;
+  if (runtimeOrNull && ownsMemorySlot) {
     const memoryTools = createLibraVdbMemoryTools(runtimeOrNull.getClient, cfg, logger);
     api.registerTool?.((ctx) => memoryTools.createSearchTool(ctx), { names: ["memory_search"] });
     api.registerTool?.((ctx) => memoryTools.createGetTool(ctx), { names: ["memory_get"] });
