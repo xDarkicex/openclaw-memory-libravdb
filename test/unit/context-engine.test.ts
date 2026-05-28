@@ -521,7 +521,7 @@ test("context engine omits toolResult messages without replaying raw JSON", asyn
   assert.doesNotMatch(JSON.stringify(messages), /https:\/\/example\.test/);
 });
 
-test("context engine assemble projection does not replay tool activity as assistant text", async () => {
+test("context engine assemble projection preserves the live structured tool tail", async () => {
   const client = new FakeClient();
   client.assembleResponse = {
     messages: [
@@ -573,9 +573,29 @@ test("context engine assemble projection does not replay tool activity as assist
 
   assert.deepEqual(assembled.messages, [
     { role: "user", content: "find examples" },
+    makeMessage("assistant", [
+      {
+        type: "toolCall",
+        id: "call-1",
+        name: "web_search",
+        arguments: { query: "example", count: 5 },
+      },
+    ]),
+    {
+      role: "toolResult",
+      toolName: "web_search",
+      content: [
+        {
+          type: "text",
+          text: '{ "results": [{ "title": "Example", "url": "https://example.test" }], "provider": "search-searxng" }',
+        },
+      ],
+    },
   ]);
-  assert.doesNotMatch(JSON.stringify(assembled.messages), /\[tool:/);
-  assert.doesNotMatch(JSON.stringify(assembled.messages), /"results"/);
+  const assistantStringMessages = assembled.messages
+    .filter((message) => message.role === "assistant" && typeof message.content === "string");
+  assert.doesNotMatch(JSON.stringify(assistantStringMessages), /\[tool:/);
+  assert.doesNotMatch(JSON.stringify(assistantStringMessages), /"results"/);
   assert.doesNotMatch(assembled.systemPromptAddition, /historical tool activity/);
   assert.doesNotMatch(assembled.systemPromptAddition, /\[tool:/);
   assert.doesNotMatch(assembled.systemPromptAddition, /<parameter=/);

@@ -565,6 +565,81 @@ function buildBudgetFallbackContext(
   };
 }
 
+function hasStructuredToolBlock(content: unknown): boolean {
+  return Array.isArray(content) &&
+    content.some((part) => {
+      if (!part || typeof part !== "object") return false;
+      const type = (part as Record<string, unknown>).type;
+      return type === "toolCall" || type === "toolResult";
+    });
+}
+
+function isStructuredToolProtocolMessage(message: OpenClawCompatibleMessage): boolean {
+  return message.role === "tool" ||
+    message.role === "toolResult" ||
+    hasStructuredToolBlock(message.content);
+}
+
+function findLastMessageIndex(
+  messages: OpenClawCompatibleMessage[],
+  predicate: (message: OpenClawCompatibleMessage) => boolean,
+): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (predicate(messages[index]!)) return index;
+  }
+  return -1;
+}
+
+function buildCurrentToolProtocolTail(
+  sourceMessages: OpenClawCompatibleMessage[],
+): OpenClawCompatibleMessage[] {
+  const lastUserIndex = findLastMessageIndex(sourceMessages, (message) => message.role === "user");
+  if (lastUserIndex < 0) return [];
+
+  const tail = sourceMessages.slice(lastUserIndex);
+  if (!tail.some(isStructuredToolProtocolMessage)) return [];
+
+  return tail
+    .map((message) => {
+      if (message.role === "user") {
+        return {
+          role: "user",
+          content: normalizeKernelContent(message.content),
+          ...(typeof message.id === "string" ? { id: message.id } : {}),
+        };
+      }
+      return { ...message };
+    })
+    .filter((message) => message.role !== "user" || normalizeKernelContent(message.content).trim().length > 0);
+}
+
+function restoreCurrentToolProtocolTail(
+  assembled: OpenClawCompatibleAssembleResult,
+  sourceMessages: OpenClawCompatibleMessage[],
+): OpenClawCompatibleAssembleResult {
+  const tail = buildCurrentToolProtocolTail(sourceMessages);
+  if (tail.length === 0) return assembled;
+
+  const tailUser = tail[0];
+  const tailUserContent = normalizeKernelContent(tailUser?.content);
+  const existingTailStart = findLastMessageIndex(
+    assembled.messages,
+    (message) =>
+      message.role === "user" &&
+      normalizeKernelContent(message.content) === tailUserContent,
+  );
+  const prefix = existingTailStart >= 0
+    ? assembled.messages.slice(0, existingTailStart)
+    : assembled.messages;
+  const messages = [...prefix, ...tail];
+  return {
+    ...assembled,
+    messages,
+    estimatedTokens: approximateTokenCount(assembled.systemPromptAddition) +
+      approximateMessagesTokens(messages),
+  };
+}
+
 /**
  * Resolves token count for predictive compaction from messages and prompt.
  */
@@ -1657,16 +1732,22 @@ export function buildContextEngineFactory(
           }
         }
         enforced = enforceTokenBudgetInvariant(enforced, args.tokenBudget);
-        return ensureReplaySafeUserTurn(enforced, messages, logger, args.tokenBudget);
+        return restoreCurrentToolProtocolTail(
+          ensureReplaySafeUserTurn(enforced, messages, logger, args.tokenBudget),
+          args.messages,
+        );
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
-        return ensureReplaySafeUserTurn(
-          buildBudgetFallbackContext(messages, args.tokenBudget),
-          messages,
-          logger,
-          args.tokenBudget,
+        return restoreCurrentToolProtocolTail(
+          ensureReplaySafeUserTurn(
+            buildBudgetFallbackContext(messages, args.tokenBudget),
+            messages,
+            logger,
+            args.tokenBudget,
+          ),
+          args.messages,
         );
       }
     },
