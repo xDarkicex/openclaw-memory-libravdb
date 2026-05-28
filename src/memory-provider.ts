@@ -16,6 +16,8 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
   const lines = [
     "For explicit memory lookup requests, call `memory_search` first.",
     "Use it for prior turns, remembered facts, earliest interactions, and channel history.",
+    "Do not answer memory lookup requests from prior transcript claims or earlier `memory_search` results; perform a fresh `memory_search` for the current request.",
+    "For earliest or oldest memory questions, request enough results, compare timestamps in the returned snippets, and use `memory_get` if the snippet is not enough.",
   ];
   if (availableTools.has("memory_get")) {
     lines.push("After a `memory_search` hit, call `memory_get` when exact wording or more context is needed.");

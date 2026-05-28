@@ -146,7 +146,7 @@ export function createLibraVdbMemoryTools(
         name: "memory_search",
         label: "Memory Search",
         description:
-          "Mandatory LibraVDB recall step: semantically search durable memory and session recall before answering questions about prior work, decisions, dates, people, preferences, todos, or history. If response has disabled=true, memory retrieval is unavailable and should be surfaced to the user.",
+          "Mandatory fresh LibraVDB recall step: semantically search durable memory and session recall before answering questions about prior work, decisions, dates, people, preferences, todos, or history. Do not reuse prior transcript claims or older memory_search results for a new memory lookup. For earliest/oldest questions, request enough results and compare timestamps in snippets. If response has disabled=true, memory retrieval is unavailable and should be surfaced to the user.",
         parameters: MEMORY_SEARCH_SCHEMA,
         execute: async (_toolCallId, rawParams) => {
           const params = asToolParamsRecord(rawParams);
