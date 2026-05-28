@@ -51,7 +51,7 @@ test("memory prompt section stays synchronous and does not perform rpc lookups",
 
   const memorySection = buildMemoryPromptSection(getRpc, cfg);
   const result = memorySection({
-    availableTools: new Set(["memory_search"]),
+    availableTools: new Set(["memory_search", "memory_get"]),
   });
 
   assert.doesNotThrow(() => [...result], "host spreads the returned section immediately");
@@ -60,18 +60,21 @@ test("memory prompt section stays synchronous and does not perform rpc lookups",
   assert.equal(rpc.calls.get("search_text") ?? 0, 0, "should not perform search_text calls");
 });
 
-test("memory prompt section returns the static header even when messages exist", async () => {
+test("memory prompt section guides memory tool use when memory_search is available", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { topK: 8, alpha: 0.7, beta: 0.2, gamma: 0.1 };
   const getRpc = async () => rpc as never;
 
   const memorySection = buildMemoryPromptSection(getRpc, cfg);
   const result = memorySection({
-    availableTools: new Set(["memory_search"]),
+    availableTools: new Set(["memory_search", "memory_get"]),
   });
 
   const resultText = result.join("\n");
   assert.ok(resultText.includes("LibraVDB persistent memory is configured"), "should include memory header");
+  assert.ok(resultText.includes("call `memory_search` first"), "should guide explicit recall through memory_search");
+  assert.ok(resultText.includes("call `memory_get`"), "should guide exact recall through memory_get");
+  assert.ok(resultText.includes("missing `MEMORY.md` file"), "should prevent file-backed missing-memory fallback");
   assert.ok(!resultText.includes("recalled_memories"), "should not inject recalled memories directly");
   assert.ok(!resultText.includes("user recall") && !resultText.includes("global recall"), "should not render recall items");
   assert.equal(rpc.calls.get("search_text") ?? 0, 0, "should not perform search_text calls");
