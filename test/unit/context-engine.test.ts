@@ -249,6 +249,113 @@ function makeMessage(role: string, content: string, id?: string) {
   return { role, content, ...(id ? { id } : {}) };
 }
 
+function openClawMetadataEnvelope(userText: string): string {
+  return [
+    "Conversation info (untrusted metadata):",
+    "```json",
+    "{",
+    '  "chat_id": "channel:example-channel",',
+    '  "group_channel": "#bots-everywhere",',
+    '  "group_space": "example-server",',
+    '  "message_id": "example-message",',
+    '  "sender_id": "example-sender",',
+    '  "was_mentioned": true',
+    "}",
+    "```",
+    "",
+    "Sender (untrusted metadata):",
+    "```json",
+    "{",
+    '  "id": "example-user-id",',
+    '  "username": "example-user",',
+    '  "tag": "example-user"',
+    "}",
+    "```",
+    "",
+    "Thread starter (untrusted, for context):",
+    "```json",
+    "{",
+    '  "body": "thread starter text"',
+    "}",
+    "```",
+    "",
+    "Reply target of current user message (untrusted, for context):",
+    "```json",
+    "{",
+    '  "body": "previous iMessage text"',
+    "}",
+    "```",
+    "",
+    "Forwarded message context (untrusted metadata):",
+    "```json",
+    "{",
+    '  "body": "forwarded message text"',
+    "}",
+    "```",
+    "",
+    "Chat history since last reply (untrusted, for context):",
+    "```json",
+    "[",
+    '  { "role": "user", "body": "recent chat text" }',
+    "]",
+    "```",
+    "",
+    "Chat history since last reply (untrusted, for context):",
+    "header-only chat summary",
+    "",
+    userText,
+  ].join("\n");
+}
+
+function timestampedOpenClawMetadataEnvelope(userText: string): string {
+  return `[Wed 2026-03-11 23:51 PDT] ${openClawMetadataEnvelope(userText)}`;
+}
+
+function openClawIMessageMetadataEnvelope(userText: string): string {
+  return [
+    "Conversation info (untrusted metadata):",
+    "```json",
+    "{",
+    '  "account_id": "imessage-main",',
+    '  "channel": "imessage",',
+    '  "provider": "imessage",',
+    '  "chat_id": 42,',
+    '  "chat_guid": "iMessage;+;chat42",',
+    '  "chat_identifier": "chat42",',
+    '  "chat_name": "Family thread",',
+    '  "is_group": true,',
+    '  "sender": "+15551234567",',
+    '  "message_id": "example-message"',
+    "}",
+    "```",
+    "",
+    "Sender (untrusted metadata):",
+    "```json",
+    "{",
+    '  "id": "+15551234567",',
+    '  "label": "Juan",',
+    '  "e164": "+15551234567"',
+    "}",
+    "```",
+    "",
+    "Reply target of current user message (untrusted, for context):",
+    "```json",
+    "{",
+    '  "body": "quoted private iMessage text"',
+    "}",
+    "```",
+    "",
+    "Chat history since last reply (untrusted, for context):",
+    "```json",
+    "[",
+    '  { "role": "user", "body": "recent private iMessage text" }',
+    "]",
+    "```",
+    "",
+    userText,
+  ].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Conformance: every entrypoint path must converge on the same lifecycle hooks
 // with a stable sessionId, sessionKey, and durable userId.
@@ -306,6 +413,76 @@ test("context engine afterTurn resolves config userId and passes messages to dae
   assert.equal(call.params.userId, "fixed-user");
   const msgs = call.params.messages as Array<unknown>;
   assert.equal(msgs.length, 2);
+});
+
+test("context engine afterTurn strips OpenClaw untrusted metadata envelope before ingest", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", timestampedOpenClawMetadataEnvelope("@User-1234 Reply with exactly PONG.")),
+    ],
+  });
+
+  const call = client.calls.find((c) => c.method === "afterTurnKernel");
+  assert.ok(call, "after_turn_kernel RPC was called");
+  const msgs = call.params.messages as Array<{ role: string; content: string }>;
+  assert.equal(msgs.length, 1);
+  assert.equal(msgs[0].role, "user");
+  assert.equal(
+    msgs[0].content,
+    "[OpenClaw context: channel=#bots-everywhere; channel_id=channel:example-channel; server_id=example-server; sender_id=example-sender; username=example-user; user_id=example-user-id]\n@User-1234 Reply with exactly PONG.",
+  );
+});
+
+test("context engine afterTurn strips iMessage envelope retaining routing context", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", openClawIMessageMetadataEnvelope("what did I say here?"))],
+  });
+
+  const call = client.calls.find((c) => c.method === "afterTurnKernel");
+  assert.ok(call, "after_turn_kernel RPC was called");
+  const content = (call.params.messages as Array<{ content: string }>)[0]?.content ?? "";
+  assert.match(content, /^\[OpenClaw context: /);
+  assert.match(content, /channel=imessage/);
+  assert.match(content, /account_id=imessage-main/);
+  assert.match(content, /provider=imessage/);
+  assert.match(content, /chat_id=42/);
+  assert.match(content, /chat_guid=iMessage \+ chat42/);
+  assert.match(content, /chat_identifier=chat42/);
+  assert.match(content, /chat_name=Family thread/);
+  assert.match(content, /is_group=true/);
+  assert.match(content, /sender=\+15551234567/);
+  assert.match(content, /username=Juan/);
+  assert.match(content, /user_id=\+15551234567/);
+  assert.match(content, /what did I say here\?/);
+  assert.doesNotMatch(content, /quoted private iMessage text/);
+  assert.doesNotMatch(content, /recent private iMessage text/);
+});
+
+test("context engine assemble strips OpenClaw untrusted metadata envelope from prompt", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  await engine.assemble({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "query")],
+    prompt: openClawMetadataEnvelope("@User-1234 Reply with exactly PONG."),
+    tokenBudget: 4000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  assert.equal(call.params.prompt, "@User-1234 Reply with exactly PONG.");
 });
 
 test("context engine assemble resolves config userId and passes it to daemon", async () => {

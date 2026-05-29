@@ -52,6 +52,7 @@ const EXACT_RECALL_SEARCH_K = 32;
 const EXACT_RECALL_MAX_TOKENS = 4;
 const RESERVED_CURRENT_TURN_TOKENS = 150;
 const AFTER_TURN_INGEST_MAX_TOKENS = 2048;
+const OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] */;
 const COMMON_QUERY_WORDS = new Set([
   "what", "does", "mean", "remember", "recall", "about", "this", "that",
   "the", "and", "for", "with", "from", "your", "have", "been", "were",
@@ -158,17 +159,183 @@ function stringifyKernelBlock(block: unknown): string {
   }
 }
 
+type KernelContentNormalizationOptions = {
+  retainOpenClawContext?: boolean;
+};
+
 /**
  * Normalizes kernel content (string or block array) to a flat string.
  */
-function normalizeKernelContent(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
+function normalizeKernelContent(content: unknown, options: KernelContentNormalizationOptions = {}): string {
+  const text = typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.map(stringifyKernelBlock).filter((part) => part.length > 0).join("\n")
+      : "";
+  return stripOpenClawUntrustedMetadataEnvelope(text, {
+    retainContext: options.retainOpenClawContext === true,
+  });
+}
+
+function stripOpenClawUntrustedMetadataEnvelope(
+  text: string,
+  options: { retainContext?: boolean } = {},
+): string {
+  let remaining = text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "");
+  const retainedContext: string[] = [];
+  let stripped = false;
+  while (true) {
+    const next = stripOneOpenClawMetadataBlock(remaining);
+    if (next.text === remaining) {
+      break;
+    }
+    stripped = true;
+    if (next.context.length > 0) {
+      retainedContext.push(...next.context);
+    }
+    remaining = next.text;
   }
-  if (!Array.isArray(content)) {
-    return "";
+  if (!stripped) {
+    return text;
   }
-  return content.map(stringifyKernelBlock).filter((part) => part.length > 0).join("\n");
+
+  const contextLine = options.retainContext === true
+    ? formatRetainedOpenClawContext(retainedContext)
+    : "";
+  const strippedText = remaining.trimStart();
+  return contextLine ? `${contextLine}\n${strippedText}` : strippedText;
+}
+
+function stripOneOpenClawMetadataBlock(text: string): { text: string; context: string[] } {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const leadingWhitespaceLength = normalized.length - normalized.trimStart().length;
+  const offsetText = normalized.slice(leadingWhitespaceLength);
+  const header = [
+    "Conversation info (untrusted metadata):",
+    "Sender (untrusted metadata):",
+    "Thread starter (untrusted, for context):",
+    "Reply target of current user message (untrusted, for context):",
+    "Forwarded message context (untrusted metadata):",
+    "Chat history since last reply (untrusted, for context):",
+  ].find((candidate) => offsetText.startsWith(candidate)) ?? null;
+  if (!header) {
+    return { text, context: [] };
+  }
+
+  const afterHeader = offsetText.slice(header.length);
+  const fenceStartMatch = afterHeader.match(/^\n```(?:json)?\n/i);
+  if (!fenceStartMatch) {
+    const afterHeaderLines = afterHeader.replace(/^\n?/, "").split("\n");
+    const firstBlankIndex = afterHeaderLines.findIndex((line) => line.trim() === "");
+    if (firstBlankIndex < 0) {
+      return { text: "", context: [] };
+    }
+    return { text: afterHeaderLines.slice(firstBlankIndex + 1).join("\n"), context: [] };
+  }
+  const bodyStart = header.length + fenceStartMatch[0].length;
+  const fenceEnd = offsetText.indexOf("\n```", bodyStart);
+  if (fenceEnd < 0) {
+    return { text, context: [] };
+  }
+  const jsonText = offsetText.slice(bodyStart, fenceEnd);
+  const afterFence = fenceEnd + "\n```".length;
+  const trailingNewlineLength = offsetText.slice(afterFence).startsWith("\n") ? 1 : 0;
+  return {
+    text: offsetText.slice(afterFence + trailingNewlineLength),
+    context: summarizeOpenClawMetadataBlock(header, jsonText),
+  };
+}
+
+function summarizeOpenClawMetadataBlock(header: string, jsonText: string): string[] {
+  const parsed = parseJsonRecord(jsonText);
+  if (!parsed) {
+    return [];
+  }
+
+  if (header === "Conversation info (untrusted metadata):") {
+    const hasIMessageContext = firstString(
+      parsed.chat_guid,
+      parsed.chatGuid,
+      parsed.chat_identifier,
+      parsed.chatIdentifier,
+      parsed.chat_name,
+      parsed.chatName,
+      parsed.service,
+    ) != null;
+    return [
+      labelValue("channel", firstString(parsed.group_channel, parsed.channel, parsed.group_subject)),
+      labelValue("channel_id", firstString(parsed.chat_id, parsed.channel_id)),
+      labelValue("account_id", firstString(parsed.account_id, parsed.accountId)),
+      labelValue("provider", firstString(parsed.provider, parsed.surface)),
+      labelValue("chat_id", hasIMessageContext ? firstString(parsed.chat_id, parsed.chatId) : undefined),
+      labelValue("chat_guid", firstString(parsed.chat_guid, parsed.chatGuid)),
+      labelValue("chat_identifier", firstString(parsed.chat_identifier, parsed.chatIdentifier)),
+      labelValue("chat_name", firstString(parsed.chat_name, parsed.chatName)),
+      labelValue("is_group", firstString(parsed.is_group, parsed.isGroup, parsed.is_group_chat)),
+      labelValue("chat_type", firstString(parsed.chat_type, parsed.chatType)),
+      labelValue("service", firstString(parsed.service)),
+      labelValue("server_id", firstString(parsed.group_space, parsed.guild_id, parsed.server_id)),
+      labelValue("sender_id", firstString(parsed.sender_id, parsed.user_id)),
+      labelValue("sender", firstString(parsed.sender)),
+      labelValue("emoji_id", firstString(parsed.emoji_id, parsed.server_emoji_id, parsed.guild_emoji_id)),
+      labelValue("emoji", firstString(parsed.emoji_name, parsed.emoji)),
+    ].filter(isNonEmptyString);
+  }
+
+  if (header === "Sender (untrusted metadata):") {
+    return [
+      labelValue("username", firstString(parsed.username, parsed.tag, parsed.name, parsed.label)),
+      labelValue("user_id", firstString(parsed.id, parsed.user_id, parsed.sender_id)),
+      labelValue("sender", firstString(parsed.sender, parsed.e164)),
+    ].filter(isNonEmptyString);
+  }
+
+  return [];
+}
+
+function parseJsonRecord(jsonText: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(jsonText) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function labelValue(label: string, value: string | undefined): string {
+  return value ? `${label}=${sanitizeOpenClawContextValue(value)}` : "";
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+    if (typeof value === "boolean") {
+      return String(value);
+    }
+  }
+  return undefined;
+}
+
+function sanitizeOpenClawContextValue(value: string): string {
+  return value.replace(/[\r\n;]+/g, " ").trim().slice(0, 120);
+}
+
+function formatRetainedOpenClawContext(values: string[]): string {
+  const uniqueValues = [...new Set(values.filter(isNonEmptyString))];
+  return uniqueValues.length > 0
+    ? `[OpenClaw context: ${uniqueValues.join("; ")}]`
+    : "";
+}
+
+function isNonEmptyString(value: string): value is string {
+  return value.trim().length > 0;
 }
 
 /**
@@ -545,11 +712,12 @@ export function normalizeKernelMessage(message: {
   role: string;
   content: unknown;
   id?: string;
-}): KernelCompatibleMessage {
+  [key: string]: unknown;
+}, options: KernelContentNormalizationOptions = {}): KernelCompatibleMessage {
   return {
     role: message.role,
-    content: normalizeKernelContent(message.content),
-    id: message.id || randomUUID(),
+    content: normalizeKernelContent(message.content, options),
+    id: typeof message.id === "string" ? message.id : randomUUID(),
   };
 }
 
@@ -558,8 +726,11 @@ export function normalizeKernelMessage(message: {
  */
 export function normalizeKernelMessages(
   messages: Array<{ role: string; content: unknown; id?: string }>,
+  options: KernelContentNormalizationOptions = {},
 ): KernelCompatibleMessage[] {
-  return messages.map((message) => normalizeKernelMessage(message));
+  return messages
+    .map((message) => normalizeKernelMessage(message, options))
+    .filter((message) => message.role === "user" || message.content.trim().length > 0);
 }
 
 /**
@@ -1419,13 +1590,16 @@ export function buildContextEngineFactory(
           return buildBudgetFallbackContext(args.messages, args.tokenBudget);
         }
       }
+      const strippedPrompt = args.prompt
+        ? normalizeKernelContent(args.prompt, { retainOpenClawContext: false })
+        : "";
       try {
         const client = await runtime.getClient();
         const resp = await client.assembleContextInternal({
           sessionId,
           sessionKey: args.sessionKey,
           userId,
-          prompt: args.prompt ?? "",
+          prompt: strippedPrompt,
           messages,
           tokenBudget: args.tokenBudget,
           config: buildAssemblyConfig(args.tokenBudget),
@@ -1434,7 +1608,7 @@ export function buildContextEngineFactory(
         const assembled = normalizeAssembleResult(resp, args.messages);
         let enforced = enforceTokenBudgetInvariant(
           await augmentWithExactRecall(assembled, {
-            queryText: args.prompt ?? messages[messages.length - 1]?.content ?? "",
+            queryText: strippedPrompt || (messages[messages.length - 1]?.content ?? ""),
             userId,
             sessionId,
             tokenBudget: args.tokenBudget,
@@ -1558,7 +1732,7 @@ export function buildContextEngineFactory(
       // Load manifest and normalize messages in parallel
       const manifest = manifestStore.load(sessionId, logger);
       const afterTurnMessages = selectAfterTurnMessages(args.messages, args.prePromptMessageCount, logger);
-      const messages = normalizeKernelMessages(afterTurnMessages);
+      const messages = normalizeKernelMessages(afterTurnMessages, { retainOpenClawContext: true });
 
       // Find overlap: messages already in our manifest
       const overlapIndex = manifestStore.findOverlapIndex(manifest, messages);
