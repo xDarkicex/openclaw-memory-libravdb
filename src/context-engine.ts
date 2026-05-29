@@ -128,12 +128,18 @@ function normalizeCompactResult(
   const overBudget = threshold != null && tokensBefore >= threshold;
   const engineRefused = !didCompact && overBudget;
 
+  const tokensAfter =
+    didCompact && typeof response?.tokensAfter === "number" && response.tokensAfter > 0
+      ? response.tokensAfter
+      : undefined;
+
   return {
     ok: !engineRefused,
     compacted: didCompact,
     ...(didCompact ? {} : { reason: engineRefused ? "overbudget_not_compacted" : "not_compacted" }),
     result: {
       tokensBefore,
+      ...(tokensAfter != null ? { tokensAfter } : {}),
       ...(details.summaryMethod ? { summary: details.summaryMethod } : {}),
       ...(details.summaryText ? { summaryText: details.summaryText } : {}),
       details: { ...details, ...(threshold != null ? { threshold } : {}) },
