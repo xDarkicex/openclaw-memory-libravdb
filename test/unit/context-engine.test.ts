@@ -401,14 +401,14 @@ test("context engine afterTurn resolves config userId and passes messages to dae
   const engine = buildContextEngineFactory(fakeRuntime(client), cfg);
 
   await engine.afterTurn({
-    sessionId: "s1",
+    sessionId: "s1-after-turn-config",
     sessionKey: "sk1",
     messages: [makeMessage("user", "hello"), makeMessage("assistant", "hi there")],
   });
 
   const call = client.calls.find((c) => c.method === "afterTurnKernel");
   assert.ok(call, "after_turn_kernel RPC was called");
-  assert.equal(call.params.sessionId, "s1");
+  assert.equal(call.params.sessionId, "s1-after-turn-config");
   assert.equal(call.params.sessionKey, "sk1");
   assert.equal(call.params.userId, "fixed-user");
   const msgs = call.params.messages as Array<unknown>;
@@ -420,7 +420,7 @@ test("context engine afterTurn strips OpenClaw untrusted metadata envelope befor
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
 
   await engine.afterTurn({
-    sessionId: "s1",
+    sessionId: "s1-env-strip",
     sessionKey: "sk1",
     messages: [
       makeMessage("user", timestampedOpenClawMetadataEnvelope("@User-1234 Reply with exactly PONG.")),
@@ -443,7 +443,7 @@ test("context engine afterTurn strips iMessage envelope retaining routing contex
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
 
   await engine.afterTurn({
-    sessionId: "s1",
+    sessionId: "s1-imessage",
     sessionKey: "sk1",
     messages: [makeMessage("user", openClawIMessageMetadataEnvelope("what did I say here?"))],
   });
@@ -493,7 +493,7 @@ test("context engine afterTurn strips envelope with leading media preamble", asy
   const envelopedText = `${preambleLine}\n${openClawMetadataEnvelope("@User-1234 check this image")}`;
 
   await engine.afterTurn({
-    sessionId: "s1",
+    sessionId: "s1-preamble",
     sessionKey: "sk1",
     messages: [makeMessage("user", envelopedText)],
   });
@@ -515,7 +515,7 @@ test("context engine afterTurn preserves content when envelope header has no fen
   const malformed = "Conversation info (untrusted metadata): some garbage without proper structure";
 
   await engine.afterTurn({
-    sessionId: "s1",
+    sessionId: "s1-no-fence",
     sessionKey: "sk1",
     messages: [makeMessage("user", malformed)],
   });
@@ -543,7 +543,7 @@ test("context engine afterTurn preserves content when envelope fence is unclosed
   ].join("\n");
 
   await engine.afterTurn({
-    sessionId: "s1",
+    sessionId: "s1-unclosed-fence",
     sessionKey: "sk1",
     messages: [makeMessage("user", malformed)],
   });

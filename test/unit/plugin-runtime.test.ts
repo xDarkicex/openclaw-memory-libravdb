@@ -24,7 +24,7 @@ test("enrichStartupError leaves unrelated errors alone", () => {
 });
 
 test("resolveStartupHealthTimeoutMs uses the normal RPC timeout when it is higher", () => {
-  assert.equal(resolveStartupHealthTimeoutMs({}), 30000);
+  assert.equal(resolveStartupHealthTimeoutMs({}), 120000);
   assert.equal(resolveStartupHealthTimeoutMs({ rpcTimeoutMs: 5000 }), 5000);
   assert.equal(resolveStartupHealthTimeoutMs({ rpcTimeoutMs: 1000 }), 2000);
 });
