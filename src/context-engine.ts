@@ -182,6 +182,16 @@ function stripOpenClawUntrustedMetadataEnvelope(
   options: { retainContext?: boolean } = {},
 ): string {
   let remaining = text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "");
+
+  // Capture any preamble that precedes the first metadata header.
+  const preambleEnd = findFirstHeaderPosition(remaining);
+  let preamble = "";
+  if (preambleEnd > 0) {
+    const newlineIndex = remaining.lastIndexOf("\n", preambleEnd);
+    preamble = newlineIndex >= 0 ? remaining.slice(0, newlineIndex + 1) : remaining.slice(0, preambleEnd);
+    remaining = remaining.slice(preamble.length);
+  }
+
   const retainedContext: string[] = [];
   let stripped = false;
   while (true) {
@@ -203,21 +213,42 @@ function stripOpenClawUntrustedMetadataEnvelope(
     ? formatRetainedOpenClawContext(retainedContext)
     : "";
   const strippedText = remaining.trimStart();
-  return contextLine ? `${contextLine}\n${strippedText}` : strippedText;
+  const result = contextLine ? `${contextLine}\n${strippedText}` : strippedText;
+  return preamble ? `${preamble}${result}` : result;
 }
 
-function stripOneOpenClawMetadataBlock(text: string): { text: string; context: string[] } {
-  const normalized = text.replace(/\r\n/g, "\n");
-  const leadingWhitespaceLength = normalized.length - normalized.trimStart().length;
-  const offsetText = normalized.slice(leadingWhitespaceLength);
-  const header = [
+function findFirstHeaderPosition(text: string): number {
+  const KNOWN_HEADERS = [
     "Conversation info (untrusted metadata):",
     "Sender (untrusted metadata):",
     "Thread starter (untrusted, for context):",
     "Reply target of current user message (untrusted, for context):",
     "Forwarded message context (untrusted metadata):",
     "Chat history since last reply (untrusted, for context):",
-  ].find((candidate) => offsetText.startsWith(candidate)) ?? null;
+  ];
+  let pos = -1;
+  for (const header of KNOWN_HEADERS) {
+    const p = text.indexOf(header);
+    if (p >= 0 && (pos < 0 || p < pos)) {
+      pos = p;
+    }
+  }
+  return pos;
+}
+
+function stripOneOpenClawMetadataBlock(text: string): { text: string; context: string[] } {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const leadingWhitespaceLength = normalized.length - normalized.trimStart().length;
+  const offsetText = normalized.slice(leadingWhitespaceLength);
+  const KNOWN_HEADERS = [
+    "Conversation info (untrusted metadata):",
+    "Sender (untrusted metadata):",
+    "Thread starter (untrusted, for context):",
+    "Reply target of current user message (untrusted, for context):",
+    "Forwarded message context (untrusted metadata):",
+    "Chat history since last reply (untrusted, for context):",
+  ];
+  const header = KNOWN_HEADERS.find((candidate) => offsetText.startsWith(candidate)) ?? null;
   if (!header) {
     return { text, context: [] };
   }
@@ -228,13 +259,16 @@ function stripOneOpenClawMetadataBlock(text: string): { text: string; context: s
     const afterHeaderLines = afterHeader.replace(/^\n?/, "").split("\n");
     const firstBlankIndex = afterHeaderLines.findIndex((line) => line.trim() === "");
     if (firstBlankIndex < 0) {
-      return { text: "", context: [] };
+      // No fence and no blank line — cannot positively identify envelope shape.
+      // Return original text unchanged to avoid silently erasing content.
+      return { text, context: [] };
     }
     return { text: afterHeaderLines.slice(firstBlankIndex + 1).join("\n"), context: [] };
   }
   const bodyStart = header.length + fenceStartMatch[0].length;
   const fenceEnd = offsetText.indexOf("\n```", bodyStart);
   if (fenceEnd < 0) {
+    // Unclosed fence — cannot positively identify envelope shape.
     return { text, context: [] };
   }
   const jsonText = offsetText.slice(bodyStart, fenceEnd);
@@ -1540,6 +1574,9 @@ export function buildContextEngineFactory(
         sessionKey: args.sessionKey,
       });
       const messages = normalizeKernelMessages(args.messages);
+      const strippedPrompt = args.prompt
+        ? normalizeKernelContent(args.prompt, { retainOpenClawContext: false })
+        : "";
       const lastUserMessage = findLastReplaySafeUserMessage(messages);
       const reservedCurrentTurnTokens = lastUserMessage
         ? approximateMessageTokens(lastUserMessage)
@@ -1547,7 +1584,7 @@ export function buildContextEngineFactory(
       const currentContextTokens = resolvePredictiveCompactionTokenCount({
         currentTokenCount: args.currentTokenCount,
         messages,
-        prompt: args.prompt,
+        prompt: strippedPrompt,
       });
       const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
       const predictiveTargetSize = resolvePredictiveCompactionTarget({
@@ -1590,9 +1627,6 @@ export function buildContextEngineFactory(
           return buildBudgetFallbackContext(args.messages, args.tokenBudget);
         }
       }
-      const strippedPrompt = args.prompt
-        ? normalizeKernelContent(args.prompt, { retainOpenClawContext: false })
-        : "";
       try {
         const client = await runtime.getClient();
         const resp = await client.assembleContextInternal({

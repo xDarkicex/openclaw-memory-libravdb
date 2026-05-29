@@ -485,6 +485,75 @@ test("context engine assemble strips OpenClaw untrusted metadata envelope from p
   assert.equal(call.params.prompt, "@User-1234 Reply with exactly PONG.");
 });
 
+test("context engine afterTurn strips envelope with leading media preamble", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const preambleLine = "[📎 Media attachment — image.png]";
+  const envelopedText = `${preambleLine}\n${openClawMetadataEnvelope("@User-1234 check this image")}`;
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", envelopedText)],
+  });
+
+  const call = client.calls.find((c) => c.method === "afterTurnKernel");
+  assert.ok(call, "after_turn_kernel RPC was called");
+  const content = (call.params.messages as Array<{ content: string }>)[0]?.content ?? "";
+  assert.match(content, /^\[📎 Media attachment/);
+  assert.match(content, /\[OpenClaw context: /);
+  assert.match(content, /@User-1234 check this image/);
+  assert.doesNotMatch(content, /untrusted metadata/);
+});
+
+test("context engine afterTurn preserves content when envelope header has no fence or blank line", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  // Header present but no fence and no blank line — malformed, should pass through unchanged.
+  const malformed = "Conversation info (untrusted metadata): some garbage without proper structure";
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", malformed)],
+  });
+
+  const call = client.calls.find((c) => c.method === "afterTurnKernel");
+  assert.ok(call, "after_turn_kernel RPC was called");
+  const content = (call.params.messages as Array<{ content: string }>)[0]?.content ?? "";
+  assert.equal(content, malformed);
+});
+
+test("context engine afterTurn preserves content when envelope fence is unclosed", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  // Header with fence start but no closing fence — malformed, should pass through unchanged.
+  const malformed = [
+    "Conversation info (untrusted metadata):",
+    "```json",
+    "{",
+    '  "chat_id": "channel:partial",',
+    '  "group_channel": "#incomplete"',
+    // No closing ``` — fence is unclosed.
+    "",
+    "@User-1234 actual message",
+  ].join("\n");
+
+  await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", malformed)],
+  });
+
+  const call = client.calls.find((c) => c.method === "afterTurnKernel");
+  assert.ok(call, "after_turn_kernel RPC was called");
+  const content = (call.params.messages as Array<{ content: string }>)[0]?.content ?? "";
+  assert.equal(content, malformed);
+});
+
 test("context engine assemble resolves config userId and passes it to daemon", async () => {
   const client = new FakeClient();
   const cfg: PluginConfig = { userId: "fixed-user" };
