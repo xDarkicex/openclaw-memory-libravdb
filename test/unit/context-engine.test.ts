@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 
 import { buildContextEngineFactory } from "../../src/context-engine.js";
 import fs from "node:fs";
@@ -8,6 +10,21 @@ import { resolveIdentity } from "../../src/identity.js";
 import type { PluginConfig, SearchResult } from "../../src/types.js";
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
 import type { LibravDBClient } from "../../src/libravdb-client.js";
+
+// ---------------------------------------------------------------------------
+// Clean persisted turn manifests from prior test runs so each run starts
+// with a blank manifest store.
+// ---------------------------------------------------------------------------
+{
+  const manifestDir = path.join(os.homedir(), ".openclaw", "libravdb-manifests");
+  if (fs.existsSync(manifestDir)) {
+    for (const entry of fs.readdirSync(manifestDir)) {
+      if (entry.startsWith("s1") || entry.startsWith("conformance-") || entry.startsWith("session-")) {
+        fs.rmSync(path.join(manifestDir, entry));
+      }
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Fake client — records every call with method + params so tests can assert

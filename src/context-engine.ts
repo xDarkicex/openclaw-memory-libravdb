@@ -53,6 +53,15 @@ const EXACT_RECALL_MAX_TOKENS = 4;
 const RESERVED_CURRENT_TURN_TOKENS = 150;
 const AFTER_TURN_INGEST_MAX_TOKENS = 2048;
 const OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] */;
+
+const OPENCLAW_METADATA_HEADERS = [
+  "Conversation info (untrusted metadata):",
+  "Sender (untrusted metadata):",
+  "Thread starter (untrusted, for context):",
+  "Reply target of current user message (untrusted, for context):",
+  "Forwarded message context (untrusted metadata):",
+  "Chat history since last reply (untrusted, for context):",
+] as const;
 const COMMON_QUERY_WORDS = new Set([
   "what", "does", "mean", "remember", "recall", "about", "this", "that",
   "the", "and", "for", "with", "from", "your", "have", "been", "were",
@@ -181,7 +190,9 @@ function stripOpenClawUntrustedMetadataEnvelope(
   text: string,
   options: { retainContext?: boolean } = {},
 ): string {
-  let remaining = text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "");
+  let remaining = text
+    .replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "")
+    .replace(/\r\n/g, "\n");
 
   // Capture any preamble that precedes the first metadata header.
   const preambleEnd = findFirstHeaderPosition(remaining);
@@ -218,16 +229,8 @@ function stripOpenClawUntrustedMetadataEnvelope(
 }
 
 function findFirstHeaderPosition(text: string): number {
-  const KNOWN_HEADERS = [
-    "Conversation info (untrusted metadata):",
-    "Sender (untrusted metadata):",
-    "Thread starter (untrusted, for context):",
-    "Reply target of current user message (untrusted, for context):",
-    "Forwarded message context (untrusted metadata):",
-    "Chat history since last reply (untrusted, for context):",
-  ];
   let pos = -1;
-  for (const header of KNOWN_HEADERS) {
+  for (const header of OPENCLAW_METADATA_HEADERS) {
     const p = text.indexOf(header);
     if (p >= 0 && (pos < 0 || p < pos)) {
       pos = p;
@@ -237,18 +240,9 @@ function findFirstHeaderPosition(text: string): number {
 }
 
 function stripOneOpenClawMetadataBlock(text: string): { text: string; context: string[] } {
-  const normalized = text.replace(/\r\n/g, "\n");
-  const leadingWhitespaceLength = normalized.length - normalized.trimStart().length;
-  const offsetText = normalized.slice(leadingWhitespaceLength);
-  const KNOWN_HEADERS = [
-    "Conversation info (untrusted metadata):",
-    "Sender (untrusted metadata):",
-    "Thread starter (untrusted, for context):",
-    "Reply target of current user message (untrusted, for context):",
-    "Forwarded message context (untrusted metadata):",
-    "Chat history since last reply (untrusted, for context):",
-  ];
-  const header = KNOWN_HEADERS.find((candidate) => offsetText.startsWith(candidate)) ?? null;
+  const leadingWhitespaceLength = text.length - text.trimStart().length;
+  const offsetText = text.slice(leadingWhitespaceLength);
+  const header = OPENCLAW_METADATA_HEADERS.find((candidate) => offsetText.startsWith(candidate)) ?? null;
   if (!header) {
     return { text, context: [] };
   }
@@ -358,6 +352,9 @@ function firstString(...values: unknown[]): string | undefined {
 }
 
 function sanitizeOpenClawContextValue(value: string): string {
+  // 120 chars is a conservative bound for a single routing field value
+  // (channel name, server id, etc.). Any field exceeding this is likely
+  // malformed or adversarial input, not useful routing metadata.
   return value.replace(/[\r\n;]+/g, " ").trim().slice(0, 120);
 }
 
@@ -757,6 +754,10 @@ export function normalizeKernelMessage(message: {
 
 /**
  * Normalizes an array of kernel messages.
+ *
+ * Non-user messages whose normalized content is empty or whitespace-only
+ * are dropped. This prevents assistant/system turns that consisted entirely
+ * of stripped metadata from persisting as empty records.
  */
 export function normalizeKernelMessages(
   messages: Array<{ role: string; content: unknown; id?: string }>,
