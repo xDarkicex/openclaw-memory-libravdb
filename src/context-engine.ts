@@ -98,7 +98,7 @@ function requireSessionId(sessionId: string | undefined, operation: string): str
  */
 function normalizeCompactResult(
   response: Partial<CompactSessionResponse> | undefined,
-  options: { tokensBefore?: number } = {},
+  options: { tokensBefore?: number; threshold?: number } = {},
 ): OpenClawCompatibleCompactResult {
   const didCompact = response?.didCompact === true;
   const tokensBefore = normalizeCurrentTokenCount(options.tokensBefore) ?? 0;
@@ -119,15 +119,24 @@ function normalizeCompactResult(
         ? response.summaryText
         : undefined,
   };
+
+  // When the engine owns compaction but refuses to compact while the session
+  // exceeds the threshold, this is not a successful skip — it's a failure.
+  // Signal ok:false so OpenClaw falls back to normal transcript compaction
+  // instead of accepting a bloated session.
+  const threshold = options.threshold;
+  const overBudget = threshold != null && tokensBefore >= threshold;
+  const engineRefused = !didCompact && overBudget;
+
   return {
-    ok: true,
+    ok: !engineRefused,
     compacted: didCompact,
-    ...(didCompact ? {} : { reason: "not_compacted" }),
+    ...(didCompact ? {} : { reason: engineRefused ? "overbudget_not_compacted" : "not_compacted" }),
     result: {
       tokensBefore,
       ...(details.summaryMethod ? { summary: details.summaryMethod } : {}),
       ...(details.summaryText ? { summaryText: details.summaryText } : {}),
-      details,
+      details: { ...details, ...(threshold != null ? { threshold } : {}) },
     },
   };
 }
@@ -1447,8 +1456,10 @@ export function buildContextEngineFactory(
     const request = buildCompactSessionRequest(args);
     try {
       const client = await runtime.getClient();
+      const threshold = getDynamicCompactThreshold(args.tokenBudget);
       return normalizeCompactResult(await client.compactSession(request), {
         tokensBefore: args.currentTokenCount,
+        ...(threshold != null ? { threshold } : {}),
       });
     } catch (error) {
       return {
