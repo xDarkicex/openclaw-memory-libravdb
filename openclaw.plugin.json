@@ -12,7 +12,10 @@
     "contextEngine": true,
     "tools": [
       "memory_search",
-      "memory_get"
+      "memory_get",
+      "memory_describe",
+      "memory_expand",
+      "memory_grep"
     ]
   },
   "activation": {
