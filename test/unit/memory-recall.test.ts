@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildContextEngineFactory } from "../../src/context-engine.js";
+import { buildContextEngineFactory, consumeSubagentBudget } from "../../src/context-engine.js";
 import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool } from "../../src/tools/memory-recall.js";
 import type { LibravDBClient } from "../../src/libravdb-client.js";
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
@@ -143,4 +143,30 @@ test("memory_expand uses remaining subagent budget instead of dropping the first
   assert.equal((result.details as { exceededBudget: boolean }).exceededBudget, false);
   assert.match((result.details as { text: string }).text, /expanded summary text/);
   assert.equal(client.calls[0]?.method, "expandSummary");
+});
+
+test("subagent spawn sanitizes invalid numeric expansion budgets", async () => {
+  for (const [index, subagentTokenBudget] of [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    -1,
+  ].entries()) {
+    const client = new FakeRecallClient();
+    const engine = buildContextEngineFactory(
+      fakeRuntime(client),
+      { userId: "u1", subagentTokenBudget },
+      silentLogger,
+    );
+    const childSessionKey = `child-invalid-budget-${index}`;
+
+    await engine.prepareSubagentSpawn({
+      parentSessionKey: "parent",
+      childSessionKey,
+    });
+
+    assert.equal(consumeSubagentBudget(childSessionKey, 100), 100);
+    assert.equal(consumeSubagentBudget(childSessionKey, 10_000), 7_900);
+    await engine.onSubagentEnded({ childSessionKey, reason: "test" });
+  }
 });

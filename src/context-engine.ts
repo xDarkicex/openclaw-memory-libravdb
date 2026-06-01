@@ -1665,6 +1665,12 @@ function subagentKey(sessionKey: string): string {
   return sessionKey.trim();
 }
 
+function normalizeSubagentTokenBudget(value: unknown): number {
+  if (typeof value !== "number") return 8000;
+  if (!Number.isFinite(value) || value < 0) return 8000;
+  return Math.floor(value);
+}
+
 // consumeSubagentBudget deducts tokens from the subagent's budget.
 // Returns the granted budget, or -1 if no budget exists (not a subagent).
 export function consumeSubagentBudget(sessionKey: string, tokens: number): number {
@@ -1682,7 +1688,14 @@ export function consumeSubagentBudget(sessionKey: string, tokens: number): numbe
   const budget = subagentBudgets.get(subagentKey(sessionKey));
   if (!budget) return -1; // not a subagent — no budget cap
 
-  const granted = Math.min(tokens, budget.remaining);
+  const requested = Math.floor(tokens);
+  if (!Number.isFinite(requested) || requested <= 0) return 0;
+  if (!Number.isFinite(budget.remaining) || budget.remaining <= 0) {
+    budget.remaining = 0;
+    return 0;
+  }
+
+  const granted = Math.min(requested, budget.remaining);
   budget.remaining = Math.max(0, budget.remaining - granted);
   return granted;
 }
@@ -2734,9 +2747,7 @@ export function buildContextEngineFactory(
       // Grant the subagent a token budget for memory expansion.
       // Default 8000 tokens — enough for a focused expansion,
       // small enough to prevent context window destruction.
-      const budget = typeof cfg.subagentTokenBudget === "number"
-        ? cfg.subagentTokenBudget
-        : 8000;
+      const budget = normalizeSubagentTokenBudget(cfg.subagentTokenBudget);
       const seconds = typeof params.ttlMs === "number" && params.ttlMs > 0
         ? Math.ceil(params.ttlMs / 1000)
         : 120;
