@@ -2143,7 +2143,7 @@ export function buildContextEngineFactory(
       }
       const summaryId = meta.summary_id as string | undefined;
       if (!summaryId) {
-        const sid = meta.session_id as string;
+        const sid = (meta.session_id as string | undefined) ?? params.sessionId;
         return '<continuity_context>\nThe previous session (' + sid + ') was not compacted. Use memory_search with queries about what was discussed to recall context.\n</continuity_context>';
       }
 
