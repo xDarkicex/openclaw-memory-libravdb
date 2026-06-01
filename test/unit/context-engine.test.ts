@@ -908,6 +908,33 @@ test("context engine assemble strips historical tool syntax from memory system a
   assert.match(JSON.stringify(assembled.messages), /current request/u);
 });
 
+test("context engine assemble preserves ordinary JSON with name fields in memory additions", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [makeMessage("user", "current request", "current-user")],
+    estimatedTokens: 64,
+    systemPromptAddition: [
+      "<retrieved_memory>",
+      "<memory_item>{\"name\":\"computment\",\"note\":\"visible channel name\"}</memory_item>",
+      "<memory_item>{\"name\":\"web_search\",\"arguments\":{\"query\":\"old\"}}</memory_item>",
+      "</retrieved_memory>",
+    ].join("\n"),
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-system-addition-name-json",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "current request", "current-user")],
+    prompt: "current request",
+    tokenBudget: 4000,
+  });
+
+  assert.match(assembled.systemPromptAddition, /"name":"computment"/u);
+  assert.match(assembled.systemPromptAddition, /visible channel name/u);
+  assert.doesNotMatch(assembled.systemPromptAddition, /"arguments":\{"query":"old"\}/u);
+});
+
 test("context engine assemble strips historical OpenClaw delivery directives from assistant replay", async () => {
   const client = new FakeClient();
   const messages = [
@@ -1012,6 +1039,33 @@ test("context engine assemble drops historical assistant action promises from re
   assert.doesNotMatch(assembled.systemPromptAddition, /Let me search|Working class people|MEDIA:/u);
 });
 
+test("context engine assemble preserves ordinary assistant planning language", async () => {
+  const client = new FakeClient();
+  const messages = [
+    makeMessage("user", "architecture question", "old-user"),
+    makeMessage("assistant", "I will use SQLite for the user-card store.", "assistant-plan"),
+    makeMessage("assistant", "I'll try a smaller local model for summarization.", "assistant-try"),
+    makeMessage("user", "current request", "current-user"),
+  ];
+  client.assembleResponse = {
+    messages,
+    estimatedTokens: 64,
+    systemPromptAddition: "",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-preserve-planning-language",
+    sessionKey: "sk1",
+    messages,
+    prompt: "current request",
+    tokenBudget: 4000,
+  });
+
+  assert.match(JSON.stringify(assembled.messages), /I will use SQLite/u);
+  assert.match(JSON.stringify(assembled.messages), /I'll try a smaller local model/u);
+});
+
 test("context engine fallback drops provider-visible historical tool markers", async () => {
   const client = new FakeClient();
   client.assembleContextInternal = async (params: Record<string, unknown>) => {
@@ -1031,6 +1085,36 @@ test("context engine fallback drops provider-visible historical tool markers", a
     ],
     prompt: "current request",
     tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "old search", id: "old-user" },
+    { role: "assistant", content: "Useful answer", id: "mixed-marker" },
+    { role: "user", content: "current request", id: "current-user" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(assembled.messages), /historical tool|web_fetch|web_search/u);
+  assert.doesNotMatch(assembled.systemPromptAddition, /historical tool|web_fetch|web_search/u);
+});
+
+test("context engine predictive compaction fallback drops provider-visible historical tool markers", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    compactionThresholdFraction: 0.8,
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-predictive-fallback-historical-tools",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "old search", "old-user"),
+      makeMessage("assistant", "[historical tool call: web_search]", "old-marker"),
+      makeMessage("assistant", "Useful answer\n[historical tool call: web_fetch]", "mixed-marker"),
+      makeMessage("user", "current request", "current-user"),
+    ],
+    prompt: "current request",
+    tokenBudget: 4000,
+    currentTokenCount: 5000,
   });
 
   assert.deepEqual(assembled.messages, [

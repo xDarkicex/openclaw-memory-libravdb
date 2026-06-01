@@ -228,6 +228,37 @@ test("LibraVDB memory_search constrains memory corpus before top-k ranking", asy
   );
 });
 
+test("LibraVDB memory_search duplicate guard expires instead of blocking the whole session", async () => {
+  const rpc = new FakeRpc();
+  const cfg: PluginConfig = { userId: "u1" };
+  const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
+  const searchTool = tools.createSearchTool({
+    agentId: "spartacus",
+    sessionId: "discord-session",
+    sessionKey: "discord-key",
+  });
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    const first = await searchTool.execute("call-1", { query: "same recall" });
+    const duplicate = await searchTool.execute("call-2", { query: "same   recall" });
+    now += 61_000;
+    const later = await searchTool.execute("call-3", { query: "same recall" });
+
+    assert.equal((first.details as { results: unknown[] }).results.length, 2);
+    assert.match((duplicate.details as { error?: string }).error ?? "", /Duplicate search blocked/);
+    assert.equal((later.details as { results: unknown[] }).results.length, 2);
+    assert.equal(
+      rpc.calls.filter((call) => call.method === "searchTextCollections").length,
+      2,
+      "same query should be allowed again after the loop-guard TTL",
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("LibraVDB memory_get reports unknown paths as disabled instead of reading arbitrary files", async () => {
   const rpc = new FakeRpc();
   const tools = createLibraVdbMemoryTools(async () => rpc as never, { userId: "u1" }, silentLogger);

@@ -95,8 +95,8 @@ export function register(api: OpenClawPluginApi) {
   if (runtimeOrNull) {
     api.registerTool?.((ctx) => {
       const getClient = runtimeOrNull.getClient;
-      const getSessionKey = () => (ctx as Record<string, unknown>).sessionKey as string | undefined;
-      return createMemoryDescribeTool(getClient, logger);
+      const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
+      return createMemoryDescribeTool(getClient, getSessionId, logger);
     }, { names: ["memory_describe"] });
     api.registerTool?.((ctx) => {
       const getClient = runtimeOrNull.getClient;
@@ -105,7 +105,8 @@ export function register(api: OpenClawPluginApi) {
     }, { names: ["memory_expand"] });
     api.registerTool?.((ctx) => {
       const getClient = runtimeOrNull.getClient;
-      return createMemoryGrepTool(getClient, logger);
+      const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
+      return createMemoryGrepTool(getClient, getSessionId, logger);
     }, { names: ["memory_grep"] });
   }
 

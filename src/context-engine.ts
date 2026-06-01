@@ -232,7 +232,7 @@ function isProviderReplayRole(role: string): role is "user" | "assistant" {
 const HISTORICAL_TOOL_MARKER_RE = /\[\s*historical tool (?:call|activity)\s*:/i;
 const TOOL_LOOP_GUARD_RE = /^(?:WARNING|CRITICAL):\s+(?:You have called|Called)\s+[\w:-]+\s+/i;
 const TOOL_NOT_FOUND_RE = /^Tool\s+[\w:-]+\s+not found\b/i;
-const HISTORICAL_ACTION_PROMISE_RE = /\b(?:let me|i(?:'ll| will))\s+(?:look|search|check|grab|fetch|try|use|find)\b|^\s*looking\s+(?:for|up)\b/i;
+const HISTORICAL_ACTION_PROMISE_RE = /\b(?:let me|i(?:'ll| will))\s+(?:look|search|check|grab|fetch|find)\b|^\s*looking\s+(?:for|up)\b/i;
 const HISTORICAL_STUB_RESULT_RE = /^\s*(?:result|top result)\s*:/i;
 
 function isFlattenedHistoricalToolActivity(role: string, normalizedContent: string): boolean {
@@ -1222,7 +1222,7 @@ function escapeMemoryFactText(text: string): string {
 const TOOL_CALL_BRACKET_RE = /\[tool:([^\]]+)\](?:\s*(?:\{[\s\S]*?\}|\[[\s\S]*?\]|".*?"))?/gi;
 
 // Matches raw JSON tool-call objects targeting a "name\" field
-const TOOL_CALL_JSON_RE = /\{\s*"name"\s*:\s*"([^"]+)"[\s\S]*?\}/g;
+const TOOL_CALL_JSON_RE = /\{[^\r\n]*"name"\s*:\s*"([^"]+)"[^\r\n]*(?:"arguments"|"args"|"toolCallId"|"tool_call_id"|"type"\s*:\s*"toolCall")[^\r\n]*\}/g;
 
 // Matches older annotations, aggressively consuming trailing characters on the same line
 const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\][^\n]*/g;
@@ -1670,7 +1670,7 @@ function subagentKey(sessionKey: string): string {
 }
 
 // consumeSubagentBudget deducts tokens from the subagent's budget.
-// Returns the remaining budget, or -1 if no budget exists (not a subagent).
+// Returns the granted budget, or -1 if no budget exists (not a subagent).
 export function consumeSubagentBudget(sessionKey: string, tokens: number): number {
   // Prune expired entries on any access.
   const now = Date.now();
@@ -1686,8 +1686,9 @@ export function consumeSubagentBudget(sessionKey: string, tokens: number): numbe
   const budget = subagentBudgets.get(subagentKey(sessionKey));
   if (!budget) return -1; // not a subagent — no budget cap
 
-  budget.remaining = Math.max(0, budget.remaining - tokens);
-  return budget.remaining;
+  const granted = Math.min(tokens, budget.remaining);
+  budget.remaining = Math.max(0, budget.remaining - granted);
+  return granted;
 }
 
 export function buildContextEngineFactory(
@@ -2303,7 +2304,15 @@ export function buildContextEngineFactory(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
             `(threshold=${dynamicCompactThreshold}): ${compactionResult.reason ?? "compaction failed"}`,
           );
-          return buildBudgetFallbackContext(args.messages, args.tokenBudget);
+          return ensureReplaySafeUserTurn(
+            sanitizeProviderReplayMessages(
+              buildBudgetFallbackContext(args.messages, args.tokenBudget),
+              args.messages,
+            ),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
         }
       }
 

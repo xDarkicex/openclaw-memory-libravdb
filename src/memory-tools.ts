@@ -135,22 +135,25 @@ export function createLibraVdbMemoryTools(
   const bridge = buildMemoryRuntimeBridge(getClient, cfg);
   const managers = new Map<string, Promise<MemorySearchManager>>();
 
-  // Turn-scoped search dedup: blocks repeated searches within the same turn.
+  // Short-lived search dedup: blocks rapid repeated searches while avoiding
+  // permanent suppression of valid repeated recall questions in a long session.
   // The model sometimes loops memory_search with slight query variations;
-  // this enforces "once per turn" at the tool level, not just the prompt.
-  const turnSearchKeys = new Map<string, Set<string>>();
+  // this enforces a bounded loop guard at the tool level, not just the prompt.
+  const turnSearchKeys = new Map<string, Map<string, number>>();
   const TURN_SEARCH_MAX_KEYS = 500;
+  const TURN_SEARCH_DEDUP_TTL_MS = 60_000;
 
-  function dedupKey(sessionKey: string, query: string): string {
-    return `${sessionKey}:${query.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 80)}`;
+  function dedupKey(query: string): string {
+    return query.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 80);
   }
 
-  function isDuplicateSearch(sessionKey: string, query: string): boolean {
-    if (!sessionKey) return false;
-    const key = dedupKey(sessionKey, query);
-    const keys = turnSearchKeys.get(sessionKey);
+  function isDuplicateSearch(scopeKey: string, query: string): boolean {
+    if (!scopeKey) return false;
+    const now = Date.now();
+    const key = dedupKey(query);
+    const keys = turnSearchKeys.get(scopeKey);
     if (!keys) {
-      turnSearchKeys.set(sessionKey, new Set([key]));
+      turnSearchKeys.set(scopeKey, new Map([[key, now + TURN_SEARCH_DEDUP_TTL_MS]]));
       // Prune stale entries.
       if (turnSearchKeys.size > TURN_SEARCH_MAX_KEYS) {
         const oldest = turnSearchKeys.keys().next().value;
@@ -158,8 +161,12 @@ export function createLibraVdbMemoryTools(
       }
       return false;
     }
-    if (keys.has(key)) return true;
-    keys.add(key);
+    for (const [cachedKey, expiresAt] of keys) {
+      if (expiresAt <= now) keys.delete(cachedKey);
+    }
+    const expiresAt = keys.get(key);
+    if (expiresAt !== undefined && expiresAt > now) return true;
+    keys.set(key, now + TURN_SEARCH_DEDUP_TTL_MS);
     return false;
   }
 
@@ -193,11 +200,11 @@ export function createLibraVdbMemoryTools(
         execute: async (_toolCallId, rawParams) => {
           const params = asToolParamsRecord(rawParams);
           const query = readRequiredStringParam(params, "query");
-          const sessionKey = ctx.sessionKey ?? "";
-          if (isDuplicateSearch(sessionKey, query)) {
+          const dedupScope = ctx.sessionKey ?? ctx.sessionId ?? "";
+          if (isDuplicateSearch(dedupScope, query)) {
             return jsonToolResult<MemorySearchToolDetails>({
               results: [],
-              error: `Duplicate search blocked. You already searched this turn — use the previous results. Do not call memory_search again.`,
+              error: `Duplicate search blocked. You recently searched this query — use the previous results. Do not call memory_search again for the same query.`,
             });
           }
           const corpus = readMemoryCorpus(params.corpus);

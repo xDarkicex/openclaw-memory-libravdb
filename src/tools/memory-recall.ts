@@ -185,7 +185,11 @@ function safeMatch(text: string, pattern: string, mode: "regex" | "text"): boole
 
 // ── Tool factories ──
 
-export function createMemoryDescribeTool(getClient: ClientGetter, logger: LoggerLike = console) {
+export function createMemoryDescribeTool(
+  getClient: ClientGetter,
+  getSessionId: () => string | undefined = () => undefined,
+  logger: LoggerLike = console,
+) {
   return {
     name: "memory_describe",
     label: "Memory Describe",
@@ -202,7 +206,7 @@ export function createMemoryDescribeTool(getClient: ClientGetter, logger: Logger
 
       try {
         const client = await getClient();
-        const sessionId = readStr(params, "sessionId") ?? "";
+        const sessionId = readStr(params, "sessionId") ?? getSessionId() ?? "";
 
         // Use ExpandSummary with maxDepth=0 to get metadata without expanding children.
         // maxDepth=0 returns just the target summary's text + metadata_json.
@@ -269,22 +273,23 @@ export function createMemoryExpandTool(
       if (summaryIds.length === 0) throw new Error("memory_expand requires at least one summaryId");
 
       const maxDepth = readNum(params, "maxDepth", { integer: true, min: 0 }) ?? 1;
-      const maxTokens = readNum(params, "maxTokens", { integer: true }) ?? MAX_EXPAND_TOKENS;
+      let maxTokens = readNum(params, "maxTokens", { integer: true }) ?? MAX_EXPAND_TOKENS;
       const sessionId = readStr(params, "sessionId") ?? "";
 
       // Subagent budget gate: if this is a subagent, check remaining expansion budget.
       const sessionKey = getSessionKey();
       if (sessionKey) {
-        const remaining = consumeSubagentBudget(sessionKey, maxTokens);
-        if (remaining === 0) {
+        const grantedTokens = consumeSubagentBudget(sessionKey, maxTokens);
+        if (grantedTokens === 0) {
           return {
             content: [{ type: "text", text: "[Subagent expansion budget exhausted. Narrow the query or request fewer summaries.]" }],
             details: { summaryId: summaryIds[0] ?? "", depth: maxDepth, text: "", truncated: true, exceededBudget: true, parentCount: 0 },
           };
         }
-        if (remaining > 0 && remaining < maxTokens) {
+        if (grantedTokens > 0 && grantedTokens < maxTokens) {
           // Clamp to remaining budget.
-          logger.info?.(`subagent expansion budget clamped from ${maxTokens} to ${remaining} tokens`);
+          logger.info?.(`subagent expansion budget clamped from ${maxTokens} to ${grantedTokens} tokens`);
+          maxTokens = grantedTokens;
         }
       }
 
@@ -367,7 +372,11 @@ export function createMemoryExpandTool(
   };
 }
 
-export function createMemoryGrepTool(getClient: ClientGetter, logger: LoggerLike = console) {
+export function createMemoryGrepTool(
+  getClient: ClientGetter,
+  getSessionId: () => string | undefined = () => undefined,
+  logger: LoggerLike = console,
+) {
   return {
     name: "memory_grep",
     label: "Memory Grep",
@@ -384,7 +393,7 @@ export function createMemoryGrepTool(getClient: ClientGetter, logger: LoggerLike
       const mode = (params.mode === "regex" ? "regex" : "text") as "regex" | "text";
       const scope = (params.scope === "messages" ? "messages" : params.scope === "summaries" ? "summaries" : "both") as "messages" | "summaries" | "both";
       const limit = readNum(params, "limit", { integer: true }) ?? MAX_GREP_RESULTS;
-      const sessionId = readStr(params, "sessionId") ?? "";
+      const sessionId = readStr(params, "sessionId") ?? getSessionId() ?? "";
 
       try {
         const client = await getClient();
