@@ -195,7 +195,14 @@ export function createLibraVdbMemoryTools(
         name: "memory_search",
         label: "Memory Search",
         description:
-          "Search LibraVDB durable memory and session recall for prior work, decisions, dates, people, preferences, todos, or history. Call once per user question — after receiving results, use them directly. Do not re-call in the same turn. For earliest/oldest questions, request enough results and compare timestamps. If disabled=true, memory is unavailable.",
+          "Search LibraVDB durable memory and session recall for prior work, decisions, dates, people, preferences, todos, or history. Call once per user question — after receiving results, use them directly. Do not re-call in the same turn.\n\n" +
+          "Result fields: Each hit returns a score, snippet, path, source, and citation. When present in metadata, additional fields are surfaced:\n" +
+          "- kind: cognitive kind of the memory (identity, fact, preference, constraint, decision, episode). Filter input with the kind parameter.\n" +
+          "- signals: cognitive signal bitmask (deontic, identity, preference, factual, temporal). Filter input with the signals parameter.\n" +
+          "- caused_by: array of upstream causal event IDs (why this happened). Use memory_get with these IDs to walk backward through the causal chain.\n" +
+          "- leads_to: array of downstream procedural event IDs (what this caused). Use memory_get with these IDs to walk forward through the event DAG.\n" +
+          "- timestamp: ISO 8601 UTC timestamp of when the memory was stored. Use to compare recency, establish temporal order, or answer 'when' questions.\n\n" +
+          "For earliest/oldest questions, request enough results and compare timestamps. If disabled=true, memory is unavailable.",
         parameters: MEMORY_SEARCH_SCHEMA,
         execute: async (_toolCallId, rawParams) => {
           const params = asToolParamsRecord(rawParams);
