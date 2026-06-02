@@ -348,14 +348,24 @@ function stringArrayFromMeta(meta: Record<string, unknown>, key: string): string
   return undefined;
 }
 
+function toSafeISOString(ms: number): string | undefined {
+  try {
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return undefined;
+    return d.toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
 function metaTimestamp(meta: Record<string, unknown>): string | undefined {
   const ts = meta.ts ?? meta.created_at ?? meta.ingested_at ?? meta.timestamp;
   if (typeof ts === "number" && Number.isFinite(ts) && ts > 0) {
-    return new Date(ts).toISOString();
+    return toSafeISOString(ts);
   }
   if (typeof ts === "string" && ts.length > 0) {
     const parsed = Date.parse(ts);
-    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+    if (!Number.isNaN(parsed)) return toSafeISOString(parsed);
   }
   return undefined;
 }
