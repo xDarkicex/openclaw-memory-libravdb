@@ -43,6 +43,40 @@ class FakeRecallClient {
       }],
     };
   }
+
+  async searchTextCollections(params: Record<string, unknown>) {
+    this.calls.push({ method: "searchTextCollections", params });
+    const collections = params.collections as string[] | undefined;
+    return {
+      results: [{
+        id: "sum-1",
+        score: 0.9,
+        text: "needle inside summary text",
+        metadataJson: new TextEncoder().encode(JSON.stringify({
+          collection: collections?.[0] ?? "session_summary:active-session",
+          role: "assistant",
+          eviction_cue: "summary cue",
+        })),
+      }],
+    };
+  }
+}
+
+class DefaultSessionRecallClient extends FakeRecallClient {
+  override async searchTextCollections(params: Record<string, unknown>) {
+    this.calls.push({ method: "searchTextCollections", params });
+    return {
+      results: [{
+        id: "turn-1",
+        score: 0.88,
+        text: "needle inside default session collection",
+        metadataJson: new TextEncoder().encode(JSON.stringify({
+          collection: "session:active-session",
+          role: "user",
+        })),
+      }],
+    };
+  }
 }
 
 function fakeRuntime(client: FakeRecallClient): PluginRuntime {
@@ -82,8 +116,35 @@ test("memory_grep defaults to the active session id", async () => {
   const result = await tool.execute("call-1", { pattern: "needle", scope: "summaries" });
 
   assert.equal((result.details as { totalMatches: number }).totalMatches, 1);
-  assert.equal(client.calls[0]?.method, "searchText");
-  assert.equal(client.calls[0]?.params.collection, "session_summary:active-session");
+  assert.equal(client.calls[0]?.method, "searchTextCollections");
+  assert.deepEqual(client.calls[0]?.params.collections, [
+    "session_summary:active-session",
+    "session:active-session",
+  ]);
+});
+
+test("memory_grep searches the default active session collection", async () => {
+  const client = new DefaultSessionRecallClient();
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "needle", scope: "messages" });
+  const details = result.details as { totalMatches: number; turns: Array<{ turnId: string; role: string }> };
+
+  assert.equal(details.totalMatches, 1);
+  assert.deepEqual(client.calls[0]?.params.collections, [
+    "session_raw:active-session",
+    "session:active-session",
+  ]);
+  assert.deepEqual(details.turns, [{
+    turnId: "turn-1",
+    snippet: "needle inside default session collection",
+    role: "user",
+    score: 0.88,
+  }]);
 });
 
 test("memory_expand defaults to the active session id", async () => {

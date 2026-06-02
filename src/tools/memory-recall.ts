@@ -57,6 +57,13 @@ const MAX_GREP_RESULTS = 50;
 const MAX_GREP_CHARS = 40000;
 const MAX_SNIPPET_CHARS = 200;
 
+type GrepSearchResult = {
+  id: string;
+  score: number;
+  text: string;
+  metadataJson?: Uint8Array;
+};
+
 // ── Schemas ──
 
 const MEMORY_DESCRIBE_SCHEMA = {
@@ -181,6 +188,85 @@ function safeMatch(text: string, pattern: string, mode: "regex" | "text"): boole
   } catch {
     return text.toLowerCase().includes(pattern.toLowerCase());
   }
+}
+
+function uniqueCollections(collections: string[]): string[] {
+  return [...new Set(collections.filter((collection) => collection.length > 0))];
+}
+
+function buildGrepCollections(sessionId: string, scope: "messages" | "summaries" | "both"): string[] {
+  const collections: string[] = [];
+  if (scope === "summaries" || scope === "both") {
+    collections.push(`session_summary:${sessionId}`);
+  }
+  if (scope === "messages" || scope === "both") {
+    collections.push(`session_raw:${sessionId}`);
+  }
+  if (sessionId.length > 0) {
+    // Keep memory_grep aligned with memory_search's default session recall collection.
+    // Older or default runtimes store session hits under session:<id> rather than
+    // the experimental session_summary/session_raw split.
+    collections.push(`session:${sessionId}`);
+  }
+  return uniqueCollections(collections);
+}
+
+async function searchGrepCollections(
+  client: Awaited<ReturnType<ClientGetter>>,
+  collections: string[],
+  pattern: string,
+  k: number,
+): Promise<GrepSearchResult[]> {
+  if (collections.length === 0) {
+    return [];
+  }
+  if (collections.length === 1) {
+    const result = await client.searchText({
+      collection: collections[0],
+      text: pattern,
+      k,
+    });
+    return result.results ?? [];
+  }
+  const result = await client.searchTextCollections({
+    collections,
+    text: pattern,
+    k,
+    excludeByCollection: {},
+  });
+  return result.results ?? [];
+}
+
+function parseResultMetadata(result: GrepSearchResult): Record<string, unknown> {
+  if (result.metadataJson && result.metadataJson.length > 0) {
+    try {
+      return JSON.parse(new TextDecoder().decode(result.metadataJson)) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function resultCollection(meta: Record<string, unknown>, fallback = ""): string {
+  return typeof meta.collection === "string" ? meta.collection : fallback;
+}
+
+function isSummaryResult(result: GrepSearchResult, meta: Record<string, unknown>, collection: string): boolean {
+  return (
+    collection.startsWith("session_summary:") ||
+    result.id.startsWith("sum") ||
+    typeof meta.eviction_cue === "string" ||
+    typeof meta.compaction_generation === "number"
+  );
+}
+
+function isTurnResult(_result: GrepSearchResult, meta: Record<string, unknown>, collection: string): boolean {
+  return (
+    collection.startsWith("session_raw:") ||
+    collection.startsWith("session:") ||
+    typeof meta.role === "string"
+  );
 }
 
 // ── Tool factories ──
@@ -403,51 +489,48 @@ export function createMemoryGrepTool(
         let totalChars = 0;
         let totalMatches = 0;
 
-        if (scope === "summaries" || scope === "both") {
-          const searchK = Math.min(limit * 3, 200);
-          const summaryResults = await client.searchText({
-            collection: `session_summary:${sessionId}`,
-            text: pattern,
-            k: searchK,
-          });
-          for (const r of (summaryResults.results ?? [])) {
-            if (summaries.length >= limit || totalChars >= MAX_GREP_CHARS) break;
+        const searchK = Math.min(limit * 3, 200);
+        const grepResults = await searchGrepCollections(
+          client,
+          buildGrepCollections(sessionId, scope),
+          pattern,
+          searchK,
+        );
+        const seen = new Set<string>();
+
+        for (const r of grepResults) {
+          if (
+            (summaries.length >= limit && turns.length >= limit) ||
+            totalChars >= MAX_GREP_CHARS
+          ) {
+            break;
+          }
+          const meta = parseResultMetadata(r);
+          const collection = resultCollection(meta);
+          const dedupKey = `${collection}:${r.id}`;
+          if (seen.has(dedupKey)) continue;
+          seen.add(dedupKey);
+          const summaryResult = isSummaryResult(r, meta, collection);
+          const turnResult = isTurnResult(r, meta, collection);
+
+          if ((scope === "summaries" || scope === "both") && summaryResult) {
+            if (summaries.length >= limit) continue;
             if (!safeMatch(r.text, pattern, mode)) continue;
             totalMatches++;
             let evictionCue: string | undefined;
-            if (r.metadataJson && r.metadataJson.length > 0) {
-              try {
-                const decoder = new TextDecoder();
-                const meta = JSON.parse(decoder.decode(r.metadataJson)) as Record<string, unknown>;
-                evictionCue = typeof meta.eviction_cue === "string" ? meta.eviction_cue : undefined;
-              } catch { /* best-effort */ }
-            }
+            evictionCue = typeof meta.eviction_cue === "string" ? meta.eviction_cue : undefined;
             const snippet = truncateSnippet(r.text);
             summaries.push({ summaryId: r.id, snippet, score: r.score, evictionCue });
             totalChars += snippet.length;
+            continue;
           }
-        }
-
-        if (scope === "messages" || scope === "both") {
-          const searchK = Math.min(limit * 3, 200);
-          const turnResults = await client.searchText({
-            collection: `session_raw:${sessionId}`,
-            text: pattern,
-            k: searchK,
-          });
-          for (const r of (turnResults.results ?? [])) {
-            if (turns.length >= limit || totalChars >= MAX_GREP_CHARS) break;
+          if ((scope === "messages" || scope === "both") && (turnResult || !summaryResult)) {
+            if (turns.length >= limit) continue;
             if (!safeMatch(r.text, pattern, mode)) continue;
             totalMatches++;
             const snippet = truncateSnippet(r.text);
             let role = "unknown";
-            if (r.metadataJson && r.metadataJson.length > 0) {
-              try {
-                const decoder = new TextDecoder();
-                const meta = JSON.parse(decoder.decode(r.metadataJson)) as Record<string, unknown>;
-                role = typeof meta.role === "string" ? meta.role : "unknown";
-              } catch { /* best-effort */ }
-            }
+            role = typeof meta.role === "string" ? meta.role : "unknown";
             turns.push({ turnId: r.id, snippet, role, score: r.score });
             totalChars += snippet.length;
           }
