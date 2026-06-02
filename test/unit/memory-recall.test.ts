@@ -63,18 +63,36 @@ class FakeRecallClient {
 }
 
 class DefaultSessionRecallClient extends FakeRecallClient {
+  constructor(private readonly includeDuplicateRawHit = false) {
+    super();
+  }
+
   override async searchTextCollections(params: Record<string, unknown>) {
     this.calls.push({ method: "searchTextCollections", params });
+    const duplicateRawHit = this.includeDuplicateRawHit
+      ? [{
+          id: "turn-1",
+          score: 0.71,
+          text: "needle inside duplicate raw collection",
+          metadataJson: new TextEncoder().encode(JSON.stringify({
+            collection: "session_raw:active-session",
+            role: "user",
+          })),
+        }]
+      : [];
     return {
-      results: [{
-        id: "turn-1",
-        score: 0.88,
-        text: "needle inside default session collection",
-        metadataJson: new TextEncoder().encode(JSON.stringify({
-          collection: "session:active-session",
-          role: "user",
-        })),
-      }],
+      results: [
+        ...duplicateRawHit,
+        {
+          id: "turn-1",
+          score: 0.88,
+          text: "needle inside default session collection",
+          metadataJson: new TextEncoder().encode(JSON.stringify({
+            collection: "session:active-session",
+            role: "user",
+          })),
+        },
+      ],
     };
   }
 }
@@ -144,6 +162,30 @@ test("memory_grep searches the default active session collection", async () => {
     snippet: "needle inside default session collection",
     role: "user",
     score: 0.88,
+  }]);
+});
+
+test("memory_grep deduplicates the same turn across raw and default session collections", async () => {
+  const client = new DefaultSessionRecallClient(true);
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "needle", scope: "messages" });
+  const details = result.details as { totalMatches: number; turns: Array<{ turnId: string; role: string }> };
+
+  assert.equal(details.totalMatches, 1);
+  assert.deepEqual(client.calls[0]?.params.collections, [
+    "session_raw:active-session",
+    "session:active-session",
+  ]);
+  assert.deepEqual(details.turns, [{
+    turnId: "turn-1",
+    snippet: "needle inside duplicate raw collection",
+    role: "user",
+    score: 0.71,
   }]);
 });
 

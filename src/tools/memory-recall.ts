@@ -255,7 +255,7 @@ function resultCollection(meta: Record<string, unknown>, fallback = ""): string 
 function isSummaryResult(result: GrepSearchResult, meta: Record<string, unknown>, collection: string): boolean {
   return (
     collection.startsWith("session_summary:") ||
-    result.id.startsWith("sum") ||
+    result.id.startsWith("sum_") ||
     typeof meta.eviction_cue === "string" ||
     typeof meta.compaction_generation === "number"
   );
@@ -507,7 +507,7 @@ export function createMemoryGrepTool(
           }
           const meta = parseResultMetadata(r);
           const collection = resultCollection(meta);
-          const dedupKey = `${collection}:${r.id}`;
+          const dedupKey = r.id;
           if (seen.has(dedupKey)) continue;
           seen.add(dedupKey);
           const summaryResult = isSummaryResult(r, meta, collection);
@@ -517,8 +517,7 @@ export function createMemoryGrepTool(
             if (summaries.length >= limit) continue;
             if (!safeMatch(r.text, pattern, mode)) continue;
             totalMatches++;
-            let evictionCue: string | undefined;
-            evictionCue = typeof meta.eviction_cue === "string" ? meta.eviction_cue : undefined;
+            const evictionCue = typeof meta.eviction_cue === "string" ? meta.eviction_cue : undefined;
             const snippet = truncateSnippet(r.text);
             summaries.push({ summaryId: r.id, snippet, score: r.score, evictionCue });
             totalChars += snippet.length;
@@ -529,8 +528,7 @@ export function createMemoryGrepTool(
             if (!safeMatch(r.text, pattern, mode)) continue;
             totalMatches++;
             const snippet = truncateSnippet(r.text);
-            let role = "unknown";
-            role = typeof meta.role === "string" ? meta.role : "unknown";
+            const role = typeof meta.role === "string" ? meta.role : "unknown";
             turns.push({ turnId: r.id, snippet, role, score: r.score });
             totalChars += snippet.length;
           }
