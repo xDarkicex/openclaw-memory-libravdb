@@ -131,11 +131,22 @@ function createMemorySearchManager(
       const legacyResults = filteredResults.map((item) => {
         const meta = parseMetadataJson(item);
         const text = resolveSearchResultText(item, meta);
-        return {
+        const kind = typeof meta.memory_kind === "string" ? meta.memory_kind : undefined;
+        const signals = meta.memory_signals as string[] | undefined;
+        const causedBy = stringArrayFromMeta(meta, "why_ids");
+        const leadsTo = stringArrayFromMeta(meta, "how_ids");
+        const timestamp = metaTimestamp(meta);
+        const enriched: Record<string, unknown> = {
           ...item,
           text,
           content: text,
         };
+        if (kind) enriched.kind = kind;
+        if (signals && signals.length > 0) enriched.signals = signals;
+        if (causedBy && causedBy.length > 0) enriched.caused_by = causedBy;
+        if (leadsTo && leadsTo.length > 0) enriched.leads_to = leadsTo;
+        if (timestamp) enriched.timestamp = timestamp;
+        return enriched;
       });
       if (legacyCall) {
         return { results: legacyResults };
@@ -306,7 +317,12 @@ function toMemorySearchResult(
   text = resolveSearchResultText(item, meta),
 ) {
   const collection = typeof meta.collection === "string" ? meta.collection : "memory";
-  return {
+  const kind = typeof meta.memory_kind === "string" ? meta.memory_kind : undefined;
+  const signals = meta.memory_signals as string[] | undefined;
+  const causedBy = stringArrayFromMeta(meta, "why_ids");
+  const leadsTo = stringArrayFromMeta(meta, "how_ids");
+  const timestamp = metaTimestamp(meta);
+  const result: Record<string, unknown> = {
     path: encodeSearchResultPath(collection, item.id),
     startLine: 1,
     endLine: Math.max(1, text.split("\n").length),
@@ -315,6 +331,33 @@ function toMemorySearchResult(
     source: collection.startsWith("session:") || collection.startsWith("session_") ? "sessions" : "memory",
     citation: `${collection}:${item.id}`,
   };
+  if (kind) result.kind = kind;
+  if (signals && signals.length > 0) result.signals = signals;
+  if (causedBy && causedBy.length > 0) result.caused_by = causedBy;
+  if (leadsTo && leadsTo.length > 0) result.leads_to = leadsTo;
+  if (timestamp) result.timestamp = timestamp;
+  return result;
+}
+
+function stringArrayFromMeta(meta: Record<string, unknown>, key: string): string[] | undefined {
+  const raw = meta[key];
+  if (Array.isArray(raw)) {
+    const filtered = raw.filter((v): v is string => typeof v === "string");
+    return filtered.length > 0 ? filtered : undefined;
+  }
+  return undefined;
+}
+
+function metaTimestamp(meta: Record<string, unknown>): string | undefined {
+  const ts = meta.ts ?? meta.created_at ?? meta.ingested_at ?? meta.timestamp;
+  if (typeof ts === "number" && Number.isFinite(ts) && ts > 0) {
+    return new Date(ts).toISOString();
+  }
+  if (typeof ts === "string" && ts.length > 0) {
+    const parsed = Date.parse(ts);
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+  }
+  return undefined;
 }
 
 function encodeSearchResultPath(collection: string, id: string): string {
