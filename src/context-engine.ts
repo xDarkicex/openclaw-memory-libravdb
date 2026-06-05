@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { PluginRuntime } from "./plugin-runtime.js";
 import type {
@@ -1124,6 +1124,27 @@ export function normalizeKernelMessages(
     .filter((message) => message.role === "user" || message.content.trim().length > 0);
 }
 
+function buildBeforeTurnSignature(messages: OpenClawCompatibleMessage[]): string | null {
+  const normalizedMessages = messages
+    .map((message) => ({
+      role: message.role,
+      content: normalizeKernelContent(message.content, { retainOpenClawContext: false }),
+      id: typeof message.id === "string" ? message.id : undefined,
+    }))
+    .filter((message) => message.role === "user" || message.content.trim().length > 0);
+  const lastUserIndex = findLastUserMessageIndex(normalizedMessages);
+  if (lastUserIndex < 0) {
+    return null;
+  }
+
+  return createHash("sha256")
+    .update(JSON.stringify({
+      lastUserIndex,
+      messages: normalizedMessages.slice(0, lastUserIndex + 1),
+    }))
+    .digest("hex");
+}
+
 /**
  * Extracts tokens for exact recall matching from text.
  */
@@ -1711,8 +1732,9 @@ export function buildContextEngineFactory(
   // BeforeTurnKernel state
   const turnCache = new TurnMemoryCache(100);
   const circuitBreakers = new Map<string, FailureState>();
+  const beforeTurnAttempts = new Map<string, string>();
   const CIRCUIT_STATE_MAX_SIZE = 200;
-  let lastUserMessageHash: string | null = null;
+  const BEFORE_TURN_ATTEMPT_MAX_SIZE = 200;
 
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
@@ -1863,6 +1885,18 @@ export function buildContextEngineFactory(
 
   function clearBeforeTurnCircuit(sessionId: string): void {
     circuitBreakers.delete(sessionId);
+  }
+
+  function hasAttemptedBeforeTurn(sessionId: string, signature: string): boolean {
+    return beforeTurnAttempts.get(sessionId) === signature;
+  }
+
+  function markBeforeTurnAttempt(sessionId: string, signature: string): void {
+    if (!beforeTurnAttempts.has(sessionId) && beforeTurnAttempts.size >= BEFORE_TURN_ATTEMPT_MAX_SIZE) {
+      const oldest = beforeTurnAttempts.keys().next().value;
+      if (oldest !== undefined) beforeTurnAttempts.delete(oldest);
+    }
+    beforeTurnAttempts.set(sessionId, signature);
   }
 
   function escapeXml(s: string): string {
@@ -2381,6 +2415,7 @@ export function buildContextEngineFactory(
       // an embedding call and RPC round trip on non-interactive turns.
       let beforeTurnPredictions: BeforeTurnKernelResponse["predictions"] | null = null;
       let beforeTurnQueryHint: string | null = null;
+      let beforeTurnSignature: string | null = null;
       if (cfg.beforeTurnEnabled !== false && isInteractiveTrigger(sessionId)) {
         beforeTurnQueryHint = extractQueryHint(messages, (text) =>
           typeof text === "string" ? text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "").trim() : text,
@@ -2401,6 +2436,12 @@ export function buildContextEngineFactory(
             beforeTurnQueryHint = null;
           }
         }
+        if (beforeTurnQueryHint) {
+          beforeTurnSignature = buildBeforeTurnSignature(args.messages);
+          if (!beforeTurnSignature || hasAttemptedBeforeTurn(sessionId, beforeTurnSignature)) {
+            beforeTurnQueryHint = null;
+          }
+        }
       }
 
       try {
@@ -2409,6 +2450,9 @@ export function buildContextEngineFactory(
         // BeforeTurnKernel RPC call (reuses the same client)
         if (beforeTurnQueryHint) {
           try {
+            if (beforeTurnSignature) {
+              markBeforeTurnAttempt(sessionId, beforeTurnSignature);
+            }
             const beforeTurnTimeout = cfg.beforeTurnTimeoutMs ?? 5000;
             const btResult = await Promise.race([
               client.beforeTurnKernel({
