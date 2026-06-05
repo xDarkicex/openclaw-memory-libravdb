@@ -125,6 +125,22 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
     await delay(25);
 
     assert.equal(client.calls.filter((call) => call.method === "promoteDreamEntries").length, 1);
+
+    await fsp.writeFile(
+      diaryPath,
+      [
+        "# DREAMS",
+        "",
+        "## Deep Sleep",
+        "- No longer a candidate",
+      ].join("\n"),
+    );
+    fsApi.callbacks.get(path.dirname(diaryPath))?.[0]?.("change", path.basename(diaryPath));
+    await delay(25);
+
+    const promoteCalls = client.calls.filter((call) => call.method === "promoteDreamEntries");
+    assert.equal(promoteCalls.length, 2);
+    assert.deepEqual((promoteCalls[1]?.params as { entries: unknown[] }).entries, []);
   } finally {
     await handle?.stop();
     if (previousStateDir === undefined) {
