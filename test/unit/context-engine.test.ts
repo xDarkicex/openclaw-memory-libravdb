@@ -318,6 +318,41 @@ test("context engine clears BeforeTurnKernel timeout after successful retrieval"
   }
 });
 
+test("context engine aborts BeforeTurnKernel transport on local timeout", async () => {
+  class AbortableBeforeTurnClient extends FakeClient {
+    public beforeTurnSignal: AbortSignal | undefined;
+
+    async beforeTurnKernel(
+      params: Record<string, unknown>,
+      options?: { signal?: AbortSignal },
+    ) {
+      this.calls.push({ method: "beforeTurnKernel", params });
+      this.beforeTurnSignal = options?.signal;
+      return await new Promise<Record<string, unknown>>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("transport aborted")), { once: true });
+      });
+    }
+  }
+
+  const client = new AbortableBeforeTurnClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    beforeTurnTimeoutMs: 1,
+  });
+
+  await engine.assemble({
+    sessionId: "s1-before-turn-aborts-timeout",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "what do you remember?")],
+    prompt: "what do you remember?",
+    tokenBudget: 4000,
+  });
+
+  assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 1);
+  assert.equal(client.beforeTurnSignal?.aborted, true);
+  assert.equal(client.calls.filter((call) => call.method === "assembleContextInternal").length, 1);
+});
+
 function openClawMetadataEnvelope(userText: string): string {
   return [
     "Conversation info (untrusted metadata):",

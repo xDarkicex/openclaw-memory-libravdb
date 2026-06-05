@@ -251,6 +251,54 @@ test("nonce cleared when transport throws", async () => {
   assert.equal(st.nonceHex, undefined);
 });
 
+test("auth mutex releases when an in-flight rpc is aborted", async () => {
+  let st: AuthInterceptorState;
+  st = state({
+    nonceHex: "active",
+    bootstrap: async () => {
+      st.nonceHex = "recovered";
+    },
+  });
+  const int = createAuthInterceptor(st);
+  const controller = new AbortController();
+  let firstStarted!: () => void;
+  const firstEnteredTransport = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  let secondStarted = false;
+  const nextRes = {
+    header: { get: (name: string) => name === "x-libravdb-nonce" ? "after" : null },
+    trailer: { get: () => null },
+  };
+
+  const first = (int as any)(async (req: { signal?: AbortSignal }) => {
+    firstStarted();
+    return await new Promise((_resolve, reject) => {
+      req.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+  })({
+    method: { name: "BeforeTurnKernel" },
+    header: { set: () => {} },
+    signal: controller.signal,
+  } as any);
+
+  await firstEnteredTransport;
+  const second = (int as any)(async () => {
+    secondStarted = true;
+    return nextRes;
+  })({ method: { name: "Status" }, header: { set: () => {} } } as any);
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(secondStarted, false, "second rpc must wait while first holds the auth mutex");
+
+  controller.abort();
+  await assert.rejects(first, /aborted/);
+  await second;
+
+  assert.equal(secondStarted, true);
+  assert.equal(st.nonceHex, "after");
+});
+
 test("auth skipped for Health", async () => {
   const st = state({ nonceHex: "keep" });
   const int = createAuthInterceptor(st);

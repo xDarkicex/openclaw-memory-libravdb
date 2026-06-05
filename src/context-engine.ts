@@ -2410,6 +2410,7 @@ export function buildContextEngineFactory(
         if (beforeTurnQueryHint) {
           try {
             const beforeTurnTimeout = cfg.beforeTurnTimeoutMs ?? 5000;
+            const beforeTurnAbort = new AbortController();
             let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
             const btResult = await Promise.race([
               client.beforeTurnKernel({
@@ -2420,9 +2421,14 @@ export function buildContextEngineFactory(
                 queryHint: beforeTurnQueryHint,
                 cursor: undefined,
                 isHeartbeat: false,
-              } as unknown as Parameters<typeof client.beforeTurnKernel>[0]),
+              } as unknown as Parameters<typeof client.beforeTurnKernel>[0], {
+                signal: beforeTurnAbort.signal,
+              } as Parameters<typeof client.beforeTurnKernel>[1]),
               new Promise<never>((_, reject) => {
-                timeoutHandle = setTimeout(() => reject(new Error(`BeforeTurnKernel timed out after ${beforeTurnTimeout}ms`)), beforeTurnTimeout);
+                timeoutHandle = setTimeout(() => {
+                  beforeTurnAbort.abort();
+                  reject(new Error(`BeforeTurnKernel timed out after ${beforeTurnTimeout}ms`));
+                }, beforeTurnTimeout);
               }),
             ]).finally(() => {
               if (timeoutHandle) {

@@ -1,5 +1,5 @@
 import { createPromiseClient } from "@connectrpc/connect";
-import type { Interceptor } from "@connectrpc/connect";
+import type { CallOptions, Interceptor } from "@connectrpc/connect";
 import type { PartialMessage } from "@bufbuild/protobuf";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { LibravDB } from "@xdarkicex/libravdb-contracts/client";
@@ -477,9 +477,10 @@ export class LibravDBClient {
 
   async beforeTurnKernel(
     req: PartialMessage<BeforeTurnKernelRequest>,
+    opts?: CallOptions,
   ): Promise<BeforeTurnKernelResponse> {
     this.guardOpen();
-    return this.client.beforeTurnKernel(req);
+    return this.client.beforeTurnKernel(req, opts);
   }
 
   async assembleContextInternal(
