@@ -2410,6 +2410,7 @@ export function buildContextEngineFactory(
         if (beforeTurnQueryHint) {
           try {
             const beforeTurnTimeout = cfg.beforeTurnTimeoutMs ?? 5000;
+            let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
             const btResult = await Promise.race([
               client.beforeTurnKernel({
                 sessionId,
@@ -2420,10 +2421,14 @@ export function buildContextEngineFactory(
                 cursor: undefined,
                 isHeartbeat: false,
               } as unknown as Parameters<typeof client.beforeTurnKernel>[0]),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error(`BeforeTurnKernel timed out after ${beforeTurnTimeout}ms`)), beforeTurnTimeout)
-              ),
-            ]);
+              new Promise<never>((_, reject) => {
+                timeoutHandle = setTimeout(() => reject(new Error(`BeforeTurnKernel timed out after ${beforeTurnTimeout}ms`)), beforeTurnTimeout);
+              }),
+            ]).finally(() => {
+              if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+              }
+            });
             const maxMemories = cfg.beforeTurnMaxMemories ?? 5;
             const clamped = btResult.predictions && btResult.predictions.length > maxMemories
               ? selectTopByRelevance(btResult.predictions, strippedPrompt, maxMemories)
