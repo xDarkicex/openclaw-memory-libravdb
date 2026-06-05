@@ -55,6 +55,8 @@ const MAX_EXPAND_TOKENS = 8000;
 const MAX_EXPAND_CHARS = MAX_EXPAND_TOKENS * 4;
 const MAX_GREP_RESULTS = 50;
 const MAX_GREP_CHARS = 40000;
+const MAX_GREP_MATCH_CHARS = 8000;
+const MAX_GREP_REGEX_CHARS = 512;
 const MAX_SNIPPET_CHARS = 200;
 
 // ── Schemas ──
@@ -174,13 +176,51 @@ function formatEvictionCueLine(cue: string | undefined, summaryId: string): stri
   return `[Summary ${summaryId}]: ${firstLine}`;
 }
 
-function safeMatch(text: string, pattern: string, mode: "regex" | "text"): boolean {
-  if (mode === "text") return text.toLowerCase().includes(pattern.toLowerCase());
-  try {
-    return new RegExp(pattern, "i").test(text);
-  } catch {
-    return text.toLowerCase().includes(pattern.toLowerCase());
+function stripRegexClassesAndEscapes(pattern: string): string {
+  let result = "";
+  let escaped = false;
+  let inClass = false;
+  for (const ch of pattern) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      continue;
+    }
+    if (ch === "[") {
+      inClass = true;
+      continue;
+    }
+    result += ch;
   }
+  return result;
+}
+
+function compileSafeGrepRegex(pattern: string): RegExp | undefined {
+  if (pattern.length > MAX_GREP_REGEX_CHARS) {
+    throw new Error(`memory_grep regex patterns are limited to ${MAX_GREP_REGEX_CHARS} characters`);
+  }
+  const structural = stripRegexClassesAndEscapes(pattern);
+  if (/\((?:[^()]|\\.)*[+*{](?:[^()]|\\.)*\)\s*[+*{]/u.test(structural)) {
+    throw new Error("memory_grep regex pattern is unsafe: nested quantified groups are not allowed");
+  }
+  try {
+    return new RegExp(pattern, "i");
+  } catch {
+    return undefined;
+  }
+}
+
+function safeMatch(text: string, pattern: string, mode: "regex" | "text", regex?: RegExp): boolean {
+  if (mode === "text") return text.toLowerCase().includes(pattern.toLowerCase());
+  if (!regex) return text.toLowerCase().includes(pattern.toLowerCase());
+  return regex.test(text.slice(0, MAX_GREP_MATCH_CHARS));
 }
 
 // ── Tool factories ──
@@ -394,6 +434,7 @@ export function createMemoryGrepTool(
       if (!pattern) throw new Error("memory_grep requires pattern");
 
       const mode = (params.mode === "regex" ? "regex" : "text") as "regex" | "text";
+      const regex = mode === "regex" ? compileSafeGrepRegex(pattern) : undefined;
       const scope = (params.scope === "messages" ? "messages" : params.scope === "summaries" ? "summaries" : "both") as "messages" | "summaries" | "both";
       const limit = readNum(params, "limit", { integer: true }) ?? MAX_GREP_RESULTS;
       const sessionId = readStr(params, "sessionId") ?? getSessionId() ?? "";
@@ -414,7 +455,7 @@ export function createMemoryGrepTool(
           });
           for (const r of (summaryResults.results ?? [])) {
             if (summaries.length >= limit || totalChars >= MAX_GREP_CHARS) break;
-            if (!safeMatch(r.text, pattern, mode)) continue;
+            if (!safeMatch(r.text, pattern, mode, regex)) continue;
             totalMatches++;
             let evictionCue: string | undefined;
             if (r.metadataJson && r.metadataJson.length > 0) {
@@ -439,7 +480,7 @@ export function createMemoryGrepTool(
           });
           for (const r of (turnResults.results ?? [])) {
             if (turns.length >= limit || totalChars >= MAX_GREP_CHARS) break;
-            if (!safeMatch(r.text, pattern, mode)) continue;
+            if (!safeMatch(r.text, pattern, mode, regex)) continue;
             totalMatches++;
             const snippet = truncateSnippet(r.text);
             let role = "unknown";
