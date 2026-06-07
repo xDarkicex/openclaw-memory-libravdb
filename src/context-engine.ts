@@ -1206,7 +1206,7 @@ const COMPACTED_SESSION_RENDER_LEDGER_RE =
 
 function sanitizeDaemonSystemPromptAddition(text: string): string {
   return demoteDaemonAuthoredContextBlocks(
-    canonicalizeCompactedSessionContextBlocks(sanitizeToolCallPatterns(text)),
+    sanitizeToolCallPatterns(canonicalizeCompactedSessionContextBlocks(text)),
   );
 }
 

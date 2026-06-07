@@ -1226,7 +1226,7 @@ test("context engine canonicalizes daemon compacted session context render ledge
   ).join("\n");
   client.assembleResponse = {
     messages: [makeMessage("user", "current request", "current-user")],
-    estimatedTokens: 64,
+    estimatedTokens: 50_000,
     systemPromptAddition: [
       "<compacted_session_context>",
       compactedState,
@@ -1253,6 +1253,7 @@ test("context engine canonicalizes daemon compacted session context render ledge
   assert.doesNotMatch(assembled.systemPromptAddition, /Artifacts:|repeated rendered transcript|Extracted context anchors/u);
   assert.ok(assembled.systemPromptAddition.length < compactedState.length + 500);
   assert.ok(assembled.estimatedTokens < 500);
+  assert.ok(assembled.estimatedTokens < (client.assembleResponse.estimatedTokens ?? Infinity));
 });
 
 test("context engine preserves compacted session context prose without render ledger headings", async () => {
