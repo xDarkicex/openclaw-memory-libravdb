@@ -1100,6 +1100,38 @@ test("context engine assemble deduplicates provider replay after sanitization", 
   ]);
 });
 
+test("context engine assemble preserves legitimate consecutive identical messages from different source indices", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [
+      makeMessage("user", "yes", "user-1"),
+      makeMessage("user", "yes", "user-2"),
+      makeMessage("user", "current question", "user-3"),
+    ],
+    estimatedTokens: 64,
+    systemPromptAddition: "",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-legitimate-consecutive-identical",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "yes", "user-1"),
+      makeMessage("user", "yes", "user-2"),
+      makeMessage("user", "current question", "user-3"),
+    ],
+    prompt: "current question",
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "yes", id: "user-1" },
+    { role: "user", content: "yes", id: "user-2" },
+    { role: "user", content: "current question", id: "user-3" },
+  ]);
+});
+
 test("context engine assemble moves historical tool calls and results out of assistant replay", async () => {
   const client = new FakeClient();
   const currentMessages = [

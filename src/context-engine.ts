@@ -1853,14 +1853,32 @@ export function normalizeAssembleResult(
   const messages: OpenClawCompatibleMessage[] = [];
   const extractedMemoryItems: string[] = [];
   let lastProviderReplayKey: string | undefined;
+  let lastSourceIndex: number | undefined;
 
-  const pushProviderReplayMessage = (message: OpenClawCompatibleMessage): void => {
+  const pushProviderReplayMessage = (
+    message: OpenClawCompatibleMessage,
+    sourceIndex?: number,
+  ): void => {
     const key = `${message.role}\0${message.content}`;
     if (key === lastProviderReplayKey) {
-      return;
+      // Two distinct source messages with identical sanitized content are
+      // legitimate repetition, not a daemon-bug duplicate. Only dedup when
+      // both match the same source index (or source index is unavailable).
+      if (
+        lastSourceIndex !== undefined &&
+        sourceIndex !== undefined &&
+        lastSourceIndex >= 0 &&
+        sourceIndex >= 0 &&
+        lastSourceIndex !== sourceIndex
+      ) {
+        // Fall through — push the message.
+      } else {
+        return;
+      }
     }
     messages.push(message);
     lastProviderReplayKey = key;
+    lastSourceIndex = sourceIndex;
   };
 
   const pushMemoryItem = (args: {
@@ -1928,11 +1946,17 @@ export function normalizeAssembleResult(
           }
           continue;
         }
-        pushProviderReplayMessage({
-          role: message.role,
-          content: sanitizedContent,
-          ...(typeof message.id === "string" ? { id: message.id } : {}),
-        });
+        const providerReplaySourceIndex = sourceMessages
+          ? findMatchingSourceMessageIndex(message, content, sourceMessages)
+          : undefined;
+        pushProviderReplayMessage(
+          {
+            role: message.role,
+            content: sanitizedContent,
+            ...(typeof message.id === "string" ? { id: message.id } : {}),
+          },
+          providerReplaySourceIndex,
+        );
       } else {
         // Daemon memory items may not be in sourceMessages — only advance
         // cursor if the message is actually findable in the source transcript.
