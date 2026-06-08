@@ -1255,6 +1255,9 @@ test("context engine canonicalizes daemon compacted session context render ledge
   assert.match(assembled.systemPromptAddition, /repeated artifact 0/u);
   assert.match(assembled.systemPromptAddition, /repeated rendered transcript 0/u);
   // Later repeated render ledgers from older compaction cycles are stripped.
+  // Only the first (index 0) is kept — even index 1 should be gone.
+  assert.doesNotMatch(assembled.systemPromptAddition, /repeated artifact 1/u);
+  assert.doesNotMatch(assembled.systemPromptAddition, /repeated rendered transcript 1/u);
   assert.doesNotMatch(assembled.systemPromptAddition, /repeated artifact 19/u);
   assert.doesNotMatch(assembled.systemPromptAddition, /repeated rendered transcript 19/u);
   // Size is still reduced (20 ledgers → 1 ledger).

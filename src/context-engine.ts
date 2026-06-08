@@ -1222,18 +1222,23 @@ function canonicalizeCompactedSessionContextBlocks(text: string): string {
 
     // Keep JSON state line + first (latest, most complete) render ledger.
     // Strip subsequent repeated render ledgers from older compaction cycles.
-    // Record boundary: second occurrence of "\nArtifacts:" at line start.
-    const ARTIFACTS_HEADING_RE = /\nArtifacts:/g;
+    // Record boundary: second occurrence of any render-ledger heading.
+    // Use the same heading set as COMPACTED_SESSION_RENDER_LEDGER_RE.
+    const HEADING_RE = /(?:^|\n)(?:Artifacts:|Constraints:|Open Next Steps:|Extracted context anchors:)/g;
     let headingMatch: RegExpExecArray | null;
     let headingCount = 0;
+    const seen = new Set<string>();
     let cutIdx = rest.length;
 
-    while ((headingMatch = ARTIFACTS_HEADING_RE.exec(rest)) !== null) {
-      headingCount++;
-      if (headingCount === 2) {
+    while ((headingMatch = HEADING_RE.exec(rest)) !== null) {
+      const heading = headingMatch[0].replace(/^\n/, "");
+      if (seen.has(heading)) {
+        // Repeat heading — second ledger starts here.
         cutIdx = headingMatch.index;
         break;
       }
+      seen.add(heading);
+      headingCount++;
     }
 
     const keptRest = rest.slice(0, cutIdx).trim();
