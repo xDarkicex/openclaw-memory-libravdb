@@ -1248,11 +1248,18 @@ test("context engine canonicalizes daemon compacted session context render ledge
     tokenBudget: 262144,
   });
 
+  // JSON state and recalled memories are preserved.
   assert.match(assembled.systemPromptAddition, /"compaction_generation":110/u);
   assert.match(assembled.systemPromptAddition, /small useful recall/u);
-  assert.doesNotMatch(assembled.systemPromptAddition, /Artifacts:|repeated rendered transcript|Extracted context anchors/u);
-  assert.ok(assembled.systemPromptAddition.length < compactedState.length + 500);
-  assert.ok(assembled.estimatedTokens < 500);
+  // First render ledger is kept (model-readable prose for session state).
+  assert.match(assembled.systemPromptAddition, /repeated artifact 0/u);
+  assert.match(assembled.systemPromptAddition, /repeated rendered transcript 0/u);
+  // Later repeated render ledgers from older compaction cycles are stripped.
+  assert.doesNotMatch(assembled.systemPromptAddition, /repeated artifact 19/u);
+  assert.doesNotMatch(assembled.systemPromptAddition, /repeated rendered transcript 19/u);
+  // Size is still reduced (20 ledgers → 1 ledger).
+  assert.ok(assembled.systemPromptAddition.length < compactedState.length + 2000);
+  assert.ok(assembled.estimatedTokens < 1000);
   assert.ok(assembled.estimatedTokens < (client.assembleResponse.estimatedTokens ?? Infinity));
 });
 

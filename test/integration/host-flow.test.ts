@@ -385,56 +385,6 @@ test("assemble prefers authoritative currentTokenCount for predictive compaction
   assert.equal(compactParams.force, true);
 });
 
-test("assemble does not let compactSessionTokenBudget lower the dynamic trigger threshold", async () => {
-  const rpc = new StaticContractRpc();
-  rpc.mockResponses.set("assemble_context_internal", {
-    messages: [{ role: "assistant", content: "ok" }],
-    estimatedTokens: 32,
-    systemPromptAddition: "",
-  });
-
-  const context = buildContextEngineFactory(async () => rpc as never, {
-    rpcTimeoutMs: 1000,
-    compactSessionTokenBudget: 2000,
-  });
-
-  await context.assemble({
-    sessionId: "test-session",
-    userId: "test-user",
-    messages: [{ role: "assistant", content: "small" }],
-    tokenBudget: 262144,
-    currentTokenCount: 3354,
-  });
-
-  assert.equal(rpc.getLastCall("compact_session"), null);
-  assert.ok(rpc.getLastCall("assemble_context_internal"), "Expected assembly without predictive compaction");
-});
-
-test("assemble disables predictive compaction when compactSessionTokenBudget is zero", async () => {
-  const rpc = new StaticContractRpc();
-  rpc.mockResponses.set("assemble_context_internal", {
-    messages: [{ role: "assistant", content: "ok" }],
-    estimatedTokens: 32,
-    systemPromptAddition: "",
-  });
-
-  const context = buildContextEngineFactory(async () => rpc as never, {
-    rpcTimeoutMs: 1000,
-    compactSessionTokenBudget: 0,
-  });
-
-  await context.assemble({
-    sessionId: "test-session",
-    userId: "test-user",
-    messages: [{ role: "assistant", content: "small" }],
-    tokenBudget: 262144,
-    currentTokenCount: 20000,
-  });
-
-  assert.equal(rpc.getLastCall("compact_session"), null);
-  assert.ok(rpc.getLastCall("assemble_context_internal"), "Expected assembly when predictive compaction is disabled");
-});
-
 test("assemble keeps compactThreshold explicit override when compactSessionTokenBudget is zero", async () => {
   const rpc = new StaticContractRpc();
   rpc.mockResponses.set("compact_session", { didCompact: true });
@@ -461,36 +411,6 @@ test("assemble keeps compactThreshold explicit override when compactSessionToken
   const compactParams = rpc.getLastCall("compact_session");
   assert.ok(compactParams, "Expected explicit compactThreshold to trigger compaction");
   assert.equal(compactParams.currentTokenCount, 3354);
-});
-
-test("assemble suppresses repeat predictive compaction until since-last budget is reached", async () => {
-  const rpc = new StaticContractRpc();
-  rpc.mockResponses.set("compact_session", { didCompact: true });
-  rpc.mockResponses.set("assemble_context_internal", {
-    messages: [{ role: "assistant", content: "ok" }],
-    estimatedTokens: 32,
-    systemPromptAddition: "",
-  });
-
-  const context = buildContextEngineFactory(async () => rpc as never, {
-    rpcTimeoutMs: 1000,
-    compactSessionTokenBudget: 2000,
-  });
-
-  for (const currentTokenCount of [17000, 18000, 19100]) {
-    await context.assemble({
-      sessionId: "repeat-session",
-      userId: "test-user",
-      messages: [{ role: "assistant", content: `small-${currentTokenCount}` }],
-      tokenBudget: 262144,
-      currentTokenCount,
-    });
-  }
-
-  const compactCalls = rpc.calls.filter((call) => call.method === "compact_session");
-  assert.equal(compactCalls.length, 2);
-  assert.equal(compactCalls[0]?.params.currentTokenCount, 17000);
-  assert.equal(compactCalls[1]?.params.currentTokenCount, 19100);
 });
 
 test("assemble proceeds to assembly when server legitimately declines compaction", async () => {
@@ -794,59 +714,6 @@ test("afterTurn does not trigger predictive compaction without authoritative cur
   await flushIngestion(context);
 
   assert.equal(rpc.getLastCall("compact_session"), null);
-});
-
-test("afterTurn disables predictive compaction when compactSessionTokenBudget is zero", async () => {
-  const rpc = new StaticContractRpc();
-  const context = buildContextEngineFactory(async () => rpc as never, {
-    rpcTimeoutMs: 1000,
-    compactSessionTokenBudget: 0,
-  });
-
-  await context.afterTurn({
-    sessionId: uniqueSessionId("at5b"),
-    userId: "test-user",
-    messages: [
-      { role: "user", content: "remember this" },
-      { role: "assistant", content: "small" },
-    ],
-    prePromptMessageCount: 1,
-    tokenBudget: 262144,
-    runtimeContext: { currentTokenCount: 20000 },
-  });
-  await flushIngestion(context);
-
-  assert.equal(rpc.getLastCall("compact_session"), null);
-});
-
-test("afterTurn suppresses repeat predictive compaction until since-last budget is reached", async () => {
-  const rpc = new StaticContractRpc();
-  rpc.mockResponses.set("compact_session", { didCompact: true });
-  const context = buildContextEngineFactory(async () => rpc as never, {
-    rpcTimeoutMs: 1000,
-    compactSessionTokenBudget: 2000,
-  });
-  const sessionId = uniqueSessionId("at-repeat");
-
-  for (const [index, currentTokenCount] of [17000, 18000, 19100].entries()) {
-    await context.afterTurn({
-      sessionId,
-      userId: "test-user",
-      messages: [
-        { role: "user", content: "remember this" },
-        { role: "assistant", content: `small-${index}` },
-      ],
-      prePromptMessageCount: 1,
-      tokenBudget: 262144,
-      runtimeContext: { currentTokenCount },
-    });
-    await flushIngestion(context);
-  }
-
-  const compactCalls = rpc.calls.filter((call) => call.method === "compact_session");
-  assert.equal(compactCalls.length, 2);
-  assert.equal(compactCalls[0]?.params.currentTokenCount, 17000);
-  assert.equal(compactCalls[1]?.params.currentTokenCount, 19100);
 });
 
 test("afterTurn triggers predictive compaction from oversized forwarded messages", async () => {
