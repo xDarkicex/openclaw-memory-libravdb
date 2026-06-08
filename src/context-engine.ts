@@ -1855,7 +1855,7 @@ export function normalizeAssembleResult(
   let lastProviderReplayKey: string | undefined;
 
   const pushProviderReplayMessage = (message: OpenClawCompatibleMessage): void => {
-    const key = `${message.role}\0${normalizeKernelContent(message.content)}`;
+    const key = `${message.role}\0${message.content}`;
     if (key === lastProviderReplayKey) {
       return;
     }
