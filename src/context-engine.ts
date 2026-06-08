@@ -1898,7 +1898,11 @@ export function normalizeAssembleResult(
         lastUserIndex >= 0 ? lastUserIndex : undefined,
       );
       if (liveToolProtocolSource) {
-        pushProviderReplayMessage(preserveLiveToolProtocolMessage(liveToolProtocolSource.message));
+        // Live tool protocol messages are cursor-guarded by
+        // consumeLiveToolAtCursor — consecutive toolResults with the
+        // same content but different toolCallId linkage must not be
+        // collapsed. Push directly, bypassing provider-replay dedup.
+        messages.push(preserveLiveToolProtocolMessage(liveToolProtocolSource.message));
         liveSourceCursor = liveToolProtocolSource.index + 1;
       } else if (findLiveToolSourceInCurrentTurn(message, content, sourceMessages, undefined, lastUserIndex >= 0 ? lastUserIndex : undefined) >= 0) {
         if (liveSourceCursor !== undefined && sourceMessages) {
