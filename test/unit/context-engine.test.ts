@@ -1040,6 +1040,66 @@ test("context engine assemble does not duplicate consumed live tool protocol", a
   assert.doesNotMatch(assembled.systemPromptAddition, /SAME_RESULT_TEXT|\[tool:web_search\]/u);
 });
 
+test("context engine assemble drops consecutive duplicate provider replay messages", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [
+      makeMessage("user", "current question", "user-1"),
+      makeMessage("assistant", "same answer", "assistant-1"),
+      makeMessage("assistant", "same answer", "assistant-duplicate"),
+    ],
+    estimatedTokens: 64,
+    systemPromptAddition: "",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-consecutive-provider-duplicate",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "current question", "user-1"),
+      makeMessage("assistant", "same answer", "assistant-1"),
+    ],
+    prompt: "current question",
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "current question", id: "user-1" },
+    { role: "assistant", content: "same answer", id: "assistant-1" },
+  ]);
+});
+
+test("context engine assemble deduplicates provider replay after sanitization", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [
+      makeMessage("user", "current question", "user-1"),
+      makeMessage("assistant", "same answer [[reply_to_current]]", "assistant-1"),
+      makeMessage("assistant", "same answer", "assistant-duplicate"),
+    ],
+    estimatedTokens: 64,
+    systemPromptAddition: "",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-sanitized-provider-duplicate",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "current question", "user-1"),
+      makeMessage("assistant", "same answer [[reply_to_current]]", "assistant-1"),
+    ],
+    prompt: "current question",
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "current question", id: "user-1" },
+    { role: "assistant", content: "same answer", id: "assistant-1" },
+  ]);
+});
+
 test("context engine assemble moves historical tool calls and results out of assistant replay", async () => {
   const client = new FakeClient();
   const currentMessages = [

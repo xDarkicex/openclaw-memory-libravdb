@@ -1852,6 +1852,16 @@ export function normalizeAssembleResult(
   const systemPromptWasReduced = rawSystemPromptAddition.length > systemPromptAddition.length;
   const messages: OpenClawCompatibleMessage[] = [];
   const extractedMemoryItems: string[] = [];
+  let lastProviderReplayKey: string | undefined;
+
+  const pushProviderReplayMessage = (message: OpenClawCompatibleMessage): void => {
+    const key = `${message.role}\0${normalizeKernelContent(message.content)}`;
+    if (key === lastProviderReplayKey) {
+      return;
+    }
+    messages.push(message);
+    lastProviderReplayKey = key;
+  };
 
   const pushMemoryItem = (args: {
     content: string;
@@ -1888,7 +1898,7 @@ export function normalizeAssembleResult(
         lastUserIndex >= 0 ? lastUserIndex : undefined,
       );
       if (liveToolProtocolSource) {
-        messages.push(preserveLiveToolProtocolMessage(liveToolProtocolSource.message));
+        pushProviderReplayMessage(preserveLiveToolProtocolMessage(liveToolProtocolSource.message));
         liveSourceCursor = liveToolProtocolSource.index + 1;
       } else if (findLiveToolSourceInCurrentTurn(message, content, sourceMessages, undefined, lastUserIndex >= 0 ? lastUserIndex : undefined) >= 0) {
         if (liveSourceCursor !== undefined && sourceMessages) {
@@ -1914,7 +1924,7 @@ export function normalizeAssembleResult(
           }
           continue;
         }
-        messages.push({
+        pushProviderReplayMessage({
           role: message.role,
           content: sanitizedContent,
           ...(typeof message.id === "string" ? { id: message.id } : {}),
