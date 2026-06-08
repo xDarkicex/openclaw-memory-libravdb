@@ -1132,6 +1132,38 @@ test("context engine assemble preserves legitimate consecutive identical message
   ]);
 });
 
+test("context engine assemble preserves legitimate consecutive identical no-id messages from different source indices", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [
+      makeMessage("user", "yes"),
+      makeMessage("user", "yes"),
+      makeMessage("user", "current question"),
+    ],
+    estimatedTokens: 64,
+    systemPromptAddition: "",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-legitimate-consecutive-identical-no-id",
+    sessionKey: "sk1",
+    messages: [
+      makeMessage("user", "yes"),
+      makeMessage("user", "yes"),
+      makeMessage("user", "current question"),
+    ],
+    prompt: "current question",
+    tokenBudget: 4000,
+  });
+
+  assert.deepEqual(assembled.messages, [
+    { role: "user", content: "yes" },
+    { role: "user", content: "yes" },
+    { role: "user", content: "current question" },
+  ]);
+});
+
 test("context engine assemble moves historical tool calls and results out of assistant replay", async () => {
   const client = new FakeClient();
   const currentMessages = [

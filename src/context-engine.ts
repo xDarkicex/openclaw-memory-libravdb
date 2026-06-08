@@ -1861,9 +1861,6 @@ export function normalizeAssembleResult(
   ): void => {
     const key = `${message.role}\0${message.content}`;
     if (key === lastProviderReplayKey) {
-      // Two distinct source messages with identical sanitized content are
-      // legitimate repetition, not a daemon-bug duplicate. Only dedup when
-      // both match the same source index (or source index is unavailable).
       if (
         lastSourceIndex !== undefined &&
         sourceIndex !== undefined &&
@@ -1897,6 +1894,7 @@ export function normalizeAssembleResult(
   if (Array.isArray(result.messages)) {
     const lastUserIndex = sourceMessages ? findLastUserMessageIndex(sourceMessages) : -1;
     let liveSourceCursor = sourceMessages ? lastUserIndex + 1 : undefined;
+    let providerReplaySourceCursor: number | undefined = sourceMessages ? 0 : undefined;
     for (const message of result.messages) {
       const content = normalizeKernelContent(message.content);
       const historicalToolSource = getHistoricalToolSource(message.role, message.content, content);
@@ -1947,7 +1945,7 @@ export function normalizeAssembleResult(
           continue;
         }
         const providerReplaySourceIndex = sourceMessages
-          ? findMatchingSourceMessageIndex(message, content, sourceMessages)
+          ? findMatchingSourceMessageIndex(message, content, sourceMessages, providerReplaySourceCursor)
           : undefined;
         pushProviderReplayMessage(
           {
@@ -1957,6 +1955,13 @@ export function normalizeAssembleResult(
           },
           providerReplaySourceIndex,
         );
+        if (
+          providerReplaySourceCursor !== undefined &&
+          providerReplaySourceIndex !== undefined &&
+          providerReplaySourceIndex >= 0
+        ) {
+          providerReplaySourceCursor = providerReplaySourceIndex + 1;
+        }
       } else {
         // Daemon memory items may not be in sourceMessages — only advance
         // cursor if the message is actually findable in the source transcript.
