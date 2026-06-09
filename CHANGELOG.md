@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.9.5 — 2026-06-09
+
+**Contributor:** xDarkicex
+**Signed off by:** xDarkicex
+
+### Fixed
+- **Tool result amnesia in multi-step agentic workflows:** `TOOL_RESULT_ANNOTATION_RE` used `[^\n]*` to consume the entire rest of the line after a `[tool:name]` annotation tag. When the daemon returned flattened tool results on the same line (e.g. `[tool:list_files] {"files":["a.go","b.go"]}`), the regex destroyed the JSON payload along with the tag. This caused the provider replay transcript to lose historical tool outputs, producing selective amnesia: the model remembered conversation but forgot what tools actually returned. In tool-heavy sessions, the model would see evidence of tool execution without the data that justified it, causing multi-step reasoning collapse.
+
+  Changed to `\s*` — only the annotation tag and trailing whitespace are stripped. The JSON payload or text result remains intact in the transcript so the model can reference prior tool outputs. Loop-priming prevention is preserved because the `[tool:...]` syntax tag itself is still removed.
+
 ## v1.9.4 — 2026-06-08
 
 **Contributor:** xDarkicex — [PR #336](https://github.com/xDarkicex/openclaw-memory-libravdb/pull/336)
