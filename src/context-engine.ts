@@ -1553,8 +1553,8 @@ const TOOL_CALL_BRACKET_RE = /\[tool:([^\]]+)\](?:\s*(?:\{[\s\S]*?\}|\[[\s\S]*?\
 // Matches raw JSON tool-call objects targeting a "name\" field
 const TOOL_CALL_JSON_RE = /\{[^\r\n]*"name"\s*:\s*"([^"]+)"[^\r\n]*(?:"arguments"|"args"|"toolCallId"|"tool_call_id"|"type"\s*:\s*"toolCall")[^\r\n]*\}/g;
 
-// Matches older annotations, aggressively consuming trailing characters on the same line
-const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\][^\n]*/g;
+// Strip only the [tool:name] annotation tag; preserve payload on the same line
+const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\]\s*/g;
 const OPENCLAW_BRACKET_DIRECTIVE_RE = /\[\[(?:reply_to_current|audio_as_voice|reply_to:[^\]\r\n]+)\]\]/g;
 const OPENCLAW_MEDIA_DIRECTIVE_LINE_RE = /^[ \t]*MEDIA:[^\r\n]*(?:\r?\n|$)/gmi;
 const OPENCLAW_INLINE_MEDIA_DIRECTIVE_RE = /(^|[>\s])MEDIA:[^\s<]*(?=\s|<|$)/gmi;
