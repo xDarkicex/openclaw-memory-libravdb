@@ -134,6 +134,8 @@ export interface PluginConfig {
   beforeTurnEnabled?: boolean;
   /** Timeout in milliseconds for the BeforeTurnKernel gRPC call. Default: 5000 */
   beforeTurnTimeoutMs?: number;
+  /** Timeout in milliseconds for the AssembleContextInternal gRPC call. Default: 30000 */
+  assembleTimeoutMs?: number;
   /** Maximum number of retrieved memories to inject per turn. Default: 5 */
   beforeTurnMaxMemories?: number;
   /** Minimum similarity score (0.0–1.0) for semantic search hits. Default: 0.4 */
