@@ -2887,16 +2887,22 @@ export function buildContextEngineFactory(
             }
           }
 
-          const resp = await client.assembleContextInternal({
-            sessionId,
-            sessionKey: args.sessionKey,
-            userId,
-            prompt: strippedPrompt,
-            messages,
-            tokenBudget: args.tokenBudget,
-            config: buildAssemblyConfig(args.tokenBudget),
-            emitDebug: true,
-          });
+          const assembleTimeout = cfg.assembleTimeoutMs ?? 30000;
+          const resp = await Promise.race([
+            client.assembleContextInternal({
+              sessionId,
+              sessionKey: args.sessionKey,
+              userId,
+              prompt: strippedPrompt,
+              messages,
+              tokenBudget: args.tokenBudget,
+              config: buildAssemblyConfig(args.tokenBudget),
+              emitDebug: true,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`)), assembleTimeout)
+            ),
+          ]);
           const assembled = normalizeAssembleResult(resp, args.messages);
           const continuityContext = await injectContinuityContext({
             client,
