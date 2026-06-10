@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Persistent vector memory with three-tier hybrid scoring",
-  "version": "1.9.6",
+  "version": "1.9.7",
   "kind": [
     "memory",
     "context-engine"
@@ -180,6 +180,10 @@
       },
       "beforeTurnTimeoutMs": {
         "type": "number"
+      },
+      "assembleTimeoutMs": {
+        "type": "number",
+        "description": "Timeout in milliseconds for the AssembleContextInternal gRPC call. Default: 30000"
       },
       "beforeTurnMaxMemories": {
         "type": "number"
