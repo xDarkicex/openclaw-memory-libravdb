@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.9.7 — 2026-06-10
+
+**Contributor:** xDarkicex — [PR #338](https://github.com/xDarkicex/openclaw-memory-libravdb/pull/338)
+**Signed off by:** xDarkicex
+
+### Fixed
+- **Indefinite hang in AssembleContextInternal gRPC call:** The `assembleContextInternal` RPC was the only daemon gRPC call in the context engine without a deadline. When the daemon's unix socket transport lost a response (healthy daemon, dropped gRPC frame), the `await` blocked the entire agent pipeline indefinitely — producing a permanent spinner in the web UI with no error or timeout recovery. All other daemon RPCs (`beforeTurnKernel` — 5s, `rpcTimeoutMs` — 120s) had deadlines, but `assembleContextInternal` did not.
+
+  Added a `Promise.race` with configurable `assembleTimeoutMs` (default 30s) matching the same pattern used by `beforeTurnKernel`. Also added the `assembleTimeoutMs` field to `PluginConfig` and to the `openclaw.plugin.json` config schema.
+
 ## v1.9.5 — 2026-06-09
 
 **Contributor:** xDarkicex
