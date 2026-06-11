@@ -1626,10 +1626,10 @@ test("context engine assemble uses source messages directly as transcript", asyn
 
   // Messages are args.messages (source) passed through directly.
   // Daemon-echoed messages (visibleMsgs stripped of toolResult) are ignored.
-  assert.equal(assembled.messages.length, 2);
-  assert.equal(assembled.messages[0]?.role, "assistant");
-  assert.equal(assembled.messages[1]?.role, "user");
-  assert.equal(assembled.messages[1]?.content, "current user query");
+  assert.deepEqual(assembled.messages, [
+    { role: "assistant", content: "previous context" },
+    { role: "user", content: "current user query" },
+  ]);
   assert.ok(assembled.systemPromptAddition.includes("daemon memory context"));
   assert.ok(assembled.estimatedTokens >= 24);
 });

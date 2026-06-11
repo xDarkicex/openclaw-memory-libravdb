@@ -2304,12 +2304,20 @@ export function buildContextEngineFactory(
           );
         } else {
           // Drain pending async ingestion for this session so the daemon's
-          // context assembly and cursor computation in normalizeAssembleResult
-          // operate on a complete transcript. Without this, cursor-based tool
-          // protocol classification races against the previous turn's afterTurn
-          // ingestion (T0 race — ~50% hit rate on tool-call turns).
+          // context assembly operates on a complete transcript. Cap with a
+          // short timeout so a stuck daemon doesn't block assemble indefinitely.
           const pending = asyncIngestionQueues.get(sessionId);
-          if (pending) await pending;
+          if (pending) {
+            const drainTimeout = new Promise<void>((resolve) => {
+              setTimeout(() => {
+                logger?.warn?.(
+                  `LibraVDB async ingestion drain timed out for session ${sessionId}, proceeding`,
+                );
+                resolve();
+              }, 5_000);
+            });
+            await Promise.race([pending, drainTimeout]);
+          }
 
           // BeforeTurnKernel RPC call (reuses the same client)
           if (beforeTurnQueryHint) {
