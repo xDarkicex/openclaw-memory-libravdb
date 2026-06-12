@@ -18,7 +18,7 @@ Because these rules are automatic, most users do not set any TLS-related fields.
 
 | Field | Type | Default | When to use |
 |---|---|---|---|
-| `grpcEndpoint` | string | — | The vector service address. Set to a unix socket path, a loopback address, or a remote host. |
+| `grpcEndpoint` | string | — | The vector service address. Use `unix:<path>` or `tcp:<host>:<port>`. HTTP URL schemes are rejected so TLS policy cannot be bypassed accidentally. |
 | `grpcEndpointTlsCa` | string | — | Path to a CA certificate PEM file. Required only when the vector service certificate is self-signed or signed by a private CA not in the system certificate store. |
 | `grpcEndpointTlsMode` | `"auto"` \| `"tls"` \| `"insecure"` | `"auto"` | Override the automatic selection. `"auto"` applies the default rules above. `"tls"` forces TLS regardless of address. `"insecure"` forces plaintext regardless of address. |
 

@@ -58,6 +58,31 @@ test("resolveClientEndpoint returns explicit endpoint unchanged", () => {
   assert.equal(resolveClientEndpoint("unix:/custom/path/sock"), "unix:/custom/path/sock");
 });
 
+test("client rejects HTTP-style grpc endpoints before transport setup", () => {
+  assert.throws(
+    () => new LibravDBClient({ endpoint: "http://memory.internal:50051" }),
+    /grpc endpoint must use "tcp:" or "unix:" scheme/,
+  );
+  assert.throws(
+    () => new LibravDBClient({ endpoint: "https://memory.internal:50051", tlsMode: "tls" }),
+    /grpc endpoint must use "tcp:" or "unix:" scheme/,
+  );
+});
+
+test("client rejects HTTP-style grpc endpoint from environment", () => {
+  const prev = process.env.LIBRAVDB_GRPC_ENDPOINT;
+  try {
+    process.env.LIBRAVDB_GRPC_ENDPOINT = "http://memory.internal:50051";
+    assert.throws(
+      () => new LibravDBClient({}),
+      /grpc endpoint must use "tcp:" or "unix:" scheme/,
+    );
+  } finally {
+    if (prev !== undefined) process.env.LIBRAVDB_GRPC_ENDPOINT = prev;
+    else delete process.env.LIBRAVDB_GRPC_ENDPOINT;
+  }
+});
+
 test("resolveClientEndpoint returns env var when endpoint is undefined or auto", () => {
   const prev = process.env.LIBRAVDB_GRPC_ENDPOINT;
   try {

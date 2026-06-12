@@ -12,7 +12,7 @@ CPU when a provider is unavailable.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `sidecarPath` | string | `auto` | `"auto"` probes standard socket paths; set `unix:/path` or `tcp:host:port` to override |
-| `grpcEndpoint` | string | — | gRPC kernel endpoint. See `grpcEndpointTlsMode` for credential control. |
+| `grpcEndpoint` | string | — | gRPC kernel endpoint. Use `unix:<path>` or `tcp:<host>:<port>`; HTTP URL schemes are rejected. See `grpcEndpointTlsMode` for credential control. |
 | `grpcEndpointTlsCa` | string | — | Path to CA certificate PEM file. Only needed for self-signed or private CA certs. Omit when using Let's Encrypt or cert-manager. |
 | `grpcEndpointTlsMode` | string | `"auto"` | gRPC credential mode. `"auto"`: loopback/unix → plaintext, remote → TLS. `"tls"`: always TLS. `"insecure"`: always plaintext. |
 | `grpcEndpointTlsClientCert` | string | — | Path to client certificate PEM for mTLS. Must be paired with `grpcEndpointTlsClientKey`. |

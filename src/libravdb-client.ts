@@ -77,8 +77,10 @@ export interface LibravDBClientOptions {
 }
 
 export function resolveClientEndpoint(configuredEndpoint?: string): string {
-  if (configuredEndpoint && configuredEndpoint !== "auto") return configuredEndpoint;
-  if (process.env.LIBRAVDB_GRPC_ENDPOINT) return process.env.LIBRAVDB_GRPC_ENDPOINT;
+  const configured = configuredEndpoint?.trim();
+  if (configured && configured !== "auto") return configured;
+  const envEndpoint = process.env.LIBRAVDB_GRPC_ENDPOINT?.trim();
+  if (envEndpoint) return envEndpoint;
 
   if (process.platform === "win32") return "tcp:127.0.0.1:37421";
 
@@ -96,6 +98,23 @@ export function resolveClientEndpoint(configuredEndpoint?: string): string {
     if (fs.existsSync(fullPath)) return `unix:${fullPath}`;
   }
   return `unix:${path.join(os.homedir(), ".libravdbd", "run", sockName)}`;
+}
+
+export function validateClientEndpoint(endpoint: string): void {
+  if (endpoint === "auto" || endpoint.startsWith("unix:") || endpoint.startsWith("tcp:")) {
+    return;
+  }
+
+  if (/^https?:\/\//i.test(endpoint)) {
+    throw new Error(
+      `LibraVDB: grpc endpoint must use "tcp:" or "unix:" scheme, not an HTTP URL: ${endpoint}. ` +
+      `Use tcp:<host>:<port>; TLS is selected with grpcEndpointTlsMode.`,
+    );
+  }
+
+  throw new Error(
+    `LibraVDB: unsupported grpc endpoint "${endpoint}". Use "auto", "unix:<path>", or "tcp:<host>:<port>".`,
+  );
 }
 
 export function isLegacyJsonRpcHealthResponse(payload: string): boolean {
@@ -249,6 +268,7 @@ export class LibravDBClient {
     this.secret = options.secret ?? loadSecretFromEnv();
 
     const rawEndpoint = resolveClientEndpoint(options.endpoint);
+    validateClientEndpoint(rawEndpoint);
     this.endpoint = rawEndpoint;
     this.legacyProbeTimeoutMs = Math.min(options.timeoutMs ?? 30000, 1000);
     const isUnix = rawEndpoint.startsWith("unix:");
