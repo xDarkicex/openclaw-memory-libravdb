@@ -12,6 +12,13 @@ const silentLogger = {
   info(_message: string) {},
 };
 
+type FakeSearchResult = {
+  id: string;
+  score: number;
+  text: string;
+  metadataJson?: Uint8Array;
+};
+
 class FakeRecallClient {
   public calls: Array<{ method: string; params: Record<string, unknown> }> = [];
 
@@ -29,7 +36,7 @@ class FakeRecallClient {
     };
   }
 
-  async searchText(params: Record<string, unknown>) {
+  async searchText(params: Record<string, unknown>): Promise<{ results: FakeSearchResult[] }> {
     this.calls.push({ method: "searchText", params });
     return {
       results: [{
@@ -41,6 +48,24 @@ class FakeRecallClient {
           eviction_cue: "summary cue",
         })),
       }],
+    };
+  }
+}
+
+function encodeMetadata(value: Record<string, unknown>): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(value));
+}
+
+class CollectionRecallClient extends FakeRecallClient {
+  constructor(private readonly resultsByCollection: Record<string, FakeSearchResult[]>) {
+    super();
+  }
+
+  override async searchText(params: Record<string, unknown>): Promise<{ results: FakeSearchResult[] }> {
+    this.calls.push({ method: "searchText", params });
+    const collection = typeof params.collection === "string" ? params.collection : "";
+    return {
+      results: this.resultsByCollection[collection] ?? [],
     };
   }
 }
@@ -84,6 +109,154 @@ test("memory_grep defaults to the active session id", async () => {
   assert.equal((result.details as { totalMatches: number }).totalMatches, 1);
   assert.equal(client.calls[0]?.method, "searchText");
   assert.equal(client.calls[0]?.params.collection, "session_summary:active-session");
+  assert.equal(client.calls.length, 1);
+});
+
+test("memory_grep searches the default active session collection for messages", async () => {
+  const client = new CollectionRecallClient({
+    "session_raw:active-session": [],
+    "session:active-session": [{
+      id: "turn-1",
+      score: 0.88,
+      text: "needle inside default session collection",
+      metadataJson: encodeMetadata({ role: "user" }),
+    }],
+  });
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "needle", scope: "messages" });
+  const details = result.details as { totalMatches: number; turns: Array<{ turnId: string; snippet: string; role: string; score: number }> };
+
+  assert.equal(details.totalMatches, 1);
+  assert.deepEqual(client.calls.map((call) => call.params.collection), [
+    "session_raw:active-session",
+    "session:active-session",
+  ]);
+  assert.deepEqual(details.turns, [{
+    turnId: "turn-1",
+    snippet: "needle inside default session collection",
+    role: "user",
+    score: 0.88,
+  }]);
+});
+
+test("memory_grep keeps independent summary and message budgets", async () => {
+  const client = new CollectionRecallClient({
+    "session_summary:active-session": [{
+      id: "sum_1",
+      score: 0.7,
+      text: "needle inside summary text",
+      metadataJson: encodeMetadata({ eviction_cue: "summary cue" }),
+    }],
+    "session_raw:active-session": [],
+    "session:active-session": [{
+      id: "turn-1",
+      score: 0.99,
+      text: "needle inside default session collection",
+      metadataJson: encodeMetadata({ role: "assistant" }),
+    }],
+  });
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "needle", scope: "both", limit: 1 });
+  const details = result.details as {
+    totalMatches: number;
+    summaries: Array<{ summaryId: string; snippet: string; score: number; evictionCue?: string }>;
+    turns: Array<{ turnId: string; snippet: string; role: string; score: number }>;
+  };
+
+  assert.deepEqual(client.calls.map((call) => call.params.collection), [
+    "session_summary:active-session",
+    "session_raw:active-session",
+    "session:active-session",
+  ]);
+  assert.equal(details.totalMatches, 2);
+  assert.deepEqual(details.summaries, [{
+    summaryId: "sum_1",
+    snippet: "needle inside summary text",
+    score: 0.7,
+    evictionCue: "summary cue",
+  }]);
+  assert.deepEqual(details.turns, [{
+    turnId: "turn-1",
+    snippet: "needle inside default session collection",
+    role: "assistant",
+    score: 0.99,
+  }]);
+});
+
+test("memory_grep deduplicates messages only after exact matching", async () => {
+  const client = new CollectionRecallClient({
+    "session_raw:active-session": [{
+      id: "turn-1",
+      score: 0.99,
+      text: "semantic neighbor without the target phrase",
+      metadataJson: encodeMetadata({ role: "user" }),
+    }],
+    "session:active-session": [{
+      id: "turn-1",
+      score: 0.5,
+      text: "needle appears in the default session collection",
+      metadataJson: encodeMetadata({ role: "assistant" }),
+    }],
+  });
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "needle", scope: "messages" });
+  const details = result.details as { totalMatches: number; turns: Array<{ turnId: string; snippet: string; role: string; score: number }> };
+
+  assert.equal(details.totalMatches, 1);
+  assert.deepEqual(details.turns, [{
+    turnId: "turn-1",
+    snippet: "needle appears in the default session collection",
+    role: "assistant",
+    score: 0.5,
+  }]);
+});
+
+test("memory_grep keeps the highest-scored duplicate message hit", async () => {
+  const client = new CollectionRecallClient({
+    "session_raw:active-session": [{
+      id: "turn-1",
+      score: 0.71,
+      text: "needle inside duplicate raw collection",
+      metadataJson: encodeMetadata({ role: "user" }),
+    }],
+    "session:active-session": [{
+      id: "turn-1",
+      score: 0.88,
+      text: "needle inside default session collection",
+      metadataJson: encodeMetadata({ role: "user" }),
+    }],
+  });
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "needle", scope: "messages" });
+  const details = result.details as { totalMatches: number; turns: Array<{ turnId: string; snippet: string; role: string; score: number }> };
+
+  assert.equal(details.totalMatches, 1);
+  assert.deepEqual(details.turns, [{
+    turnId: "turn-1",
+    snippet: "needle inside default session collection",
+    role: "user",
+    score: 0.88,
+  }]);
 });
 
 test("memory_expand defaults to the active session id", async () => {

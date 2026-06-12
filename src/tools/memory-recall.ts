@@ -49,6 +49,13 @@ type MemoryGrepDetails = {
   truncated: boolean;
 };
 
+type GrepSearchResult = {
+  id: string;
+  score: number;
+  text: string;
+  metadataJson?: Uint8Array;
+};
+
 // ── Constants ──
 
 const MAX_EXPAND_TOKENS = 8000;
@@ -181,6 +188,30 @@ function safeMatch(text: string, pattern: string, mode: "regex" | "text"): boole
   } catch {
     return text.toLowerCase().includes(pattern.toLowerCase());
   }
+}
+
+function parseGrepMetadata(result: GrepSearchResult): Record<string, unknown> {
+  if (result.metadataJson && result.metadataJson.length > 0) {
+    try {
+      return JSON.parse(new TextDecoder().decode(result.metadataJson)) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function readGrepRole(result: GrepSearchResult): string {
+  const meta = parseGrepMetadata(result);
+  return typeof meta.role === "string" ? meta.role : "unknown";
+}
+
+function buildMessageGrepCollections(sessionId: string): string[] {
+  const collections = [`session_raw:${sessionId}`];
+  if (sessionId.length > 0) {
+    collections.push(`session:${sessionId}`);
+  }
+  return collections;
 }
 
 // ── Tool factories ──
@@ -432,26 +463,38 @@ export function createMemoryGrepTool(
 
         if (scope === "messages" || scope === "both") {
           const searchK = Math.min(limit * 3, 200);
-          const turnResults = await client.searchText({
-            collection: `session_raw:${sessionId}`,
-            text: pattern,
-            k: searchK,
-          });
-          for (const r of (turnResults.results ?? [])) {
-            if (turns.length >= limit || totalChars >= MAX_GREP_CHARS) break;
-            if (!safeMatch(r.text, pattern, mode)) continue;
-            totalMatches++;
-            const snippet = truncateSnippet(r.text);
-            let role = "unknown";
-            if (r.metadataJson && r.metadataJson.length > 0) {
-              try {
-                const decoder = new TextDecoder();
-                const meta = JSON.parse(decoder.decode(r.metadataJson)) as Record<string, unknown>;
-                role = typeof meta.role === "string" ? meta.role : "unknown";
-              } catch { /* best-effort */ }
+          const bestTurnById = new Map<string, {
+            turnId: string;
+            snippet: string;
+            role: string;
+            score: number;
+          }>();
+          for (const collection of buildMessageGrepCollections(sessionId)) {
+            const turnResults = await client.searchText({
+              collection,
+              text: pattern,
+              k: searchK,
+            });
+            for (const r of (turnResults.results ?? [])) {
+              if (!safeMatch(r.text, pattern, mode)) continue;
+              const candidate = {
+                turnId: r.id,
+                snippet: truncateSnippet(r.text),
+                role: readGrepRole(r),
+                score: r.score,
+              };
+              const existing = bestTurnById.get(r.id);
+              if (!existing || candidate.score > existing.score) {
+                bestTurnById.set(r.id, candidate);
+              }
             }
-            turns.push({ turnId: r.id, snippet, role, score: r.score });
-            totalChars += snippet.length;
+          }
+          const dedupedTurns = [...bestTurnById.values()].sort((a, b) => b.score - a.score);
+          for (const turn of dedupedTurns) {
+            if (turns.length >= limit || totalChars >= MAX_GREP_CHARS) break;
+            totalMatches++;
+            turns.push(turn);
+            totalChars += turn.snippet.length;
           }
         }
 
