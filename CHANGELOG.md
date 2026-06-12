@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.9.8 — 2026-06-11
+
+**Contributor:** xDarkicex — [PR #339](https://github.com/xDarkicex/openclaw-memory-libravdb/pull/339)
+**Signed off by:** xDarkicex
+
+### Removed
+- **Cursor-gated tool protocol gate system (Gates 1-4) from `normalizeAssembleResult`.** Commit `78da771` (v1.9.1) added live tool protocol preservation for Qwen 3.5 32B INT4 that intercepted the daemon's echoed `visibleMsgs` and re-injected source-format tool messages via cursor tracking. This caused two regressions for all other models:
+  - **T0 race (~50% hit rate on tool-call turns):** v1.9.0 made `afterTurn` async. Gate 1 cursor computation raced against pending daemon ingestion, producing intermittent duplicate tool execution and tool protocol loss. The model would re-execute tools it had already run or forget what tools returned.
+  - **Content-based dedup gap:** The dedup key (`${role}\0${content}`) missed the same tool call formatted differently between daemon-flattened `[tool:name]` and source-format JSON blocks.
+
+### Changed
+- `normalizeAssembleResult()` now uses `sourceMessages` (`args.messages`) directly as the transcript. The daemon's `visibleMsgs` (which strips `toolResult`/`tool` roles via `normalizeMemoryMessage`) is ignored. Tool protocol passes through intact with no re-classification or re-injection.
+- Daemon memory context is injected via `systemPromptAddition` only — the industry-standard pattern used by mem0, lossless-claw, and supermemory.
+- Async ingestion drain added before daemon RPC calls with 5s cancellable timeout, preventing cursor-staleness from the `afterTurn` queue.
+
+### Fixed
+- **Tool call loop regression** reported by Peetiegonzalez and others: agents no longer re-execute completed tool workflows on innocuous follow-up messages ("not bad", "thanks").
+- **Tool protocol amnesia:** agents now remember their tool calls and results across turns because the full transcript (including `toolResult` messages) is preserved.
+
+### Removed (26 functions/structures)
+`consumeLiveToolAtCursor`, `findLiveToolSourceInCurrentTurn`, `findMatchingSourceMessageIndex`, `getSourceMessageIndex`, `SourceIndex`, `sourceMessageIndexCache`, `getNormalizedSourceContent`, `normalizedContentCache`, `getHistoricalToolSource`, `isFlattenedHistoricalToolActivity`, `shouldRetainHistoricalToolMemory`, `isHistoricalAssistantActionPromise`, `isProviderReplayRole`, `sanitizeProviderReplayMessage`, `sanitizeProviderReplayMessages`, `getToolResultCallId`, `getKernelToolCallIds`, `hasLiveToolCallBefore`, `hasCompletedAssistantResponseAfter`, `toolProtocolBeforeCache`, `getToolProtocolBeforeCache`, `hasToolProtocolBeforeSinceLastUser`, `findSourceMessageIndex`, `isHistoricalToolDerivedAssistantReply`, `preserveLiveToolProtocolMessage`, and 2 unused regex constants.
+
+### Tested
+- 72/72 unit tests passing
+- Live-tested against [tool-bench-2](https://github.com/Marvinthebored/tool-bench-2) (Minimax M2.7, 6-stage pipeline, 74.7s): 0 tool duplications, "not bad" repro fixed, full cross-turn memory recall
+
 ## v1.9.7 — 2026-06-10
 
 **Contributor:** xDarkicex — [PR #338](https://github.com/xDarkicex/openclaw-memory-libravdb/pull/338)
