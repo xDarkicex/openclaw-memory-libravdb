@@ -167,6 +167,34 @@ test("memory_grep searches the default active session collection for messages", 
   }]);
 });
 
+test("memory_grep treats non-object message metadata as missing", async () => {
+  const client = new CollectionRecallClient({
+    "session_raw:active-session": [{
+      id: "turn-1",
+      score: 0.77,
+      text: "needle survives non-object metadata",
+      metadataJson: new TextEncoder().encode("null"),
+    }],
+    "session:active-session": [],
+  });
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "needle", scope: "messages" });
+  const details = result.details as { totalMatches: number; turns: Array<{ turnId: string; snippet: string; role: string; score: number }> };
+
+  assert.equal(details.totalMatches, 1);
+  assert.deepEqual(details.turns, [{
+    turnId: "turn-1",
+    snippet: "needle survives non-object metadata",
+    role: "unknown",
+    score: 0.77,
+  }]);
+});
+
 test("memory_grep keeps independent summary and message budgets", async () => {
   const client = new CollectionRecallClient({
     "session_summary:active-session": [{

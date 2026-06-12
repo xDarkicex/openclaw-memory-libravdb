@@ -193,7 +193,10 @@ function safeMatch(text: string, pattern: string, mode: "regex" | "text"): boole
 function parseGrepMetadata(result: GrepSearchResult): Record<string, unknown> {
   if (result.metadataJson && result.metadataJson.length > 0) {
     try {
-      return JSON.parse(new TextDecoder().decode(result.metadataJson)) as Record<string, unknown>;
+      const parsed = JSON.parse(new TextDecoder().decode(result.metadataJson)) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
     } catch {
       return {};
     }
