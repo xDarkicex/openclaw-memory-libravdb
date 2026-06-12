@@ -2308,8 +2308,9 @@ export function buildContextEngineFactory(
           // short timeout so a stuck daemon doesn't block assemble indefinitely.
           const pending = asyncIngestionQueues.get(sessionId);
           if (pending) {
+            let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
             const drainTimeout = new Promise<void>((resolve) => {
-              setTimeout(() => {
+              timeoutHandle = setTimeout(() => {
                 logger?.warn?.(
                   `LibraVDB async ingestion drain timed out for session ${sessionId}, proceeding`,
                 );
@@ -2317,6 +2318,7 @@ export function buildContextEngineFactory(
               }, 5_000);
             });
             await Promise.race([pending, drainTimeout]);
+            clearTimeout(timeoutHandle);
           }
 
           // BeforeTurnKernel RPC call (reuses the same client)
