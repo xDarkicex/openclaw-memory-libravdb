@@ -207,11 +207,8 @@ function readGrepRole(result: GrepSearchResult): string {
 }
 
 function buildMessageGrepCollections(sessionId: string): string[] {
-  const collections = [`session_raw:${sessionId}`];
-  if (sessionId.length > 0) {
-    collections.push(`session:${sessionId}`);
-  }
-  return collections;
+  if (sessionId.length === 0) return [];
+  return [`session_raw:${sessionId}`, `session:${sessionId}`];
 }
 
 // ── Tool factories ──

@@ -112,6 +112,29 @@ test("memory_grep defaults to the active session id", async () => {
   assert.equal(client.calls.length, 1);
 });
 
+test("memory_grep does not query message collections without a session id", async () => {
+  const client = new CollectionRecallClient({
+    "session_raw:": [{
+      id: "turn-1",
+      score: 0.99,
+      text: "needle in malformed collection",
+      metadataJson: encodeMetadata({ role: "user" }),
+    }],
+  });
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => undefined,
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "needle", scope: "messages" });
+  const details = result.details as { totalMatches: number; turns: Array<{ turnId: string }> };
+
+  assert.equal(details.totalMatches, 0);
+  assert.deepEqual(details.turns, []);
+  assert.equal(client.calls.length, 0);
+});
+
 test("memory_grep searches the default active session collection for messages", async () => {
   const client = new CollectionRecallClient({
     "session_raw:active-session": [],
