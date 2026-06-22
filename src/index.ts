@@ -19,8 +19,17 @@ export const MEMORY_ID = "libravdb-memory";
 const LIGHTWEIGHT_MODES = new Set(["cli-metadata", "setup-only"]);
 const RUNTIME_CLEANUP_SHUTDOWN_REASONS = new Set(["delete"]);
 
-export function shouldShutdownRuntimeForLifecycleCleanup(reason: string): boolean {
-  return RUNTIME_CLEANUP_SHUTDOWN_REASONS.has(reason);
+export function shouldShutdownRuntimeForLifecycleCleanup(
+  reason: string,
+  sessionKey?: string,
+): boolean {
+  // `reason: "delete"` fires for per-session deletes (sessionKey set) as well as
+  // plugin-scoped teardown (no sessionKey). The vector-service runtime is a
+  // process-wide singleton shared by every session's context engine, memory tools,
+  // and compaction provider, so it must only be torn down on a plugin-scoped cleanup.
+  // Shutting it down on a single session delete leaves it permanently "shut down"
+  // and breaks memory ingestion for every other live session until a gateway restart.
+  return RUNTIME_CLEANUP_SHUTDOWN_REASONS.has(reason) && sessionKey === undefined;
 }
 
 export function register(api: OpenClawPluginApi) {
@@ -228,7 +237,7 @@ export function register(api: OpenClawPluginApi) {
     id: "libravdb-shutdown",
     description: "Shut down the vector service runtime on terminal plugin cleanup",
     async cleanup(ctx) {
-      if (shouldShutdownRuntimeForLifecycleCleanup(ctx.reason)) {
+      if (shouldShutdownRuntimeForLifecycleCleanup(ctx.reason, ctx.sessionKey)) {
         logger.info?.(`LibraVDB ${ctx.reason} — shutting down runtime`);
         await runtime.shutdown();
       } else if (ctx.reason === "disable") {

@@ -218,5 +218,18 @@ test("runtime lifecycle cleanup preserves context-engine runtime on disable", ()
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("disable"), false);
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("reset"), false);
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("restart"), false);
+  // Plugin-scoped delete (no sessionKey) tears the singleton runtime down.
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("delete"), true);
+});
+
+test("runtime lifecycle cleanup preserves runtime on per-session delete", () => {
+  // A session delete fires reason "delete" WITH a sessionKey. The runtime is a
+  // process-wide singleton, so it must NOT be shut down — doing so breaks memory
+  // ingestion for every other live session until a gateway restart.
+  assert.equal(
+    shouldShutdownRuntimeForLifecycleCleanup("delete", "agent:main:session:abc"),
+    false,
+  );
+  // Plugin-scoped delete (sessionKey absent) still tears the singleton down.
+  assert.equal(shouldShutdownRuntimeForLifecycleCleanup("delete", undefined), true);
 });
