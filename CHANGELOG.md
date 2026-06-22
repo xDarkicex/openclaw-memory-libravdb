@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.9.9 — 2026-06-22
+
+**Contributor:** Marvinthebored — [PR #356](https://github.com/xDarkicex/openclaw-memory-libravdb/pull/356)
+**Signed off by:** xDarkicex
+
+### Fixed
+- **Gateway-wide memory ingestion failure on session delete:** The plugin previously shut down the shared vector-service runtime whenever a per-session `delete` event was received (e.g., when a temporary subagent or cron session ended). Because the runtime is a process-wide singleton, this silently broke memory ingestion for all other active sessions until a manual gateway restart. The cleanup lifecycle hook now explicitly checks for `sessionKey === undefined` to distinguish between a per-session delete and a true plugin-scoped teardown, keeping the shared runtime alive for other sessions.
+
 ## v1.9.8 — 2026-06-11
 
 **Contributor:** xDarkicex — [PR #339](https://github.com/xDarkicex/openclaw-memory-libravdb/pull/339)
