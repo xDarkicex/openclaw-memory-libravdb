@@ -29,7 +29,7 @@ export function shouldShutdownRuntimeForLifecycleCleanup(
   // and compaction provider, so it must only be torn down on a plugin-scoped cleanup.
   // Shutting it down on a single session delete leaves it permanently "shut down"
   // and breaks memory ingestion for every other live session until a gateway restart.
-  return RUNTIME_CLEANUP_SHUTDOWN_REASONS.has(reason) && !sessionKey;
+  return RUNTIME_CLEANUP_SHUTDOWN_REASONS.has(reason) && sessionKey === undefined;
 }
 
 export function register(api: OpenClawPluginApi) {
