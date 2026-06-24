@@ -2192,7 +2192,15 @@ export function buildContextEngineFactory(
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
       });
-      const messages = normalizeKernelMessages(args.messages);
+      // Only normalize the recent tail: the daemon already stores every
+      // turn and can pull older messages from its own session store.
+      // Processing the full history on every turn is O(N²) and the
+      // primary source of growing turn latency.
+      const normalizeWindow = 50;
+      const recentMessages = args.messages.length > normalizeWindow
+        ? args.messages.slice(-normalizeWindow)
+        : args.messages;
+      const messages = normalizeKernelMessages(recentMessages);
       const strippedPrompt = args.prompt
         ? normalizeKernelContent(args.prompt, { retainOpenClawContext: false })
         : "";
