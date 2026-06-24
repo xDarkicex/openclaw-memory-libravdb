@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Persistent vector memory with three-tier hybrid scoring",
-  "version": "1.9.10-beta.5",
+  "version": "1.9.10-beta.6",
   "kind": [
     "memory",
     "context-engine"

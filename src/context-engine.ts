@@ -60,6 +60,7 @@ const OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \
 
 const OPENCLAW_METADATA_HEADERS = [
   "Conversation info (untrusted metadata):",
+  "Conversation context (untrusted, chronological, selected for current message):",
   "Sender (untrusted metadata):",
   "Thread starter (untrusted, for context):",
   "Reply target of current user message (untrusted, for context):",
