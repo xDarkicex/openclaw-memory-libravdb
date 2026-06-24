@@ -2277,7 +2277,7 @@ export function buildContextEngineFactory(
         btLog(`BeforeTurnKernel skipped: non-interactive trigger sessionId=${sessionId}`);
       } else {
         beforeTurnQueryHint = extractQueryHint(messages, (text) =>
-          typeof text === "string" ? text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "").trim() : text,
+          typeof text === "string" ? stripOpenClawUntrustedMetadataEnvelope(text).trim() : text,
         );
         if (!beforeTurnQueryHint) {
           btLog(`BeforeTurnKernel skipped: no query hint extracted sessionId=${sessionId}`);
