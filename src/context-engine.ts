@@ -302,12 +302,12 @@ function normalizeKernelContent(content: unknown, options: KernelContentNormaliz
  */
 export const FLUSH_ASYNC_INGESTION = Symbol("flushAsyncIngestion");
 
-let maxOptimizationMemoCacheSize = 1000;
+let maxOptimizationMemoCacheSize = 50000;
 const metadataEnvelopeCache = new Map<string, string>();
 const metadataEnvelopeRetainCache = new Map<string, string>();
 
 export function setOptimizationMemoCacheSize(size: number) {
-  maxOptimizationMemoCacheSize = size > 0 ? size : 1000;
+  maxOptimizationMemoCacheSize = size > 0 ? size : 50000;
 }
 
 /**
@@ -2258,19 +2258,31 @@ export function buildContextEngineFactory(
       // BeforeTurnKernel: semantic memory retrieval against the current user query.
       // Skip for automated triggers (heartbeat, cron, memory, overflow) — saves
       // an embedding call and RPC round trip on non-interactive turns.
+      const btLog = cfg.beforeTurnDebug
+        ? (msg: string) => logger.info?.(msg)
+        : (_msg: string) => {};
       let beforeTurnPredictions: BeforeTurnKernelResponse["predictions"] | null = null;
       let beforeTurnQueryHint: string | null = null;
-      if (cfg.beforeTurnEnabled !== false && isInteractiveTrigger(sessionId)) {
+      if (cfg.beforeTurnEnabled === false) {
+        btLog(`BeforeTurnKernel disabled by config sessionId=${sessionId}`);
+      } else if (!isInteractiveTrigger(sessionId)) {
+        btLog(`BeforeTurnKernel skipped: non-interactive trigger sessionId=${sessionId}`);
+      } else {
         beforeTurnQueryHint = extractQueryHint(messages, (text) =>
           typeof text === "string" ? text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "").trim() : text,
         );
-        if (beforeTurnQueryHint && !isNewUserTurn(messages as Parameters<typeof isNewUserTurn>[0])) {
+        if (!beforeTurnQueryHint) {
+          btLog(`BeforeTurnKernel skipped: no query hint extracted sessionId=${sessionId}`);
+        } else if (!isNewUserTurn(messages as Parameters<typeof isNewUserTurn>[0])) {
+          btLog(`BeforeTurnKernel skipped: not a new user turn sessionId=${sessionId}`);
           beforeTurnQueryHint = null;
         }
         if (beforeTurnQueryHint && isBeforeTurnCircuitOpen(sessionId)) {
+          btLog(`BeforeTurnKernel skipped: circuit open sessionId=${sessionId}`);
           beforeTurnQueryHint = null;
         }
         if (beforeTurnQueryHint) {
+          btLog(`BeforeTurnKernel calling sessionId=${sessionId} hint=${beforeTurnQueryHint.slice(0, 50)}`);
           // Include message count in cache key so identical queries
           // in different turns don't return stale predictions.
           const turnScopedHint = `${messages.length}:${beforeTurnQueryHint}`;

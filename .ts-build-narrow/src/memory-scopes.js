@@ -1,0 +1,59 @@
+const SESSION_KEY_NAMESPACE_PREFIX = "session-key:";
+const AGENT_ID_NAMESPACE_PREFIX = "agent-id:";
+const USER_COLLECTION_PREFIX = "user:";
+/** Reserved prefixes that must not appear in an explicit userId,
+ *  to prevent namespace collision with auto-derived namespaces. */
+const RESERVED_NAMESPACE_PREFIXES = [SESSION_KEY_NAMESPACE_PREFIX, AGENT_ID_NAMESPACE_PREFIX, USER_COLLECTION_PREFIX];
+/** Valid collection names: alphanumeric, underscores, hyphens, dots, colons, at-signs, hashes.
+ *  Must start with a letter. Max 128 characters. */
+const COLLECTION_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_.:@#-]{0,127}$/;
+/** Validate and return a collection-safe namespace.
+ *  Throws on invalid characters or length. */
+export function validateNamespace(name) {
+    if (!COLLECTION_NAME_RE.test(name)) {
+        throw new Error(`Invalid collection namespace: "${name}". Must match ${COLLECTION_NAME_RE.source}`);
+    }
+    return name;
+}
+export function resolveDurableNamespace(params) {
+    const explicitUserId = firstNonEmpty(params.userId);
+    if (explicitUserId) {
+        for (const prefix of RESERVED_NAMESPACE_PREFIXES) {
+            if (explicitUserId.startsWith(prefix)) {
+                throw new Error(`Invalid userId "${explicitUserId}": must not start with reserved prefix "${prefix}"`);
+            }
+        }
+        return validateNamespace(explicitUserId);
+    }
+    const sessionKey = firstNonEmpty(params.sessionKey);
+    if (sessionKey)
+        return validateNamespace(`${SESSION_KEY_NAMESPACE_PREFIX}${sessionKey}`);
+    const agentId = firstNonEmpty(params.agentId);
+    if (agentId)
+        return validateNamespace(`${AGENT_ID_NAMESPACE_PREFIX}${agentId}`);
+    const fallback = firstNonEmpty(params.fallback);
+    if (fallback)
+        return validateNamespace(fallback);
+    return "default";
+}
+export function resolveUserCollection(userId) {
+    const namespace = firstNonEmpty(userId);
+    if (!namespace) {
+        throw new Error("Invalid user collection namespace: userId must be non-empty");
+    }
+    validateNamespace(namespace);
+    return validateNamespace(`${USER_COLLECTION_PREFIX}${namespace}`);
+}
+export function resolveScopes(params) {
+    return {
+        session: params.sessionId ? `session:${params.sessionId}` : "session:default",
+        user: params.crossSessionRecall !== false ? resolveUserCollection(params.userId) : null,
+        global: "global",
+    };
+}
+function firstNonEmpty(value) {
+    if (typeof value !== "string")
+        return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+}

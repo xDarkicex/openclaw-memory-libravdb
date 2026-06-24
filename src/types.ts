@@ -132,6 +132,8 @@ export interface PluginConfig {
   grpcEndpointTlsMode?: "auto" | "tls" | "insecure";
   /** Whether BeforeTurnKernel retrieval is enabled. Default: true */
   beforeTurnEnabled?: boolean;
+  /** Enable verbose BeforeTurnKernel diagnostic logging. Default: false */
+  beforeTurnDebug?: boolean;
   /** Timeout in milliseconds for the BeforeTurnKernel gRPC call. Default: 5000 */
   beforeTurnTimeoutMs?: number;
   /** Timeout in milliseconds for the AssembleContextInternal gRPC call. Default: 30000 */
