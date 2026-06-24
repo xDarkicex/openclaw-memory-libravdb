@@ -1742,7 +1742,7 @@ export function buildContextEngineFactory(
   function formatRetrievedMemory(predictions: BeforeTurnKernelResponse["predictions"]): string {
     if (!predictions?.length) return "";
     const items = predictions.map((p) =>
-      `<memory_item>${escapeXml(p.text ?? "")}</memory_item>`
+      `<memory_item>${escapeXml(stripOpenClawUntrustedMetadataEnvelope(p.text ?? ""))}</memory_item>`
     ).join("\n");
     return [
       "<context_memory>",
