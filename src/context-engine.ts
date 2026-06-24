@@ -1739,10 +1739,19 @@ export function buildContextEngineFactory(
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
+  function cleanPredictionText(text: string): string {
+    // Strip the [OpenClaw context: key=value; ...] routing prefix line.
+    const stripped = text.replace(OPENCLAW_CONTEXT_PREFIX_RE, "").trimStart();
+    // Then run the standard metadata envelope stripping.
+    return stripOpenClawUntrustedMetadataEnvelope(stripped);
+  }
+
+  const OPENCLAW_CONTEXT_PREFIX_RE = /^\[OpenClaw context: [^\]]*\][\r\n]*/;
+
   function formatRetrievedMemory(predictions: BeforeTurnKernelResponse["predictions"]): string {
     if (!predictions?.length) return "";
     const items = predictions.map((p) =>
-      `<memory_item>${escapeXml(stripOpenClawUntrustedMetadataEnvelope(p.text ?? ""))}</memory_item>`
+      `<memory_item>${escapeXml(cleanPredictionText(p.text ?? ""))}</memory_item>`
     ).join("\n");
     return [
       "<context_memory>",
