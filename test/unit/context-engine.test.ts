@@ -577,6 +577,51 @@ test("context engine assemble strips OpenClaw untrusted metadata envelope from p
   assert.equal(call.params.prompt, "@User-1234 Reply with exactly PONG.");
 });
 
+test("context engine assemble uses latest selected-context user utterance as retrieval query", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const marker = "SELECTED_CONTEXT_MARKER_1234567890";
+  const latestUserText = `What does ${marker} mean?`;
+  const staleContext = Array.from({ length: 80 }, (_, index) =>
+    `#${3500 + index} Wed 2026-06-24 10:${String(index % 60).padStart(2, "0")} PDT OpenClaw: stale assistant context ${index} ${"x".repeat(80)}`
+  ).join("\n");
+  const selectedPrompt = [
+    "Conversation context (untrusted, chronological, selected for current message):",
+    staleContext,
+    "#3588 Wed 2026-06-24 10:58 PDT Nikoloas: well its 15 DRIVING across bridge brah emeryville and union square are not walking distance",
+    "#3589 Wed 2026-06-24 10:59 PDT OpenClaw: fair enough. bay bridge traffic depending.",
+    `#3590 Wed 2026-06-24 11:00 PDT Nikoloas: ${latestUserText}`,
+  ].join("\n");
+
+  assert.ok(selectedPrompt.length > 5000, "fixture should model a large selected-context prompt");
+
+  await engine.assemble({
+    sessionId: "s1-selected-context",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", selectedPrompt)],
+    prompt: selectedPrompt,
+    tokenBudget: 50000,
+  });
+
+  const call = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(call, "assemble_context_internal RPC was called");
+  assert.equal(call.params.prompt, latestUserText);
+  assert.ok(String(call.params.prompt).length < 1000);
+
+  const exactRecallCall = client.calls.find((c) =>
+    c.method === "searchTextCollections" && c.params.text === marker
+  );
+  assert.ok(exactRecallCall, "exact recall should search marker from the normalized retrieval query");
+  assert.equal(
+    client.calls.some((c) =>
+      c.method === "searchTextCollections" &&
+      typeof c.params.text === "string" &&
+      c.params.text.includes("Conversation context (untrusted")
+    ),
+    false,
+  );
+});
+
 test("context engine assemble keeps live current-turn tool protocol visible", async () => {
   const client = new FakeClient();
   const messages = [
@@ -2468,5 +2513,3 @@ test("context engine assemble drain handles empty queue gracefully", async () =>
 // consecutive cursor positions, exercising the hasAllToolIdsSeen / recordToolIds
 // path directly.
 // ---------------------------------------------------------------------------
-
-

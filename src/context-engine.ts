@@ -57,6 +57,10 @@ const EXACT_RECALL_MAX_TOKENS = 4;
 const RESERVED_CURRENT_TURN_TOKENS = 150;
 const AFTER_TURN_INGEST_MAX_TOKENS = 2048;
 const OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] */;
+const SELECTED_CONTEXT_HEADER = "Conversation context (untrusted, chronological, selected for current message):";
+const RETRIEVAL_QUERY_MAX_CHARS = 1000;
+const SELECTED_CONTEXT_TURN_RE = /^#\d+\s+[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+\S+\s+([^:\n]{1,80}):\s*(.*)$/;
+const ASSISTANT_SPEAKER_RE = /\b(?:assistant|openclaw|z3robot|bot)\b/i;
 
 const OPENCLAW_METADATA_HEADERS = [
   "Conversation info (untrusted metadata):",
@@ -291,6 +295,57 @@ function normalizeKernelContent(content: unknown, options: KernelContentNormaliz
   return stripOpenClawUntrustedMetadataEnvelope(text, {
     retainContext: options.retainOpenClawContext === true,
   });
+}
+
+function normalizeRetrievalQuery(primaryText: string, fallbackText = ""): string {
+  const primary = normalizeRetrievalCandidate(primaryText);
+  if (primary) return primary;
+  return normalizeRetrievalCandidate(fallbackText);
+}
+
+function normalizeRetrievalCandidate(text: string): string {
+  const normalized = text
+    .replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+  if (!normalized) return "";
+
+  const selected = extractLatestSelectedContextUtterance(normalized);
+  const candidate = selected || normalized;
+  return capRetrievalQuery(candidate.replace(/\s+/g, " ").trim());
+}
+
+function extractLatestSelectedContextUtterance(text: string): string {
+  if (!text.startsWith(SELECTED_CONTEXT_HEADER)) return "";
+
+  type Turn = { speaker: string; text: string[] };
+  const turns: Turn[] = [];
+  for (const rawLine of text.slice(SELECTED_CONTEXT_HEADER.length).split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(SELECTED_CONTEXT_TURN_RE);
+    if (match) {
+      turns.push({ speaker: match[1].trim(), text: [match[2].trim()] });
+      continue;
+    }
+    if (turns.length > 0) {
+      turns[turns.length - 1].text.push(line);
+    }
+  }
+
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    const content = turn.text.join(" ").trim();
+    if (content && !ASSISTANT_SPEAKER_RE.test(turn.speaker)) {
+      return content;
+    }
+  }
+  return "";
+}
+
+function capRetrievalQuery(text: string): string {
+  if (text.length <= RETRIEVAL_QUERY_MAX_CHARS) return text;
+  return text.slice(text.length - RETRIEVAL_QUERY_MAX_CHARS);
 }
 
 /**
@@ -2227,6 +2282,8 @@ export function buildContextEngineFactory(
       const isPostToolContinuation = lastUserIndex >= 0 && lastUserIndex < messages.length - 1
         && hasLiveToolProtocolAfterLastUser(messages, lastUserIndex);
       const lastUserMessage = findLastReplaySafeUserMessage(messages);
+      const latestUserContent = typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
+      const retrievalQuery = normalizeRetrievalQuery(strippedPrompt, latestUserContent);
       const reservedCurrentTurnTokens = lastUserMessage
         ? approximateMessageTokens(lastUserMessage)
         : RESERVED_CURRENT_TURN_TOKENS;
@@ -2380,7 +2437,7 @@ export function buildContextEngineFactory(
               ]);
               const maxMemories = cfg.beforeTurnMaxMemories ?? 5;
               const clamped = btResult.predictions && btResult.predictions.length > maxMemories
-                ? selectTopByRelevance(btResult.predictions, strippedPrompt, maxMemories)
+                ? selectTopByRelevance(btResult.predictions, retrievalQuery, maxMemories)
                 : btResult.predictions;
               turnCache.set(sessionId, `${messages.length}:${beforeTurnQueryHint}`, { predictions: clamped });
               beforeTurnPredictions = clamped;
@@ -2399,7 +2456,7 @@ export function buildContextEngineFactory(
               sessionId,
               sessionKey: args.sessionKey,
               userId,
-              prompt: strippedPrompt,
+              prompt: retrievalQuery,
               messages,
               tokenBudget: args.tokenBudget,
               config: buildAssemblyConfig(args.tokenBudget),
@@ -2423,7 +2480,7 @@ export function buildContextEngineFactory(
             : assembled;
           enforced = enforceTokenBudgetInvariant(
             await augmentWithExactRecall(withContinuity, {
-              queryText: strippedPrompt || (messages[messages.length - 1]?.content ?? ""),
+              queryText: retrievalQuery,
               userId,
               sessionId,
               tokenBudget: args.tokenBudget,
