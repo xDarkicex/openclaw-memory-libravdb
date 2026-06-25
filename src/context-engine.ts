@@ -66,6 +66,37 @@ const RETRIEVAL_QUERY_MAX_CHARS = 1000;
 const SELECTED_CONTEXT_TURN_RE = /^#\d+\s+[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+\S+\s+([^:\n]{1,80}):\s*(.*)$/;
 const ASSISTANT_SPEAKER_RE = /\b(?:assistant|openclaw|z3robot|bot)\b/i;
 
+// Multi-speaker envelope regex: matches [HH:MM] Speaker: text
+const MULTI_SPEAKER_LINE_RE = /^\[\d{2}:\d{2}\]\s+(\S[^:]{0,80}):\s/;
+
+export interface Speaker {
+  name: string;
+  displayName: string;
+}
+
+export function extractSpeakers(
+  messages: OpenClawCompatibleMessage[],
+): Speaker[] {
+  const seen = new Set<string>();
+  const speakers: Speaker[] = [];
+  for (const msg of messages) {
+    if (msg.role !== "user") continue;
+    const text = normalizeKernelContent(msg.content);
+    for (const line of text.split("\n")) {
+      const match = line.match(MULTI_SPEAKER_LINE_RE);
+      if (match) {
+        const displayName = match[1].trim();
+        const name = displayName.toLowerCase();
+        if (name && !ASSISTANT_SPEAKER_RE.test(name) && !seen.has(name)) {
+          seen.add(name);
+          speakers.push({ name, displayName });
+        }
+      }
+    }
+  }
+  return speakers;
+}
+
 const OPENCLAW_METADATA_HEADERS = [
   "Conversation info (untrusted metadata):",
   "Sender (untrusted metadata):",

@@ -37,6 +37,8 @@ import type {
   IngestMarkdownDocumentResponse,
   IngestMessageKernelRequest,
   IngestMessageKernelResponse,
+  ListByMetaRequest,
+  ListByMetaResponse,
   ListCollectionRequest,
   ListCollectionResponse,
   ListLifecycleJournalRequest,
@@ -535,6 +537,13 @@ export class LibravDBClient {
   ): Promise<GetUserCardResponse> {
     this.guardOpen();
     return this.client.getUserCard(req);
+  }
+
+  async listByMeta(
+    req: PartialMessage<ListByMetaRequest>,
+  ): Promise<ListByMetaResponse> {
+    this.guardOpen();
+    return this.client.listByMeta(req);
   }
 
   close(): void {

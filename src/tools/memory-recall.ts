@@ -608,3 +608,69 @@ export function createGetUserCardTool(
     },
   };
 }
+
+// ── list_user_cards ─────────────────────────────────────────────────
+
+type ListUserCardsDetails = {
+  users: Array<{
+    user_id: string;
+    preview: string;
+    updated_at?: number;
+    version?: number;
+  }>;
+  total: number;
+  error?: string;
+};
+
+export function createListUserCardsTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "list_user_cards",
+    label: "List User Cards",
+    description:
+      "List every person you have a user card for. Returns user IDs and card previews. " +
+      "Use this when asked 'who do you know?' or when you need to see the full roster. " +
+      "For detailed information about a specific person, use get_user_card.",
+    parameters: { type: "object", additionalProperties: false, properties: {} } as const,
+    execute: async (_toolCallId: string, _rawParams: unknown): Promise<ToolResult<ListUserCardsDetails>> => {
+      try {
+        const client = await getClient();
+        const resp = await client.listByMeta({
+          collection: "",
+          key: "type",
+          value: "user_card",
+        });
+        const users: ListUserCardsDetails["users"] = [];
+        for (const result of resp.results) {
+          let userId = "";
+          let preview = "";
+          let updatedAt: number | undefined;
+          let version: number | undefined;
+          if (result.metadataJson && result.metadataJson.length > 0) {
+            try {
+              const decoder = new TextDecoder();
+              const meta = JSON.parse(decoder.decode(result.metadataJson)) as Record<string, unknown>;
+              userId = typeof meta._user_id === "string" ? meta._user_id : "";
+              const cardJson = typeof meta.card_json === "string" ? meta.card_json : null;
+              if (cardJson) {
+                try { preview = JSON.parse(cardJson).card ?? cardJson; }
+                catch { preview = cardJson; }
+                preview = preview.slice(0, 200);
+              }
+              updatedAt = typeof meta.updated_at === "number" ? meta.updated_at : undefined;
+              version = typeof meta.version === "number" ? meta.version : undefined;
+            } catch { /* best-effort metadata parse */ }
+          }
+          if (!userId) continue;
+          users.push({ user_id: userId, preview, updated_at: updatedAt, version });
+        }
+        return jsonResult({ users, total: users.length });
+      } catch (error) {
+        logger.warn?.(`list_user_cards failed: ${formatError(error)}`);
+        return jsonResult({ users: [], total: 0, error: formatError(error) });
+      }
+    },
+  };
+}

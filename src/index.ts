@@ -1,12 +1,13 @@
+import { resolveIdentity } from "./identity.js";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { registerMemoryCli } from "./cli.js";
 import { registerMemoryCliMetadata } from "./cli-descriptors.js";
-import { buildContextEngineFactory, clearSessionTrigger, normalizeKernelMessage, setSessionTrigger } from "./context-engine.js";
+import { buildContextEngineFactory, clearSessionTrigger, extractSpeakers, normalizeKernelMessage, setSessionTrigger } from "./context-engine.js";
 import { createBeforeResetHook, createSessionEndHook } from "./lifecycle-hooks.js";
 import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
-import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool } from "./tools/memory-recall.js";
+import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool, createListUserCardsTool } from "./tools/memory-recall.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import { createLibraVdbMemoryTools } from "./memory-tools.js";
@@ -128,6 +129,10 @@ export function register(api: OpenClawPluginApi) {
       const getClient = runtimeOrNull.getClient;
       return createGetUserCardTool(getClient, logger);
     }, { names: ["get_user_card"] });
+    api.registerTool?.((ctx) => {
+      const getClient = runtimeOrNull.getClient;
+      return createListUserCardsTool(getClient, logger);
+    }, { names: ["list_user_cards"] });
   }
 
   if (isLightweight || isDiscovery) {
@@ -184,7 +189,7 @@ export function register(api: OpenClawPluginApi) {
           error: `LibraVDB embedding is managed by the vector service. Use config embeddingBackend="${entry.id}" to select this backend.`,
         };
       },
-    });
+    } as any);
   }
 
   api.registerContextEngine(
@@ -205,7 +210,7 @@ export function register(api: OpenClawPluginApi) {
       const result = await client.summarizeMessages({
         messages: messages.map((m) => normalizeKernelMessage(m as { role: string; content: unknown; id?: string })) as any,
         maxOutputTokens: 64,
-      });
+      } as any);
       return result.summaryText;
     },
   });
@@ -263,6 +268,60 @@ export function register(api: OpenClawPluginApi) {
     const sessionId = (ctx as Record<string, unknown> | undefined)?.sessionId as string | undefined;
     const trigger = (ctx as Record<string, unknown> | undefined)?.trigger as string | undefined;
     if (sessionId) setSessionTrigger(sessionId, trigger);
+  });
+
+  // Phase 2 — inject speaker cards for non-main users in multi-speaker channels.
+  const MULTI_SPEAKER_PROVIDERS = new Set([
+    "discord", "telegram", "imessage", "slack",
+    "whatsapp", "signal", "matrix", "irc",
+  ]);
+
+  // @ts-expect-error: api.on types declare void return, but the runtime
+  // processes PluginHookBeforePromptBuildResult from before_prompt_build handlers.
+  api.on("before_prompt_build", async (event: unknown, ctx: unknown) => {
+    const c = ctx as Record<string, unknown>;
+    const provider = c.messageProvider as string | undefined;
+    if (!provider || !MULTI_SPEAKER_PROVIDERS.has(provider.toLowerCase())) return;
+
+    const e = event as Record<string, unknown>;
+    const messages = (e.messages ?? []) as Array<{ role: string; content: string | unknown[] }>;
+    const speakers = extractSpeakers(messages);
+    if (speakers.length === 0) return;
+
+    const mainIdentity = resolveIdentity({
+      configUserId: cfg.userId,
+      identityPath: cfg.identityPath,
+      sessionKey: c.sessionKey as string | undefined,
+      logger,
+      noAutoPersist: true,
+    });
+    const mainUserId = mainIdentity.userId.toLowerCase();
+    const otherSpeakers = speakers.filter(s => s.name !== mainUserId);
+    if (otherSpeakers.length === 0) return;
+
+    try {
+      const client = await runtime.getClient();
+      const results = await Promise.all(
+        otherSpeakers.map(async (speaker) => {
+          try {
+            const resp = await client.getUserCard({ userId: speaker.name });
+            if (!resp.cardJson) return null;
+            let card: string;
+            try { card = JSON.parse(resp.cardJson).card ?? resp.cardJson; }
+            catch { card = resp.cardJson; }
+            if (!card || !card.trim()) return null;
+            return `<speaker_context speaker="${speaker.displayName}">\n${card.trim()}\n</speaker_context>`;
+          } catch { return null; }
+        })
+      );
+      const validCards = results.filter((c): c is string => c !== null);
+      if (validCards.length === 0) return;
+      return { appendSystemContext: validCards.join("\n") };
+    } catch (error) {
+      logger.warn?.(
+        `LibraVDB speaker card injection failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   });
 
   api.on("session_end", async (_event, ctx) => {
