@@ -61,6 +61,10 @@ import type {
   SummarizeMessagesResponse,
   ExpandSummaryRequest,
   ExpandSummaryResponse,
+  UpsertUserCardRequest,
+  UpsertUserCardResponse,
+  GetUserCardRequest,
+  GetUserCardResponse,
 } from "@xdarkicex/libravdb-contracts";
 
 export interface LibravDBClientOptions {
@@ -515,6 +519,22 @@ export class LibravDBClient {
   ): Promise<RankCandidatesResponse> {
     this.guardOpen();
     return this.client.rankCandidates(req);
+  }
+
+  // ── User Card ────────────────────────────────────────────────────
+
+  async upsertUserCard(
+    req: PartialMessage<UpsertUserCardRequest>,
+  ): Promise<UpsertUserCardResponse> {
+    this.guardOpen();
+    return this.client.upsertUserCard(req);
+  }
+
+  async getUserCard(
+    req: PartialMessage<GetUserCardRequest>,
+  ): Promise<GetUserCardResponse> {
+    this.guardOpen();
+    return this.client.getUserCard(req);
   }
 
   close(): void {

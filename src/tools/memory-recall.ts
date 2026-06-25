@@ -505,3 +505,106 @@ const RECALL_GUIDANCE = [
 export function memoryRecallPromptSection(): string[] {
   return [...RECALL_GUIDANCE];
 }
+
+// ── User Card tool schemas ──
+
+const UPDATE_USER_CARD_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    user_id: {
+      type: "string",
+      description: "The user ID to update the card for.",
+    },
+    card: {
+      type: "string",
+      description: "Prose description of what you've learned about this person. Write like describing a friend. Include identity, values, history, communication style, triggers, and what matters to them. Merge with previous understanding — don't replace entirely unless the user explicitly contradicts the record. Max ~1200 characters.",
+    },
+  },
+  required: ["user_id", "card"],
+} as const;
+
+const GET_USER_CARD_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    user_id: {
+      type: "string",
+      description: "The user ID to retrieve the card for.",
+    },
+  },
+  required: ["user_id"],
+} as const;
+
+type UpdateUserCardDetails = { ok: boolean; error?: string };
+type GetUserCardDetails = { card?: string | null; updatedAt?: number; version?: number; error?: string };
+
+// ── User Card tool factories ──
+
+export function createUpdateUserCardTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "update_user_card",
+    label: "Update User Card",
+    description:
+      "Write what you've learned about a speaker. Prose format — write like you're describing a friend. " +
+      "Include identity, values, history, communication style, triggers, and what matters to them. " +
+      "This is the canonical record of who they are. If something changes, update it. " +
+      "Merge with previous understanding, don't replace entirely unless the user explicitly contradicts the record.",
+    parameters: UPDATE_USER_CARD_SCHEMA,
+    execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<UpdateUserCardDetails>> => {
+      const params = asParams(rawParams);
+      const userId = readStr(params, "user_id");
+      const card = readStr(params, "card");
+      if (!userId) throw new Error("update_user_card requires user_id");
+      if (!card) throw new Error("update_user_card requires card");
+
+      try {
+        const client = await getClient();
+        const resp = await client.upsertUserCard({
+          userId,
+          cardJson: JSON.stringify({ card, updatedAt: Date.now() }),
+        });
+        return jsonResult({ ok: resp.ok });
+      } catch (error) {
+        logger.warn?.(`update_user_card failed: ${formatError(error)}`);
+        return jsonResult({ error: formatError(error), ok: false });
+      }
+    },
+  };
+}
+
+export function createGetUserCardTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "get_user_card",
+    label: "Get User Card",
+    description:
+      "Read what you know about a speaker. Returns the full prose card with metadata. " +
+      "Use this when you need to remember who someone is, or before making a claim about them " +
+      "that might be wrong. Cross-reference with memory_search for deeper context.",
+    parameters: GET_USER_CARD_SCHEMA,
+    execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<GetUserCardDetails>> => {
+      const params = asParams(rawParams);
+      const userId = readStr(params, "user_id");
+      if (!userId) throw new Error("get_user_card requires user_id");
+
+      try {
+        const client = await getClient();
+        const resp = await client.getUserCard({ userId });
+        return jsonResult({
+          card: resp.cardJson || null,
+          updatedAt: resp.updatedAt ? Number(resp.updatedAt) : undefined,
+          version: resp.version || undefined,
+        });
+      } catch (error) {
+        logger.warn?.(`get_user_card failed: ${formatError(error)}`);
+        return jsonResult({ error: formatError(error) });
+      }
+    },
+  };
+}

@@ -2163,6 +2163,26 @@ export function buildContextEngineFactory(
     }
   }
 
+  async function injectUserCardContext(params: {
+    client: Awaited<ReturnType<typeof runtime.getClient>>;
+    userId: string;
+  }): Promise<string | null> {
+    try {
+      const resp = await params.client.getUserCard({ userId: params.userId });
+      if (!resp.cardJson) return null;
+      let card: string;
+      try {
+        card = JSON.parse(resp.cardJson).card ?? resp.cardJson;
+      } catch {
+        card = resp.cardJson;
+      }
+      if (!card || card.trim().length === 0) return null;
+      return '<user_context>\nThe person you are talking to is:\n' + card + '\n</user_context>';
+    } catch {
+      return null;
+    }
+  }
+
   async function runCompaction(args: {
     sessionId: string;
     force?: boolean;
@@ -2280,7 +2300,7 @@ export function buildContextEngineFactory(
           sessionId,
           sessionKey: args.sessionKey,
           userId,
-          message,
+          message: message as any,
           isHeartbeat: args.isHeartbeat,
         });
       } catch (error) {
@@ -2497,7 +2517,7 @@ export function buildContextEngineFactory(
               sessionKey: args.sessionKey,
               userId,
               prompt: retrievalQuery,
-              messages,
+              messages: messages as any,
               tokenBudget: args.tokenBudget,
               config: buildAssemblyConfig(args.tokenBudget),
               emitDebug: true,
@@ -2516,14 +2536,21 @@ export function buildContextEngineFactory(
             tokenBudget: args.tokenBudget,
             systemPromptAddition: assembled.systemPromptAddition,
           });
-          // Only inject continuity on session bootstrap (fresh /new).
+          const userCardContext = await injectUserCardContext({ client, userId });
+          // Only inject continuity and user card on session bootstrap (fresh /new).
           // After the first turn, predictive context handles it.
           const isSessionBootstrap = messages.length <= 1;
-          const withContinuity: OpenClawCompatibleAssembleResult = (isSessionBootstrap && continuityContext)
-            ? { ...assembled, systemPromptAddition: appendSystemPromptAddition(assembled.systemPromptAddition, continuityContext) }
-            : assembled;
+          let withContext = assembled;
+          if (isSessionBootstrap) {
+            if (continuityContext) {
+              withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, continuityContext) };
+            }
+            if (userCardContext) {
+              withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, userCardContext) };
+            }
+          }
           enforced = enforceTokenBudgetInvariant(
-            await augmentWithExactRecall(withContinuity, {
+            await augmentWithExactRecall(withContext, {
               queryText: retrievalQuery,
               userId,
               sessionId,

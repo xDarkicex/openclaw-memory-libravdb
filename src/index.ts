@@ -6,7 +6,7 @@ import { createBeforeResetHook, createSessionEndHook } from "./lifecycle-hooks.j
 import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
-import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool } from "./tools/memory-recall.js";
+import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool } from "./tools/memory-recall.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import { createLibraVdbMemoryTools } from "./memory-tools.js";
@@ -120,6 +120,14 @@ export function register(api: OpenClawPluginApi) {
       const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
       return createMemoryGrepTool(getClient, getSessionId, logger);
     }, { names: ["memory_grep"] });
+    api.registerTool?.((ctx) => {
+      const getClient = runtimeOrNull.getClient;
+      return createUpdateUserCardTool(getClient, logger);
+    }, { names: ["update_user_card"] });
+    api.registerTool?.((ctx) => {
+      const getClient = runtimeOrNull.getClient;
+      return createGetUserCardTool(getClient, logger);
+    }, { names: ["get_user_card"] });
   }
 
   if (isLightweight || isDiscovery) {
@@ -195,7 +203,7 @@ export function register(api: OpenClawPluginApi) {
     async summarize({ messages }) {
       const client = await runtime.getClient();
       const result = await client.summarizeMessages({
-        messages: messages.map((m) => normalizeKernelMessage(m as { role: string; content: unknown; id?: string })),
+        messages: messages.map((m) => normalizeKernelMessage(m as { role: string; content: unknown; id?: string })) as any,
         maxOutputTokens: 64,
       });
       return result.summaryText;

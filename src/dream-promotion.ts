@@ -233,7 +233,7 @@ export function createDreamPromotionHandle(
       sourceMtimeMs: BigInt(Math.trunc(stat.mtimeMs)),
       ingestVersion: DREAM_PROMOTION_VERSION,
       hashBackend: getHashBackendName(),
-      entries: candidates.map((candidate): PartialMessage<ProtoEntry> => ({
+      entries: candidates.map((candidate) => ({
         text: candidate.text,
         score: candidate.score,
         recallCount: candidate.recallCount,
@@ -241,7 +241,7 @@ export function createDreamPromotionHandle(
         section: candidate.section,
         line: candidate.line,
         sourceLine: candidate.line,
-      })),
+      })) as unknown as ProtoEntry[],
     });
 
     lastFileState = {
@@ -335,7 +335,7 @@ export async function promoteDreamDiaryFile(
     sourceMtimeMs: BigInt(Math.trunc(sourceMtimeMs ?? 0)),
     ingestVersion: DREAM_PROMOTION_VERSION,
     hashBackend: getHashBackendName(),
-    entries: candidates.map((candidate): PartialMessage<ProtoEntry> => ({
+    entries: candidates.map((candidate) => ({
       text: candidate.text,
       score: candidate.score,
       recallCount: candidate.recallCount,
@@ -343,7 +343,7 @@ export async function promoteDreamDiaryFile(
       section: candidate.section,
       line: candidate.line,
       sourceLine: candidate.line,
-    })),
+    })) as unknown as ProtoEntry[],
   });
 }
 
