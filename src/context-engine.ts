@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { PluginRuntime } from "./plugin-runtime.js";
 import type {
@@ -2073,11 +2076,34 @@ export function buildContextEngineFactory(
   }
 
   const continuityCache = new Map<string, string>(); // sessionKey -> raw context block
+  const continuityCachePath = (() => {
+    const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
+    const dir = stateDir || join(homedir(), '.openclaw');
+    return join(dir, 'libravdb-continuity-cache.json');
+  })();
+
+  // Load persisted cache on startup.
+  try {
+    if (existsSync(continuityCachePath)) {
+      const raw = JSON.parse(readFileSync(continuityCachePath, 'utf8'));
+      for (const [k, v] of Object.entries(raw)) {
+        if (typeof v === 'string') continuityCache.set(k, v);
+      }
+    }
+  } catch { /* best-effort */ }
+
+  function persistContinuityCache() {
+    try {
+      mkdirSync(join(continuityCachePath, '..'), { recursive: true });
+      writeFileSync(continuityCachePath, JSON.stringify(Object.fromEntries(continuityCache)));
+    } catch { /* best-effort */ }
+  }
 
   function updateContinuityCache(sessionKey: string, messages: KernelCompatibleMessage[]) {
     const lastTurns = messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-2);
     if (lastTurns.length > 0) {
       continuityCache.set(sessionKey, lastTurns.map(m => `${m.role}: ${m.content}`).join('\n'));
+      persistContinuityCache();
     }
   }
 
