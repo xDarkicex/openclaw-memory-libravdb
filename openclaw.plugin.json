@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Cognitive memory engine — causal graph reasoning, predictive context, identity tracking, and hybrid vector recall with back-door adjustment scoring",
-  "version": "1.9.10-beta.18",
+  "version": "1.9.10-beta.19",
   "kind": [
     "memory",
     "context-engine"
@@ -17,7 +17,8 @@
       "memory_expand",
       "memory_grep",
       "update_user_card",
-      "get_user_card"
+      "get_user_card",
+      "list_user_cards"
     ]
   },
   "activation": {
