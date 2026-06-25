@@ -1798,9 +1798,9 @@ export function buildContextEngineFactory(
 
   function cleanPredictionText(text: string): string {
     // Strip the [OpenClaw context: key=value; ...] routing prefix line.
-    const stripped = text.replace(OPENCLAW_CONTEXT_PREFIX_RE, "").trimStart();
-    // Then run the standard metadata envelope stripping.
-    return stripOpenClawUntrustedMetadataEnvelope(stripped);
+    // Keep the timestamp/sender envelope — LLMs recognize it as conversation
+    // history format and use it to understand message context.
+    return text.replace(OPENCLAW_CONTEXT_PREFIX_RE, "").trimStart();
   }
 
   function formatRetrievedMemory(predictions: BeforeTurnKernelResponse["predictions"]): string {
