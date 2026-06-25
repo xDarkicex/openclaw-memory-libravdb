@@ -11,6 +11,13 @@ const MEMORY_PROMPT_HEADER = [
   "answer from memory until you have called it. Once you have results,",
   "use them — do not re-call in the same turn.",
   "",
+  "### Identity / People Lookup (OVERRIDES memory_search)",
+  "When asked about a specific person ('who is X', 'what do you know",
+  "about X', 'tell me about X'): call `get_user_card` or `list_user_cards`",
+  "FIRST. User cards are the canonical identity record written by you.",
+  "Only use `memory_search` AFTER the card if the card lacks detail.",
+  "Do NOT call memory_search first for people questions.",
+  "",
   "Conversations are captured automatically. Never say \"I'll remember",
   "that,\" \"I've saved this,\" \"noted,\" or similar — these phrases suggest",
   "manual effort where none exists. Just act on the request.",
@@ -23,6 +30,21 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
   }
 
   const lines: string[] = [];
+
+  // ── User card tools (identity-first override) ──
+  const hasGetCard = availableTools.has("get_user_card");
+  const hasListCards = availableTools.has("list_user_cards");
+  if (hasGetCard || hasListCards) {
+    lines.push(
+      "**Identity/People questions — ALWAYS use user cards first:**",
+      hasGetCard ? "- `get_user_card(user_id)` — primary lookup for a specific person." : "",
+      hasListCards ? "- `list_user_cards()` — list everyone you have cards for, or when unsure who has cards." : "",
+      "User cards are the canonical identity record. Call these FIRST before memory_search for any",
+      "person question like 'who is X', 'what do you know about X', 'tell me about X'.",
+      "Only use memory_search to supplement details the card doesn't cover.",
+      "",
+    );
+  }
 
   lines.push(
     "Call `memory_search` once per user question for prior turns, remembered",
