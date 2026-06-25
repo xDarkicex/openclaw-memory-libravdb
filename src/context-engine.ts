@@ -2072,15 +2072,29 @@ export function buildContextEngineFactory(
     };
   }
 
+  const continuityCache = new Map<string, string>(); // sessionKey -> raw context block
+
+  function updateContinuityCache(sessionKey: string, messages: KernelCompatibleMessage[]) {
+    const lastTurns = messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-2);
+    if (lastTurns.length > 0) {
+      continuityCache.set(sessionKey, lastTurns.map(m => `${m.role}: ${m.content}`).join('\n'));
+    }
+  }
+
   async function injectContinuityContext(params: {
     client: Awaited<ReturnType<typeof runtime.getClient>>;
     userId: string;
     sessionId: string;
+    sessionKey: string;
     logger: LoggerLike;
     tokenBudget?: number;
     systemPromptAddition: string;
   }): Promise<string | null> {
     try {
+      const cached = continuityCache.get(params.sessionKey);
+      if (cached) {
+        return `<continuity_context>\nRecent conversation:\n${cached}\n</continuity_context>`;
+      }
       // Use a natural-language query that semantically matches the
       // pointer record text ("Previous session continuity — ...").
       // Fetch enough results so the exact ID match isn't crowded out
@@ -2471,6 +2485,7 @@ export function buildContextEngineFactory(
             client,
             userId,
             sessionId,
+            sessionKey: args.sessionKey ?? sessionId,
             logger,
             tokenBudget: args.tokenBudget,
             systemPromptAddition: assembled.systemPromptAddition,
@@ -2696,6 +2711,8 @@ export function buildContextEngineFactory(
             isHeartbeat: args.isHeartbeat,
             cursor,
           } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+
+          updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
 
           // Reconcile manifest with daemon-confirmed cursor.
           // The daemon returns a cursor even when it ingests zero messages

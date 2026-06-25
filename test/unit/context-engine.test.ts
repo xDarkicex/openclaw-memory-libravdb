@@ -2339,7 +2339,7 @@ test("predictive context injects items item-by-item, dropping tail items when bu
     sessionKey: "sk1",
     messages: [makeMessage("user", "continue")],
     prompt: "continue",
-    tokenBudget: 200,
+    tokenBudget: 180,
   });
 
   const sp = assembled.systemPromptAddition;
