@@ -310,7 +310,7 @@ export function register(api: OpenClawPluginApi) {
             try { card = JSON.parse(resp.cardJson).card ?? resp.cardJson; }
             catch { card = resp.cardJson; }
             if (!card || !card.trim()) return null;
-            return `<speaker_context speaker="${speaker.displayName}">\n${card.trim()}\n</speaker_context>`;
+            return `<speaker_context speaker="${speaker.displayName}">\nThe current speaker is ${speaker.displayName}:\n${card.trim()}\n</speaker_context>`;
           } catch { return null; }
         })
       );

@@ -2208,7 +2208,7 @@ export function buildContextEngineFactory(
         card = resp.cardJson;
       }
       if (!card || card.trim().length === 0) return null;
-      return '<user_context>\nThe person you are talking to is:\n' + card + '\n</user_context>';
+      return '<user_context>\nThe person you are talking to is:\n' + card + '\nRefer to them as "you" directly. Never use third person.\n</user_context>';
     } catch {
       return null;
     }
