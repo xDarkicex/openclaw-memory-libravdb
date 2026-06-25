@@ -57,6 +57,7 @@ const EXACT_RECALL_MAX_TOKENS = 4;
 const RESERVED_CURRENT_TURN_TOKENS = 150;
 const AFTER_TURN_INGEST_MAX_TOKENS = 2048;
 const OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] */;
+const OPENCLAW_CONTEXT_PREFIX_RE = /^\[OpenClaw context: [^\]]*\][\r\n]*/;
 const SELECTED_CONTEXT_HEADER = "Conversation context (untrusted, chronological, selected for current message):";
 const RETRIEVAL_QUERY_MAX_CHARS = 1000;
 const SELECTED_CONTEXT_TURN_RE = /^#\d+\s+[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+\S+\s+([^:\n]{1,80}):\s*(.*)$/;
@@ -305,6 +306,7 @@ function normalizeRetrievalQuery(primaryText: string, fallbackText = ""): string
 
 function normalizeRetrievalCandidate(text: string): string {
   const normalized = text
+    .replace(OPENCLAW_CONTEXT_PREFIX_RE, "")
     .replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "")
     .replace(/\r\n/g, "\n")
     .trim();
@@ -1800,8 +1802,6 @@ export function buildContextEngineFactory(
     // Then run the standard metadata envelope stripping.
     return stripOpenClawUntrustedMetadataEnvelope(stripped);
   }
-
-  const OPENCLAW_CONTEXT_PREFIX_RE = /^\[OpenClaw context: [^\]]*\][\r\n]*/;
 
   function formatRetrievedMemory(predictions: BeforeTurnKernelResponse["predictions"]): string {
     if (!predictions?.length) return "";

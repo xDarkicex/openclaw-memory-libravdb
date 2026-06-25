@@ -586,6 +586,7 @@ test("context engine assemble uses latest selected-context user utterance as ret
     `#${3500 + index} Wed 2026-06-24 10:${String(index % 60).padStart(2, "0")} PDT OpenClaw: stale assistant context ${index} ${"x".repeat(80)}`
   ).join("\n");
   const selectedPrompt = [
+    "[OpenClaw context: channel_id=telegram:7716503994; sender=Nikoloas; user_id=7716503994]",
     "Conversation context (untrusted, chronological, selected for current message):",
     staleContext,
     "#3588 Wed 2026-06-24 10:58 PDT Nikoloas: well its 15 DRIVING across bridge brah emeryville and union square are not walking distance",
