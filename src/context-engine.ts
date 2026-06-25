@@ -2516,7 +2516,10 @@ export function buildContextEngineFactory(
             tokenBudget: args.tokenBudget,
             systemPromptAddition: assembled.systemPromptAddition,
           });
-          const withContinuity: OpenClawCompatibleAssembleResult = continuityContext
+          // Only inject continuity on session bootstrap (fresh /new).
+          // After the first turn, predictive context handles it.
+          const isSessionBootstrap = messages.length <= 1;
+          const withContinuity: OpenClawCompatibleAssembleResult = (isSessionBootstrap && continuityContext)
             ? { ...assembled, systemPromptAddition: appendSystemPromptAddition(assembled.systemPromptAddition, continuityContext) }
             : assembled;
           enforced = enforceTokenBudgetInvariant(
