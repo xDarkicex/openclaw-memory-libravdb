@@ -160,6 +160,7 @@ If your service runs elsewhere, set `sidecarPath`:
 - **Memory-mapped embedding cache.** Frequently embedded text is cached in a file-backed mmap region that survives daemon restarts. Cold starts are faster, repeat queries are instant.
 - **Pluggable summarization backend.** The memory kernel's extractive summarization can replace LLM-based compaction — zero tokens burned on summarization.
 - **Local-first inference.** GGUF, ONNX, or remote embedding backends. Hardware-native acceleration on Apple Silicon and NVIDIA. No cloud required.
+- **PII scrubbing & hard constraint rules.** Set rules with keywords — the rules engine scans every reply before dispatch. If a rule keyword is found, the reply is blocked and replaced. No LLM overhead, no latency, can't be bypassed. Names, employers, locations, API keys — anything you don't want leaking gets enforced at the reply layer, not the prompt layer.
 - **Operational CLI.** `libravdbd status`, `health`, `search`, `tenant evict`, `migrate` — live observability and management without interrupting active sessions.
 
 ### Identity Tracking & User Cards
@@ -180,10 +181,10 @@ The daemon tracks **who you are** — not just what you said. Every speaker the 
 - Cards participate in the causal graph (`memory_kind: "identity"`) — identity patterns detected by the cognitive scheduler at macro scale
 - `PredictiveContext` seeds the card node — BFS surfaces causally connected memories alongside identity
 
-### Hard Constraint Rules Engine
+### PII Scrubbing & Hard Constraint Rules
 
-Plugin-side rules that act as an enforceable safety layer. Rules are stored locally,
-persisted across sessions, and enforced through two complementary mechanisms:
+Agent replies are scanned for forbidden keywords before dispatch. Rules are stored
+locally and enforced through two layers:
 
 **Agent tools for rules:**
 - `set_rule(rule, keywords, priority)` — create a rule with comma-separated keywords for reply scanning. Max 20 rules.
@@ -192,8 +193,8 @@ persisted across sessions, and enforced through two complementary mechanisms:
 - `delete_rule(rule_id)` — remove a rule.
 
 **Dual enforcement layers:**
-- **Behavioral layer** — rules injected at `prependSystemContext` level (equivalent to AGENTS.md). The model sees them as system-level instructions and follows behavioral constraints ("always use TypeScript", "never delete files without asking").
-- **PII enforcement layer** — every agent reply is scanned by `scanReply` in the `before_agent_reply` hook. If any rule keyword matches the reply text, the reply is blocked and replaced with a refusal. Keyword matching is substring-based, case-insensitive — no LLM call, no latency.
+- **Reply scan (hard enforcement)** — the `before_agent_reply` hook runs `scanReply` on every agent response. If any rule keyword is found anywhere in the reply text, the response is blocked and replaced with "I cannot answer that." This happens at the dispatch layer — the model can't override it, hallucinate around it, or leak PII. Substring match, case-insensitive, zero LLM overhead.
+- **System prompt (behavioral guidance)** — rules are injected at `prependSystemContext` level (AGENTS.md equivalent) so the model follows behavioral constraints ("always use TypeScript", "never delete files without asking").
 
 **Example:**
 ```
