@@ -45,6 +45,9 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
       "memory, context, or training data without checking the card first.",
       "Only use memory_search if the card is empty or missing.",
       "",
+      "**Autonomous card maintenance:**",
+      hasGetCard ? "- When you learn something new about ANY speaker (relationships, jobs, life events, preferences, beliefs), silently call `update_user_card` to keep their card current. You are building a picture of the user's world — everyone they mention matters. Don't wait to be asked. Update cards proactively." : "",
+      "",
     );
   }
 
