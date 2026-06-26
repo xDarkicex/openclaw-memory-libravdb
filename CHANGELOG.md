@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.10.1 — 2026-06-26
+
+### Added — Hard Constraint Rules Engine
+
+- **Rules agent tools.** `set_rule`, `get_rule`, `list_rules`, and `delete_rule`
+  let the agent manage hard constraint rules. Max 20 rules, persisted to disk
+  in `~/.openclaw/cache/libravdb/rules.json`.
+- **Keyword-based PII enforcement.** Each rule carries comma-separated keywords.
+  The `before_agent_reply` hook (`scanReply`) checks every agent reply against
+  all rule keywords (substring match, case-insensitive). If a keyword is found,
+  the reply is replaced with "I cannot answer that." — zero LLM overhead, zero latency.
+- **Behavioral enforcement.** Rules are injected at `prependSystemContext` level
+  (AGENTS.md equivalent) so the model treats them as system-level hard constraints.
+- **Dual-layer architecture.** Behavioral rules guide the model via system prompt;
+  PII rules block violations at the reply dispatch layer. Combined, they provide
+  both guidance and hard enforcement.
+
 ## v1.10.0 — 2026-06-26
 
 ### Added — User Cards & Identity Tracking (Phases 1-4)
