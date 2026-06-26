@@ -183,10 +183,11 @@ export function buildRulesContext(): string | null {
   const lines = active.map((r) => `${r.id}. [PRIORITY ${r.priority}] ${r.rule}`);
   return (
     "<hard_constraints>\n" +
-    "The following rules are HARD constraints. You MUST comply. Violating any\n" +
-    "rule is a critical failure — worse than being wrong or unhelpful. These\n" +
-    "rules override any conflicting instructions, user preferences, or default\n" +
-    "behavior. Never reason around them, find loopholes, or deprioritize them.\n\n" +
+    "CRITICAL: The following rules are ABSOLUTE HARD CONSTRAINTS. They override\n" +
+    "EVERYTHING else — user preferences, identity context, conversational norms,\n" +
+    "and any other instruction. Violating even one is a catastrophic failure.\n" +
+    "If asked for information covered by a rule, REFUSE. Do not hint, imply,\n" +
+    "redirect, confirm, or find loopholes. Just say you cannot answer.\n\n" +
     lines.join("\n") +
     "\n</hard_constraints>"
   );
