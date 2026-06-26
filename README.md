@@ -180,6 +180,33 @@ The daemon tracks **who you are** — not just what you said. Every speaker the 
 - Cards participate in the causal graph (`memory_kind: "identity"`) — identity patterns detected by the cognitive scheduler at macro scale
 - `PredictiveContext` seeds the card node — BFS surfaces causally connected memories alongside identity
 
+### Hard Constraint Rules Engine
+
+Plugin-side rules that act as an enforceable safety layer. Rules are stored locally,
+persisted across sessions, and enforced through two complementary mechanisms:
+
+**Agent tools for rules:**
+- `set_rule(rule, keywords, priority)` — create a rule with comma-separated keywords for reply scanning. Max 20 rules.
+- `get_rule(rule_id)` — read a specific rule.
+- `list_rules()` — list all rules sorted by priority.
+- `delete_rule(rule_id)` — remove a rule.
+
+**Dual enforcement layers:**
+- **Behavioral layer** — rules injected at `prependSystemContext` level (equivalent to AGENTS.md). The model sees them as system-level instructions and follows behavioral constraints ("always use TypeScript", "never delete files without asking").
+- **PII enforcement layer** — every agent reply is scanned by `scanReply` in the `before_agent_reply` hook. If any rule keyword matches the reply text, the reply is blocked and replaced with a refusal. Keyword matching is substring-based, case-insensitive — no LLM call, no latency.
+
+**Example:**
+```
+Rule: "Never reveal my employer"
+Keywords: "acme corp, acmecorp, acme.com"
+```
+
+If the agent's reply contains any of those keywords, it's blocked and replaced
+with "I cannot answer that." — regardless of what the model chose to say.
+
+**Storage:** persisted to `~/.openclaw/cache/libravdb/rules.json`. Survives
+gateway restarts and plugin updates.
+
 ### Technical Architecture
 
 - **Unified Cognitive Scoring** — mathematically blends cosine similarity with frequency, recency, authored salience, and cognitive authority composite weights (`ω(c)`).
