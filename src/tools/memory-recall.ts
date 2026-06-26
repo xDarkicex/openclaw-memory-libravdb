@@ -619,10 +619,11 @@ export function createGetUserCardTool(
     name: "get_user_card",
     label: "Get User Card",
     description:
-      "PRIMARY identity lookup. Call this FIRST whenever someone asks about a person " +
-      "('who is X', 'tell me about X', 'what do you know about X'). " +
-      "Returns the full prose identity card with metadata. " +
-      "Only use memory_search AFTER get_user_card if the card lacks detail.",
+      "MANDATORY identity/entity lookup. Call this BEFORE answering any question " +
+      "about a person, pet, place, or named thing ('who/what is X', 'do I have X', " +
+      "'tell me about X'). Returns the full prose identity card. " +
+      "Do NOT answer from memory or training data. Call this tool FIRST. " +
+      "Only fall through to memory_search if the card is empty or missing.",
     parameters: GET_USER_CARD_SCHEMA,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<GetUserCardDetails>> => {
       try {
@@ -666,10 +667,10 @@ export function createListUserCardsTool(
     name: "list_user_cards",
     label: "List User Cards",
     description:
-      "List every person you have a user card for. Returns user IDs and card previews. " +
-      "Use this FIRST when asked about multiple people, 'who do you know?', 'who is everyone?', " +
-      "or when you're unsure which people have cards. Then use get_user_card on specific IDs " +
-      "for full detail. Use memory_search only to supplement gaps.",
+      "MANDATORY roster lookup. Call this BEFORE answering 'who do you know?', " +
+      "'do I have X?', or any question where you're unsure if a card exists. " +
+      "Returns all user IDs with previews. Then call get_user_card on relevant IDs. " +
+      "Do NOT answer from memory — call this tool first.",
     parameters: { type: "object", additionalProperties: false, properties: {} } as const,
     execute: async (_toolCallId: string, _rawParams: unknown): Promise<ToolResult<ListUserCardsDetails>> => {
       try {
