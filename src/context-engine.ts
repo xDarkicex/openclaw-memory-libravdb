@@ -2575,15 +2575,15 @@ export function buildContextEngineFactory(
           const isSessionBootstrap = messages.length <= 1;
           let withContext = assembled;
           if (isSessionBootstrap) {
-            // Rules first — highest priority, non-negotiable.
-            if (rulesContext) {
-              withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, rulesContext) };
-            }
             if (userCardContext) {
               withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, userCardContext) };
             }
             if (continuityContext) {
               withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, continuityContext) };
+            }
+            // Rules injected LAST — closest to messages, highest attention.
+            if (rulesContext) {
+              withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, rulesContext) };
             }
           }
           enforced = enforceTokenBudgetInvariant(
