@@ -105,11 +105,11 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
   if (hasExpand) {
     lines.push(
       "### Causal Graph Traversal",
-      "When the user asks about causes, patterns, or relationships between people/events:",
-      "1. Start with `get_user_card` to anchor on identity",
-      "2. Call `memory_expand` with `record_id=\"__user_card__\"` to walk causal edges",
+      "When the user asks about causes, patterns, or relationships:",
+      "1. `memory_search` for the people/events in question to get record IDs",
+      "2. `memory_expand` with the most relevant `record_id` to walk causal edges",
       "3. Follow interesting edges — use `memory_get` for full detail on connected records",
-      "4. Use `memory_search` only as fallback for facts the graph doesn't cover",
+      "4. Use `get_user_card` to cross-reference identity context",
       "",
     );
   }

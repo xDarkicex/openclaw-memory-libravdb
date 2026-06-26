@@ -86,7 +86,7 @@ const MEMORY_EXPAND_SCHEMA = {
     },
     record_id: {
       type: "string",
-      description: "Record ID for causal graph traversal. Use IDs from memory_search/memory_get results, or '__user_card__' for identity-anchored expansion.",
+      description: "Record ID for causal graph traversal. Use exact IDs from memory_search or memory_get results.",
     },
     maxDepth: {
       type: "number",
@@ -268,9 +268,10 @@ export function createMemoryExpandTool(
       "Expand compacted summaries OR walk causal graph edges from ANY record. " +
       "Summary mode (summaryIds): walk the summary tree up to maxDepth levels. " +
       "Graph mode (record_id): walk causal edges (why_ids/how_ids/hop_targets) " +
-      "from a record ID. Use IDs from memory_search or memory_get results — " +
+      "from a record ID. Use exact IDs from memory_search or memory_get results — " +
       "any ingested turn, memory, or summary has graph edges. " +
-      "Use '__user_card__' for identity-anchored traversal. " +
+      "After get_user_card for context, search for related people/events then " +
+      "expand the most relevant hit. " +
       "For large expansions, spawns a sub-agent. " +
       "Use memory_describe first to check if expansion is warranted.",
     parameters: MEMORY_EXPAND_SCHEMA,
