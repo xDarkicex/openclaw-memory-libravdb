@@ -190,7 +190,13 @@ export function resolveIdentity(params: {
  *   2. LIBRAVDB_AGENT_ID env var (container/CI override)
  *   3. Fall back to resolved userId (existing identity system)
  */
-export function resolveTenantKey(cfg: PluginConfig): string {
+export function resolveTenantKey(cfg: PluginConfig, agentId?: string): string {
+  // Per-agent override (highest priority).
+  if (agentId && cfg.tenantIdByAgent) {
+    const byAgent = cfg.tenantIdByAgent[agentId]?.trim();
+    if (byAgent) return byAgent;
+  }
+
   const explicit = cfg.tenantId?.trim();
   if (explicit) return explicit;
 

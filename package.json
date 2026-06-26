@@ -1,6 +1,6 @@
 {
   "name": "@xdarkicex/openclaw-memory-libravdb",
-  "version": "1.10.1",
+  "version": "1.10.2",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -65,7 +65,7 @@
     "build:daemon": "bash scripts/build-daemon.sh"
   },
   "devDependencies": {
-    "@bufbuild/protobuf": "1.10.1",
+    "@bufbuild/protobuf": "1.10.2",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
     "@openclaw/plugin-inspector": "0.3.7",

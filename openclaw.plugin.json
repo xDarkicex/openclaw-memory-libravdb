@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Cognitive memory engine — causal graph reasoning, predictive context, identity tracking, and hybrid vector recall with back-door adjustment scoring",
-  "version": "1.10.1",
+  "version": "1.10.2",
   "kind": [
     "memory",
     "context-engine"
@@ -80,6 +80,11 @@
       "tenantId": {
         "type": "string",
         "description": "Stable tenant identifier for multi-agent deployments. When set, the daemon routes this plugin instance to an isolated vector database. When unset, the plugin falls back to the auto-derived userId. Set different values per agent to isolate memory storage."
+      },
+      "tenantIdByAgent": {
+        "type": "object",
+        "additionalProperties": { "type": "string" },
+        "description": "Per-agent tenant overrides. Maps agentId to tenantId. Agents not listed fall through to tenantId -> userId. Example: {\"jarvis\": \"jarvis\", \"gideon\": \"gideon\"}."
       },
       "userId": {
         "type": "string",

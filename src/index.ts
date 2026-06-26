@@ -1,4 +1,4 @@
-import { resolveIdentity } from "./identity.js";
+import { resolveIdentity, resolveTenantKey } from "./identity.js";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { registerMemoryCli } from "./cli.js";
 import { registerMemoryCliMetadata } from "./cli-descriptors.js";
@@ -279,9 +279,21 @@ export function register(api: OpenClawPluginApi) {
   // (heartbeat, cron, memory, overflow) skip semantic retrieval to save
   // an embedding call and RPC round trip on non-interactive turns.
   api.on("before_prompt_build", async (_event, ctx) => {
-    const sessionId = (ctx as Record<string, unknown> | undefined)?.sessionId as string | undefined;
-    const trigger = (ctx as Record<string, unknown> | undefined)?.trigger as string | undefined;
+    const c = ctx as Record<string, unknown> | undefined;
+    const sessionId = c?.sessionId as string | undefined;
+    const trigger = c?.trigger as string | undefined;
     if (sessionId) setSessionTrigger(sessionId, trigger);
+
+    // Resolve per-agent tenant key. The daemon routes to isolated DBs
+    // based on the libravdb-tenant-key gRPC header.
+    if (runtimeOrNull) {
+      const agentId = c?.agentId as string | undefined;
+      const tenantKey = resolveTenantKey(cfg, agentId);
+      try {
+        const client = await runtimeOrNull.getClient();
+        client.setTenantKey(tenantKey);
+      } catch { /* best-effort — client may not be ready yet */ }
+    }
   });
 
   // Phase 2 — inject speaker cards for non-main users in multi-speaker channels.

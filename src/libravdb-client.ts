@@ -250,6 +250,7 @@ export class LibravDBClient {
   private readonly legacyProbeTimeoutMs: number;
   private nonceHex: string | undefined;
   private closed = false;
+  private tenantKey: string | undefined;
 
   constructor(options: LibravDBClientOptions = {}) {
     this.secret = options.secret ?? loadSecretFromEnv();
@@ -288,14 +289,15 @@ export class LibravDBClient {
       rpcMutex,
     });
 
+    this.tenantKey = options.tenantKey;
+
     const interceptors: Interceptor[] = [];
-    if (options.tenantKey) {
-      const tenantKey = options.tenantKey;
-      interceptors.push((next) => async (req) => {
-        req.header.set("libravdb-tenant-key", tenantKey);
-        return next(req);
-      });
-    }
+    interceptors.push((next) => async (req) => {
+      if (self.tenantKey) {
+        req.header.set("libravdb-tenant-key", self.tenantKey);
+      }
+      return next(req);
+    });
     interceptors.push(authInterceptor);
 
     const transport = createGrpcTransport({
@@ -347,6 +349,12 @@ export class LibravDBClient {
     if (this.closed) {
       throw new Error("LibravDB client is closed");
     }
+  }
+
+  /** Update the tenant key for subsequent gRPC calls. Thread-safe —
+   *  the interceptor reads this.tenantKey on every request. */
+  setTenantKey(key: string): void {
+    this.tenantKey = key;
   }
 
   // ── Session lifecycle ────────────────────────────────────────────
