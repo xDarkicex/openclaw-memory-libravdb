@@ -331,6 +331,30 @@ If you want to run multiple distinct agents (e.g., a "research-agent" and a "cod
 }
 ```
 
+**Per-agent routing on a single host:** If you run multiple agents through one
+OpenClaw instance, use `tenantIdByAgent` to map each agent to its own tenant:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "libravdb-memory": {
+        "enabled": true,
+        "config": {
+          "tenantIdByAgent": {
+            "jarvis": "jarvis",
+            "gideon": "gideon",
+            "steel": "steel"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Unlisted agents fall through to `tenantId` → `userId`. Zero daemon changes required.
+
 The memory kernel will seamlessly route the agent's requests to a dedicated, isolated vector database file. It manages all tenant instances efficiently within a single process and automatically shares a centralized, memory-mapped embedding cache to keep hardware usage incredibly low.
 
 ### Directory Structure

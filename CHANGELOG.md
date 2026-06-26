@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.10.2 — 2026-06-26
+
+### Added
+
+- **`tenantIdByAgent` config.** Per-agent tenant routing for multi-agent
+  deployments. Maps agent IDs to tenant keys — each agent gets an isolated
+  datastore within a single daemon process. Agents not listed fall through
+  to `tenantId` → `userId`. Daemon needs zero changes.
+  ```json
+  { "tenantIdByAgent": { "jarvis": "jarvis", "gideon": "gideon" } }
+  ```
+
 ## v1.10.1 — 2026-06-26
 
 ### Added — Hard Constraint Rules Engine
