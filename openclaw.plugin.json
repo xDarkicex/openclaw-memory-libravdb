@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Cognitive memory engine — causal graph reasoning, predictive context, identity tracking, and hybrid vector recall with back-door adjustment scoring",
-  "version": "1.10.5",
+  "version": "1.10.6",
   "kind": [
     "memory",
     "context-engine"
@@ -83,8 +83,20 @@
       },
       "tenantIdByAgent": {
         "type": "object",
-        "additionalProperties": { "type": "string" },
-        "description": "Per-agent tenant overrides. Maps agentId to tenantId. Agents not listed fall through to tenantId -> userId. Example: {\"jarvis\": \"jarvis\", \"gideon\": \"gideon\"}."
+        "additionalProperties": {
+          "anyOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": {
+                "primary": { "type": "string" },
+                "readAccess": { "type": "array", "items": { "type": "string" } }
+              },
+              "required": ["primary"]
+            }
+          ]
+        },
+        "description": "Per-agent tenant overrides. String = primary only. Object = { primary, readAccess?: [] } for cross-tenant search. Unlisted agents fall through to tenantId -> userId."
       },
       "maxRules": {
         "type": "number",
