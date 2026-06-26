@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.10.6 — 2026-06-26
+
+### Fixed
+
+- **`tenantIdByAgent` schema now accepts object form.** Uses `anyOf` to allow
+  `"agent": "tenant"` (string) and `"agent": { "primary": "...", "readAccess": [...] }`
+  (object). Fixes OpenClaw core config validator rejecting the object form.
+
 ## v1.10.5 — 2026-06-26
 
 ### Added
