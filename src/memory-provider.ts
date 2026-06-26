@@ -101,6 +101,16 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
     );
   }
 
+  // ── Rules (hard constraints) ──
+  lines.push(
+    "### Hard Constraint Rules",
+    "Rules are injected at session start as `<hard_constraints>`. They are non-negotiable.",
+    "Use `set_rule` to create one (max 20), `list_rules` to see current rules,",
+    "`delete_rule` to remove one. Rules override all other instructions.",
+    "Never reason around a rule, find loopholes, or deprioritize it.",
+    "",
+  );
+
   // ── Causal graph traversal (when expand supports record_id) ──
   if (hasExpand) {
     lines.push(

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildRulesContext } from "./rules.js";
 
 import type { PluginRuntime } from "./plugin-runtime.js";
 import type {
@@ -2568,16 +2569,21 @@ export function buildContextEngineFactory(
             systemPromptAddition: assembled.systemPromptAddition,
           });
           const userCardContext = await injectUserCardContext({ client, userId });
-          // Only inject continuity and user card on session bootstrap (fresh /new).
+          const rulesContext = buildRulesContext();
+          // Only inject continuity, user card, and rules on session bootstrap.
           // After the first turn, predictive context handles it.
           const isSessionBootstrap = messages.length <= 1;
           let withContext = assembled;
           if (isSessionBootstrap) {
-            if (continuityContext) {
-              withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, continuityContext) };
+            // Rules first — highest priority, non-negotiable.
+            if (rulesContext) {
+              withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, rulesContext) };
             }
             if (userCardContext) {
               withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, userCardContext) };
+            }
+            if (continuityContext) {
+              withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, continuityContext) };
             }
           }
           enforced = enforceTokenBudgetInvariant(

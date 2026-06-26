@@ -8,6 +8,7 @@ import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
 import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool, createListUserCardsTool } from "./tools/memory-recall.js";
+import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore } from "./rules.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import { createLibraVdbMemoryTools } from "./memory-tools.js";
@@ -94,6 +95,15 @@ export function register(api: OpenClawPluginApi) {
   const runtimeOrNull = isLightweight
     ? null
     : createPluginRuntime(cfg, logger);
+
+  // Rule store init — persists to plugin cache directory.
+  if (runtimeOrNull && !isLightweight) {
+    const cacheDir = ((api as unknown as Record<string, unknown>).cacheDir as string | undefined)
+      ?? process.env.OPENCLAW_CACHE_DIR
+      ?? (process.env.HOME || process.env.USERPROFILE || "") + "/.openclaw/cache";
+    if (cacheDir) initRuleStore(cacheDir + "/libravdb", logger);
+  }
+
   registerMemoryCli(api, runtimeOrNull, cfg, logger);
 
   const ownsMemorySlot = memSlot === MEMORY_ID;
@@ -133,6 +143,10 @@ export function register(api: OpenClawPluginApi) {
       const getClient = runtimeOrNull.getClient;
       return createListUserCardsTool(getClient, logger);
     }, { names: ["list_user_cards"] });
+    api.registerTool?.(() => createSetRuleTool(logger), { names: ["set_rule"] });
+    api.registerTool?.(() => createGetRuleTool(logger), { names: ["get_rule"] });
+    api.registerTool?.(() => createListRulesTool(logger), { names: ["list_rules"] });
+    api.registerTool?.(() => createDeleteRuleTool(logger), { names: ["delete_rule"] });
   }
 
   if (isLightweight || isDiscovery) {
