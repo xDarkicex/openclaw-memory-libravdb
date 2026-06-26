@@ -8,7 +8,7 @@ import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
 import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool, createListUserCardsTool } from "./tools/memory-recall.js";
-import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore, buildRulesContext } from "./rules.js";
+import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore, buildRulesContext, scanReply } from "./rules.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import { createLibraVdbMemoryTools } from "./memory-tools.js";
@@ -345,6 +345,20 @@ export function register(api: OpenClawPluginApi) {
     const rulesText = buildRulesContext();
     if (!rulesText) return;
     return { prependSystemContext: rulesText };
+  });
+
+  // Rule enforcement — scan agent replies against rule keywords.
+  // If a keyword match is found, the reply is replaced with a refusal.
+  // @ts-expect-error: api.on types declare void return, runtime processes hook results.
+  api.on("before_agent_reply", async (event, _ctx) => {
+    const e = event as Record<string, unknown>;
+    const cleanedBody = typeof e.cleanedBody === "string" ? e.cleanedBody : "";
+    if (!cleanedBody) return;
+    const violated = scanReply(cleanedBody);
+    if (violated) {
+      logger.warn?.(`LibraVDB reply blocked by rule "${violated.rule}" (${violated.id})`);
+      return { handled: true, reply: { text: "I cannot answer that." }, reason: `blocked by rule: ${violated.rule}` };
+    }
   });
 
   api.on("session_end", async (_event, ctx) => {

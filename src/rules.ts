@@ -5,6 +5,7 @@ import type { LoggerLike } from "./types.js";
 export interface Rule {
   id: string;
   rule: string;
+  keywords: string[];
   priority: number;
   created_at: number;
 }
@@ -29,7 +30,10 @@ export function initRuleStore(cacheDir: string, logger?: LoggerLike): void {
   try {
     const raw = readFileSync(rulesPath, "utf8");
     const parsed = JSON.parse(raw) as { rules: Rule[]; nextId: number };
-    rules = parsed.rules ?? [];
+    rules = (parsed.rules ?? []).map((r: Rule) => ({
+      ...r,
+      keywords: r.keywords ?? [], // handle pre-keyword rules
+    }));
     nextId = parsed.nextId ?? 1;
   } catch {
     rules = [];
@@ -53,10 +57,9 @@ export function getRule(id: string): Rule | undefined {
   return rules.find((r) => r.id === id);
 }
 
-export function setRule(ruleText: string, priority: number): { rule: Rule; replaced: boolean } {
+export function setRule(ruleText: string, keywords: string[], priority: number): { rule: Rule; replaced: boolean } {
   let replaced = false;
   if (rules.length >= MAX_RULES) {
-    // Replace lowest priority rule
     let minIdx = 0;
     for (let i = 1; i < rules.length; i++) {
       if (rules[i].priority < rules[minIdx].priority) minIdx = i;
@@ -67,6 +70,7 @@ export function setRule(ruleText: string, priority: number): { rule: Rule; repla
   const rule: Rule = {
     id: String(nextId++),
     rule: ruleText,
+    keywords: keywords.map(k => k.toLowerCase().trim()).filter(k => k.length > 0),
     priority: Math.max(1, Math.min(10, priority || 5)),
     created_at: Date.now(),
   };
@@ -74,6 +78,20 @@ export function setRule(ruleText: string, priority: number): { rule: Rule; repla
   rules.sort((a, b) => b.priority - a.priority);
   persist();
   return { rule, replaced };
+}
+
+// scanReply checks reply text against all rule keywords. Returns the first
+// violating rule, or null if clean.
+export function scanReply(replyText: string): Rule | null {
+  const lower = replyText.toLowerCase();
+  for (const rule of rules) {
+    for (const kw of rule.keywords) {
+      if (kw && lower.includes(kw)) {
+        return rule;
+      }
+    }
+  }
+  return null;
 }
 
 export function deleteRule(id: string): boolean {
@@ -91,25 +109,29 @@ export function createSetRuleTool(logger: LoggerLike = console) {
     name: "set_rule",
     label: "Set Rule",
     description:
-      "Set a HARD constraint rule. Max 20 rules across all sessions. " +
-      "Rules are injected at session start as non-negotiable instructions. " +
-      "Use this when the user wants you to never do something, always do something, " +
-      "or set a permanent behavioral boundary. Higher priority rules appear first.",
+      "Set a HARD constraint rule. Max 20 rules. Replies are scanned against " +
+      "rule keywords — if a keyword is found, the reply is blocked and replaced " +
+      "with a refusal. Provide keywords that would appear in a violating reply " +
+      "(e.g. for 'never reveal my name', keywords: 'gentry, rolfson'). " +
+      "Higher priority rules appear first.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
         rule: { type: "string", description: "The rule text. Be specific and unambiguous." },
+        keywords: { type: "string", description: "Comma-separated keywords to scan for in replies. If any keyword is found, the reply is blocked." },
         priority: { type: "number", description: "Priority 1-10. Higher = more important. Default 5." },
       },
-      required: ["rule"],
+      required: ["rule", "keywords"],
     } as const,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<{ ok: boolean; rule?: Rule; replaced?: boolean; error?: string }>> => {
       const params = rawParams as Record<string, unknown> | undefined;
       const ruleText = typeof params?.rule === "string" ? params.rule.trim() : "";
       if (!ruleText) return jsonResult({ ok: false, error: "set_rule requires a rule string" });
+      const kwRaw = typeof params?.keywords === "string" ? params.keywords : "";
+      const keywords = kwRaw.split(",").map(k => k.trim()).filter(k => k.length > 0);
       const priority = typeof params?.priority === "number" ? params.priority : 5;
-      const result = setRule(ruleText, priority);
+      const result = setRule(ruleText, keywords, priority);
       return jsonResult({ ok: true, rule: result.rule, replaced: result.replaced });
     },
   };
