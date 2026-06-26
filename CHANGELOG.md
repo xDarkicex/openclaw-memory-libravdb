@@ -1,16 +1,25 @@
 # Changelog
 
+## v1.10.4 — 2026-06-26
+
+### Added
+
+- **Configurable `maxRules`.** Set via plugin config. Default 20, 0 disables
+  rule creation entirely.
+- **Config reference table** includes `tenantIdByAgent` and `maxRules`.
+
+## v1.10.3 — 2026-06-26
+
+### Fixed
+
+- Lockfile sync — pin `@bufbuild/protobuf` to 1.10.1 (1.10.2 doesn't exist).
+
 ## v1.10.2 — 2026-06-26
 
 ### Added
 
 - **`tenantIdByAgent` config.** Per-agent tenant routing for multi-agent
-  deployments. Maps agent IDs to tenant keys — each agent gets an isolated
-  datastore within a single daemon process. Agents not listed fall through
-  to `tenantId` → `userId`. Daemon needs zero changes.
-  ```json
-  { "tenantIdByAgent": { "jarvis": "jarvis", "gideon": "gideon" } }
-  ```
+  deployments. Maps agent IDs to tenant keys.
 
 ## v1.10.1 — 2026-06-26
 
