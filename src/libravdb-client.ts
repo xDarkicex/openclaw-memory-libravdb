@@ -251,6 +251,7 @@ export class LibravDBClient {
   private nonceHex: string | undefined;
   private closed = false;
   private tenantKey: string | undefined;
+  private readTenants: string[] = [];
 
   constructor(options: LibravDBClientOptions = {}) {
     this.secret = options.secret ?? loadSecretFromEnv();
@@ -357,6 +358,12 @@ export class LibravDBClient {
     this.tenantKey = key;
   }
 
+  /** Set additional tenants to search across. Only used by searchTextCollections.
+   *  Empty by default — zero overhead for single-tenant setups. */
+  setReadTenants(tenants: string[]): void {
+    this.readTenants = tenants;
+  }
+
   // ── Session lifecycle ────────────────────────────────────────────
 
   async health(req: PartialMessage<HealthRequest> = {}): Promise<HealthResponse> {
@@ -436,7 +443,28 @@ export class LibravDBClient {
     req: PartialMessage<SearchTextCollectionsRequest>,
   ): Promise<SearchTextResponse> {
     this.guardOpen();
-    return this.client.searchTextCollections(req);
+    if (this.readTenants.length === 0) {
+      return this.client.searchTextCollections(req);
+    }
+    // Multi-tenant fan-out: search across all read tenants, merge results.
+    // Temporarily swap tenantKey per call, restore after.
+    const savedKey = this.tenantKey;
+    const allResults: SearchTextResponse["results"] = [];
+    const seen = new Set<string>();
+    for (const t of this.readTenants) {
+      this.tenantKey = t;
+      try {
+        const resp = await this.client.searchTextCollections(req);
+        for (const r of resp.results ?? []) {
+          if (!seen.has(r.id)) {
+            seen.add(r.id);
+            allResults.push(r);
+          }
+        }
+      } catch { /* skip failed tenant reads */ }
+    }
+    this.tenantKey = savedKey;
+    return { results: allResults } as SearchTextResponse;
   }
 
   async listCollection(req: PartialMessage<ListCollectionRequest>): Promise<ListCollectionResponse> {

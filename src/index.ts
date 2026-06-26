@@ -1,4 +1,4 @@
-import { resolveIdentity, resolveTenantKey } from "./identity.js";
+import { resolveIdentity, resolveTenantKey, resolveReadTenants } from "./identity.js";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { registerMemoryCli } from "./cli.js";
 import { registerMemoryCliMetadata } from "./cli-descriptors.js";
@@ -287,14 +287,15 @@ export function register(api: OpenClawPluginApi) {
     const trigger = c?.trigger as string | undefined;
     if (sessionId) setSessionTrigger(sessionId, trigger);
 
-    // Resolve per-agent tenant key. The daemon routes to isolated DBs
-    // based on the libravdb-tenant-key gRPC header.
+    // Resolve per-agent tenant routing.
     if (runtimeOrNull) {
       const agentId = c?.agentId as string | undefined;
       const tenantKey = resolveTenantKey(cfg, agentId);
+      const readTenants = resolveReadTenants(cfg, agentId);
       try {
         const client = await runtimeOrNull.getClient();
         client.setTenantKey(tenantKey);
+        client.setReadTenants(readTenants ?? []);
       } catch { /* best-effort — client may not be ready yet */ }
     }
   });

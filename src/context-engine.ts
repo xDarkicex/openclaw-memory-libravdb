@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildRulesContext } from "./rules.js";
+import { resolveReadTenants } from "./identity.js";
 
 import type { PluginRuntime } from "./plugin-runtime.js";
 import type {

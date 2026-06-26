@@ -8,9 +8,10 @@ export interface PluginConfig {
    *  the plugin falls back to the auto-derived userId. Set different values per
    *  agent to isolate memory storage. */
   tenantId?: string;
-  /** Per-agent tenant overrides. Maps agentId → tenantId. Agents not in this
-   *  map fall through to tenantId → userId. Opt-in. */
-  tenantIdByAgent?: Record<string, string>;
+  /** Per-agent tenant overrides. Maps agentId → tenantId (string) or
+   *  { primary: string, readAccess?: string[] } (object). Agents not listed
+   *  fall through to tenantId → userId. Opt-in. */
+  tenantIdByAgent?: Record<string, string | { primary: string; readAccess?: string[] }>;
   /** Maximum number of hard constraint rules. Default 20. */
   maxRules?: number;
   /** Stable identity for cross-session durable memory. When set, all sessions
