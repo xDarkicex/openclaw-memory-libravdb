@@ -15,8 +15,8 @@ importers:
         specifier: ^1.7.0
         version: 1.7.0(@bufbuild/protobuf@1.10.1)(@connectrpc/connect@1.7.0(@bufbuild/protobuf@1.10.1))
       '@xdarkicex/libravdb-contracts':
-        specifier: ^2.0.25
-        version: 2.0.25
+        specifier: ^2.0.27
+        version: 2.0.27
     devDependencies:
       '@bufbuild/protobuf':
         specifier: 1.10.1
@@ -879,8 +879,8 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
-  '@xdarkicex/libravdb-contracts@2.0.25':
-    resolution: {integrity: sha512-BEoD2PZTj8iuc0LZA/+pruPGNhJna31bJ16jWUm+j9ZhTtltf87GgazDlRwBpr5xv35G2/wGM5R623VDZgS2gg==}
+  '@xdarkicex/libravdb-contracts@2.0.27':
+    resolution: {integrity: sha512-b0oGYHCH4+VGh8vIYxHJz+8Fp6Sjdc16MG/b+x9K7l1x1CzgnPTqWgMHB/y2FDkA2K0/7/evrNJ8FRS2KyBLqQ==}
     engines: {node: '>=22'}
 
   accepts@2.0.0:
@@ -3032,7 +3032,7 @@ snapshots:
     dependencies:
       qrcode: 1.5.4
 
-  '@xdarkicex/libravdb-contracts@2.0.25':
+  '@xdarkicex/libravdb-contracts@2.0.27':
     dependencies:
       '@bufbuild/protobuf': 1.10.1
 

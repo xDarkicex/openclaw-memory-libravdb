@@ -84,11 +84,15 @@ const MEMORY_EXPAND_SCHEMA = {
       items: { type: "string" },
       description: "Summary IDs (sum_xxx format) to expand. Use results from memory_search or memory_describe.",
     },
+    record_id: {
+      type: "string",
+      description: "Record ID for causal graph traversal. Use '__user_card__' for identity-anchored expansion.",
+    },
     maxDepth: {
       type: "number",
       minimum: 0,
       maximum: 5,
-      description: "Max tree traversal depth per summary (default: 1). 0 returns only the cue/metadata.",
+      description: "Max tree/graph traversal depth (default: 1). 0 returns only edge metadata.",
     },
     maxTokens: {
       type: "number",
@@ -98,10 +102,9 @@ const MEMORY_EXPAND_SCHEMA = {
     },
     sessionId: {
       type: "string",
-      description: "Session ID the summary belongs to. If omitted, uses the current session.",
+      description: "Session ID. If omitted, uses the current session.",
     },
   },
-  required: ["summaryIds"],
 } as const;
 
 const MEMORY_GREP_SCHEMA = {
@@ -262,20 +265,49 @@ export function createMemoryExpandTool(
     name: "memory_expand",
     label: "Memory Expand",
     description:
-      "Expand compacted summaries to recover full detail. Walks the summary tree " +
-      "up to maxDepth levels. For large expansions (>2500 tokens), spawns a " +
-      "sub-agent to protect context. Use memory_describe first to check if expansion " +
-      "is warranted — many questions can be answered from the eviction cue alone.",
+      "Expand compacted summaries OR walk causal graph edges from a record. " +
+      "Summary mode: walk the summary tree up to maxDepth levels. " +
+      "Graph mode (use record_id): walk causal edges (why_ids/how_ids/hop_targets) " +
+      "from a record — use '__user_card__' for identity-anchored traversal after " +
+      "get_user_card. For large expansions (>2500 tokens), spawns a sub-agent. " +
+      "Use memory_describe first to check if expansion is warranted.",
     parameters: MEMORY_EXPAND_SCHEMA,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<MemoryExpandDetails>> => {
       const params = asParams(rawParams);
+      const recordId = readStr(params, "record_id");
       const rawIds = params.summaryIds;
       const summaryIds: string[] = Array.isArray(rawIds) ? rawIds.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : [];
-      if (summaryIds.length === 0) throw new Error("memory_expand requires at least one summaryId");
 
       const maxDepth = readNum(params, "maxDepth", { integer: true, min: 0 }) ?? 1;
       let maxTokens = readNum(params, "maxTokens", { integer: true }) ?? MAX_EXPAND_TOKENS;
       const sessionId = readStr(params, "sessionId") ?? getSessionId() ?? "";
+
+      // Graph mode: walk causal edges from a record ID.
+      if (recordId) {
+        try {
+          const client = await getClient();
+          const resp = await client.expandSummary({ recordId, maxDepth });
+          let text = resp.text ?? "";
+          const connected = resp.connected;
+          if (connected && connected.length > 0) {
+            text = connected.map((c) =>
+              `[depth=${c.depth}] ${c.recordId}: ${c.text || ""}`
+            ).join("\n\n");
+          }
+          if (!text && resp.whyIds?.length) {
+            text = `why_ids: ${resp.whyIds.join(", ")}\nhow_ids: ${resp.howIds?.join(", ") ?? "none"}\nhop_targets: ${resp.hopTargets?.join(", ") ?? "none"}`;
+          }
+          return {
+            content: [{ type: "text", text: text || "(no graph edges found)" }],
+            details: { summaryId: recordId, depth: maxDepth, text: text || "", truncated: false, exceededBudget: false, parentCount: connected?.length ?? 0 },
+          };
+        } catch (error) {
+          logger.warn?.(`memory_expand graph mode failed: ${formatError(error)}`);
+          return { content: [{ type: "text", text: `Graph expansion failed: ${formatError(error)}` }], details: { summaryId: recordId, depth: maxDepth, text: "", truncated: false, exceededBudget: false, parentCount: 0 } };
+        }
+      }
+
+      if (summaryIds.length === 0) throw new Error("memory_expand requires at least one summaryId or record_id");
 
       // Subagent budget gate: if this is a subagent, check remaining expansion budget.
       const sessionKey = getSessionKey();
