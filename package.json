@@ -65,7 +65,7 @@
     "build:daemon": "bash scripts/build-daemon.sh"
   },
   "devDependencies": {
-    "@bufbuild/protobuf": "1.10.2",
+    "@bufbuild/protobuf": "1.10.1",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
     "@openclaw/plugin-inspector": "0.3.7",
