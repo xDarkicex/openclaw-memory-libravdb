@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.10.0 — 2026-06-26
+
+### Added — User Cards & Identity Tracking (Phases 1-4)
+
+- **User card agent tools.** `update_user_card`, `get_user_card`, and
+  `list_user_cards` tools let the agent read, write, and list prose identity
+  cards for every speaker it interacts with. Cards are stored in the daemon,
+  embedded as 768-dim vectors, and linked into the causal graph.
+- **Identity-first system prompt.** The memory prompt section now instructs
+  the agent to use `get_user_card` or `list_user_cards` FIRST for any
+  person-related query, with `memory_search` as supplement only.
+- **Multi-speaker support.** A second `before_prompt_build` hook extracts
+  speakers from message envelopes (Discord, Telegram, etc.) and injects the
+  matching speaker's card as `<speaker_context>` for the current turn.
+- **Graph edge walker in `memory_expand`.** `record_id` parameter enables
+  causal graph traversal — BFS from any record through `why_ids`/`how_ids`/
+  `hop_targets`. The `ExpandSummary` RPC now returns `ConnectedRecord` results
+  when `record_id` is set.
+- **Fuzzy user lookup.** `get_user_card` supports prefix matching —
+  "jez" finds "jez (wurk)" without exact ID.
+- **Bootstrap injection.** The main user's card is injected as `<user_context>`
+  at session start with "you" framing — the model defaults to THIS understanding
+  of the user, not generic scripts.
+- **Third-person guard.** Main user card explicitly instructs the model to
+  use "you" direct address; speaker cards use "The current speaker is X" framing.
+
+### Changed — Documentation
+
+- Plugin README: renamed "vector service" to "memory kernel" throughout.
+- Added Identity Tracking & User Cards section to README.
+
+### Fixed
+
+- **User card tool crash.** `throw new Error` moved inside try/catch in
+  `get_user_card` and `update_user_card` — missing parameters no longer
+  crash the agent.
+- **Third-person narration.** Bootstrap context now appends "Refer to them
+  as 'you' directly. Never use third person."
+
+### Dependencies
+
+- Bump `@xdarkicex/libravdb-contracts` to v2.0.27 (`ExpandSummary.record_id`,
+  `ConnectedRecord`, edge metadata fields).
+
 ## v1.9.9 — 2026-06-22
 
 **Contributor:** Marvinthebored — [PR #356](https://github.com/xDarkicex/openclaw-memory-libravdb/pull/356)
