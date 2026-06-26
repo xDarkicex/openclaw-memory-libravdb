@@ -8,7 +8,7 @@ import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
 import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool, createListUserCardsTool } from "./tools/memory-recall.js";
-import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore } from "./rules.js";
+import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore, buildRulesContext } from "./rules.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import { createLibraVdbMemoryTools } from "./memory-tools.js";
@@ -336,6 +336,14 @@ export function register(api: OpenClawPluginApi) {
         `LibraVDB speaker card injection failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  });
+
+  // Hard constraint rules — injected as prependSystemContext at the system
+  // prompt level (AGENTS.md equivalent) so the model treats them as hard rules.
+  api.on("before_prompt_build", async () => {
+    const rulesText = buildRulesContext();
+    if (!rulesText) return;
+    return { prependSystemContext: rulesText };
   });
 
   api.on("session_end", async (_event, ctx) => {
