@@ -13,9 +13,9 @@
 </div>
 
 `@xdarkicex/openclaw-memory-libravdb` is a local-first OpenClaw memory plugin
-backed by the `libravdbd` vector service. It replaces the lightweight default memory
+backed by the `libravdbd` memory kernel. It replaces the lightweight default memory
 path with scoped session, user, and global memory; continuity-aware prompt
-assembly; durable recall; and vector-service-owned compaction.
+assembly; durable recall; and kernel-owned compaction.
 
 [Install](./docs/install.md) · [Full installation reference](./docs/installation.md) · [Architecture](./docs/architecture.md) · [Security](./docs/security.md) · [Performance and tuning](./docs/performance-and-tuning.md) · [Contributing](./docs/contributing.md)
 
@@ -34,7 +34,7 @@ brew install libravdbd
 brew services start libravdbd
 ```
 
-> **After upgrades:** Always restart the vector service so the newly installed binary takes effect:
+> **After upgrades:** Always restart the memory kernel so the newly installed binary takes effect:
 > ```bash
 > # macOS (Homebrew)
 > brew services restart libravdbd
@@ -104,7 +104,7 @@ Verify the service and plugin:
 openclaw memory status
 ```
 
-Healthy output should show `Sidecar=running`, stored memory counts, the active
+Healthy output should show `Kernel=running`, stored memory counts, the active
 gate threshold, and the loaded embedding profile.
 
 ## Quick Start
@@ -146,21 +146,39 @@ If your service runs elsewhere, set `sidecarPath`:
 
 ### Why LibraVDB over other memory plugins
 
-- **Truly local.** All embedding, search, and compaction runs on your hardware through a dedicated vector service. No cloud API calls, no data leaving your machine, no subscription fees. Works offline.
+- **Truly local.** All embedding, search, and compaction runs on your hardware through a dedicated memory kernel. No cloud API calls, no data leaving your machine, no subscription fees. Works offline.
 - **Handles long conversations.** Sessions with hundreds of turns are automatically compacted into searchable summaries. The agent can recall what was discussed in turn 5 even when you're on turn 200 — without blowing the context window.
 - **Never forgets a constraint.** Behavioral rules, preferences, and operating boundaries ("always use TLS", "prefers dark mode") are automatically detected and surfaced higher in recall than conversational noise. The agent can ask "what are my constraints?" and get a surgical answer.
 - **Automatic contradiction detection.** When you say "my email changed to jeff@anthropic.com", the old email is automatically marked as outdated — no manual cleanup, no stale facts confusing the agent.
 - **BM25 + vector hybrid search.** Lexical matching (exact identifiers, file paths, error codes) is fused with semantic similarity. A query for `docker-compose.yml` finds the file even if you described it as "the container config."
 - **Summary recall with expansion tools.** Compacted conversation history can be explored without flooding context. `memory_describe` peeks at what a summary covers; `memory_expand` drills into specifics; `memory_grep` searches by pattern. The agent decides how deep to go.
 - **Subagent-safe expansion.** When a summary is too large to expand directly, `memory_expand` enforces a token budget and delegates to a sub-agent — protecting the main agent's context window.
-- **Predictive memory.** The vector service pre-computes what the agent is likely to ask next after each turn, injecting relevant context before the model even sees the prompt.
+- **Predictive memory.** The memory kernel pre-computes what the agent is likely to ask next after each turn, injecting relevant context before the model even sees the prompt.
 - **Three memory scopes.** Session memory (current conversation), user memory (everything you've ever told the agent), and global memory (shared across users) are kept separate. Searches can target specific scopes.
 - **Cognitive kind and signal filters.** Memories are classified as identity, fact, preference, constraint, decision, or episode. `memory_search(kind="constraint")` returns only operating boundaries — no conversational noise.
-- **True multi-tenancy.** Isolated per-agent vector databases within a single vector service process. Each agent sees only its own data.
+- **True multi-tenancy.** Isolated per-agent vector databases within a single memory kernel process. Each agent sees only its own data.
 - **Memory-mapped embedding cache.** Frequently embedded text is cached in a file-backed mmap region that survives daemon restarts. Cold starts are faster, repeat queries are instant.
-- **Pluggable summarization backend.** The vector service's extractive summarization can replace LLM-based compaction — zero tokens burned on summarization.
+- **Pluggable summarization backend.** The memory kernel's extractive summarization can replace LLM-based compaction — zero tokens burned on summarization.
 - **Local-first inference.** GGUF, ONNX, or remote embedding backends. Hardware-native acceleration on Apple Silicon and NVIDIA. No cloud required.
 - **Operational CLI.** `libravdbd status`, `health`, `search`, `tenant evict`, `migrate` — live observability and management without interrupting active sessions.
+
+### Identity Tracking & User Cards
+
+The daemon tracks **who you are** — not just what you said. Every speaker the agent interacts with gets a **user card**: a prose identity record stored in the daemon, embedded as a 768-dim vector, and linked into the causal graph.
+
+**Agent tools for identity:**
+- `update_user_card(user_id, card)` — write what you've learned about someone. Prose format. Merges with previous understanding.
+- `get_user_card(user_id)` — read a speaker's card. **Fuzzy prefix matching** — "jez" finds "jez (wurk)".
+- `list_user_cards()` — roster query. List everyone the daemon knows.
+- `memory_expand(record_id)` — walk causal graph edges from any record. Trace identity → relationships → patterns → root causes.
+
+**How it works:**
+- Card injected as `<user_context>` at session start — the model defaults to THIS understanding of you, not generic scripts
+- Multi-speaker channels (Discord, Telegram): each speaker's card injected per-message via `<speaker_context>`
+- System prompt prioritizes user cards over `memory_search` for identity questions
+- Card updates automatically link to causally related memories via semantic neighbor search
+- Cards participate in the causal graph (`memory_kind: "identity"`) — identity patterns detected by the cognitive scheduler at macro scale
+- `PredictiveContext` seeds the card node — BFS surfaces causally connected memories alongside identity
 
 ### Technical Architecture
 
@@ -174,21 +192,21 @@ If your service runs elsewhere, set `sidecarPath`:
 - **Deontic & Salience Retrieval** — structural authority weightings and deontic logic rules ensure critical behavioral constraints mathematically outrank conversational chatter.
 - **Matryoshka Representation Learning** — dynamically tiered embedding dimensions (e.g., slicing 768d vectors down to 64d) for cascading coarse search followed by precision reranking.
 - **Cognitive Routing Circuit Breakers** — stateful circuit breakers on remote endpoints, auto-disabling complex ML routing during outages while preserving foundational search.
-- **Zero-ML Local Compaction** — purely localized session summarization and compaction cycles natively within the vector service. L1-L8 pipeline with deterministic state skeleton.
+- **Zero-ML Local Compaction** — purely localized session summarization and compaction cycles natively within the memory kernel. L1-L8 pipeline with deterministic state skeleton.
 - **Anchor-Based Contradiction Detection** — regex anchor extraction with Jaccard dedup and automatic `MarkSuperseded` — zero LLM overhead.
 - **Access Frequency in Omega** — `log2(accessCount+1)/10` term in the authority composite: frequently-retrieved memories surface higher without dominating relevance.
-- **True multi-tenancy** — strictly isolated, per-agent vector databases within a single lightweight vector service process.
+- **True multi-tenancy** — strictly isolated, per-agent vector databases within a single lightweight memory kernel process.
 - **Zero-copy caching** — memory-mapped cross-tenant embedding cache across all active agents. Tenant-scoped keys prevent cross-tenant collision.
 - **Three memory scopes** — active session, durable user, and global memory kept separate.
 - **Local-first inference** — GGUF, ONNX, or remote embedding backends. Hardware-native acceleration on Apple Silicon and NVIDIA.
-- **Pluggable compaction backend** — exposes the vector service's extractive summarization as an OpenClaw `CompactionProvider` — replaces LLM summarization.
+- **Pluggable compaction backend** — exposes the memory kernel's extractive summarization as an OpenClaw `CompactionProvider` — replaces LLM summarization.
 - **Operational tooling** — dedicated CLI (`libravdbd status`, `health`, `search`, `migrate`, `tenant evict`) for live observability.
 - **Half-Life Decay per Cognitive Kind** — each memory kind decays at its own rate: identity, constraint, and decision have infinite half-life (permanent); facts decay over 180 days; preferences over 365 days. Mathematical support accumulation prevents thrashing.
 - **Deterministic State Skeleton (L8)** — extracts structured decisions, constraints, and next steps from raw turns using pure heuristics — no LLM call needed. Line-level scoring with commitment-verb and future-intent detection.
 - **Deterministic Tool Output Compression** — 3-phase compression of tool outputs before summarization: JSON key sampling, log-line deduplication (FNV-64a), and fenced-block tagging. Reduces token pressure without losing deontic markers.
 - **Seven Budget Channels** — waterfall token allocation across retrieval floor, mandatory continuity tail, hard-authored items, elevated guidance, soft-authored items, retrieval remainder, and recovery reserve. Each channel has its own budget fraction.
 - **Temporal Comparison Profiling** — witness scoring with diachronicity detection for "how did this change?" queries. Slot decomposition, discriminative membership, and position-weighted specificity.
-- **Merkle Chain Ingest** — content-hash-based session manifest with cursor reconciliation between plugin and vector service. Guarantees idempotent ingestion across crashes and retries.
+- **Merkle Chain Ingest** — content-hash-based session manifest with cursor reconciliation between plugin and memory kernel. Guarantees idempotent ingestion across crashes and retries.
 - **Nonce-Chaining HMAC Auth** — per-request challenge-response authentication with single-use cryptographic nonces. Supports mTLS for secure multi-machine deployments.
 - **Explicit service lifecycle** — the npm/OpenClaw package stays connect-only; `libravdbd` is installed and supervised separately over a secure gRPC transport.
 
@@ -227,7 +245,7 @@ openclaw memory journal --limit 50
 openclaw memory dream-promote --user-id <userId> --dream-file ~/DREAMS.md
 ```
 
-### Vector Service CLI (libravdbd v1.6.0+)
+### memory kernel CLI (libravdbd v1.6.0+)
 
 ```bash
 # Service health and status
@@ -285,11 +303,11 @@ If you want to run multiple distinct agents (e.g., a "research-agent" and a "cod
 }
 ```
 
-The vector service will seamlessly route the agent's requests to a dedicated, isolated vector database file. It manages all tenant instances efficiently within a single process and automatically shares a centralized, memory-mapped embedding cache to keep hardware usage incredibly low.
+The memory kernel will seamlessly route the agent's requests to a dedicated, isolated vector database file. It manages all tenant instances efficiently within a single process and automatically shares a centralized, memory-mapped embedding cache to keep hardware usage incredibly low.
 
 ### Directory Structure
 
-When running in multi-tenant mode, the vector service automatically scaffolds an isolated directory structure inside your configured `agent_db_root` (or the default profile directory). It scopes databases to the specific embedding model in use:
+When running in multi-tenant mode, the memory kernel automatically scaffolds an isolated directory structure inside your configured `agent_db_root` (or the default profile directory). It scopes databases to the specific embedding model in use:
 
 ```text
 ~/.libravdbd/data_nomic-embed-text-v1_5/
@@ -303,22 +321,22 @@ When running in multi-tenant mode, the vector service automatically scaffolds an
 
 ### Multi-Tenant Operations
 
-The vector service exposes tenant-aware operational commands:
+The memory kernel exposes tenant-aware operational commands:
 
 ```bash
-# View global vector service health, cache stats, and all active tenant footprints
+# View global memory kernel health, cache stats, and all active tenant footprints
 libravdbd status
 
-# Evict a specific tenant from memory without shutting down the vector service
+# Evict a specific tenant from memory without shutting down the memory kernel
 libravdbd tenant evict <tenantId>
 
 # Safely migrate an old single-tenant DB to a named tenant
 libravdbd migrate --from ~/.libravdbd/data.libravdb --tenant <tenantId>
 ```
 
-## Vector Service Configuration (YAML) & Kubernetes
+## memory kernel Configuration (YAML) & Kubernetes
 
-`libravdbd` is configured via environment variables or a YAML configuration file. The vector service looks for a config file in this order:
+`libravdbd` is configured via environment variables or a YAML configuration file. The memory kernel looks for a config file in this order:
 
 1. `LIBRAVDB_CONFIG=/path/to/config.yaml` (env var — set this for custom paths)
 2. `/etc/libravdbd/config.yaml`
@@ -356,7 +374,7 @@ For distributed deployments where `libravdbd` and OpenClaw run on different mach
 # 1. Generate Certificate Authority (CA)
 openssl req -x509 -newkey rsa:4096 -days 3650 -nodes -keyout ca.key -out ca.crt -subj "/CN=LibraVDB-CA"
 
-# 2. Generate Vector Service Server Certificate
+# 2. Generate memory kernel Server Certificate
 openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=libravdbd.local"
 openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 365
 
@@ -365,8 +383,8 @@ openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/C
 openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 365
 ```
 
-**2. Configure the Vector Service:**
-Add the generated TLS paths to your vector service's `config.yaml`:
+**2. Configure the memory kernel:**
+Add the generated TLS paths to your memory kernel's `config.yaml`:
 ```yaml
 grpc_endpoint: "tcp:0.0.0.0:9090"
 grpc_tls_cert: "/etc/libravdbd/certs/server.crt"
@@ -453,7 +471,7 @@ Glob patterns follow standard path matching: `**` matches any directory depth, `
 
 OpenClaw's dreaming cron writes AI-generated memory reflections to a dream diary
 markdown file. The plugin can watch this file and automatically promote vetted
-entries into the `dream:{userId}` durable collection managed by the vector service.
+entries into the `dream:{userId}` durable collection managed by the memory kernel.
 
 Enable by adding these config keys:
 
