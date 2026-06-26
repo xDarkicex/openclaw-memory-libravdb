@@ -309,7 +309,7 @@ All keys are optional. For the full reference, see [Configuration](./docs/config
 | `onnxDevice` | string | `cpu` | ONNX execution provider; `cpu` is the default; `auto` lets libravdbd auto-detect |
 | `userId` | string | auto-derived | Stable identity for cross-session durable memory |
 | `tenantId` | string | auto-derived | Multi-tenant identifier. Resolved as `cfg.tenantId` > `LIBRAVDB_AGENT_ID` env > `userId`. Isolates the agent to a dedicated `.libravdb` file. |
-| `tenantIdByAgent` | object | — | Per-agent tenant map. `{"agent1": "t1"}`. Unlisted agents fall through to `tenantId` → `userId`. |
+| `tenantIdByAgent` | object | — | Per-agent tenant map. String = primary only. Object = `{primary, readAccess?: []}` for cross-tenant search. Unlisted agents fall through to `tenantId` → `userId`. |
 | `maxRules` | number | 20 | Max hard constraint rules. Set to 0 to disable rules entirely. |
 | `crossSessionRecall` | boolean | `true` | When `false`, only session-scoped memories are retrieved |
 | `compactSessionTokenBudget` | number | `2000` | Auto-compaction token threshold; `0` disables |

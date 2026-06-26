@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.10.5 — 2026-06-26
+
+### Added
+
+- **Multi-tenant read access.** `tenantIdByAgent` now supports object form with
+  `readAccess` for cross-tenant search fan-out. One agent can search its own
+  tenant PLUS other agents' tenants. Zero overhead for single-tenant setups —
+  fan-out only activates when `readAccess` is configured.
+  ```json
+  { "jarvis": { "primary": "jarvis", "readAccess": ["shelly", "goku"] } }
+  ```
+  Writes always go to primary. Backwards compatible — string values unchanged.
+
 ## v1.10.4 — 2026-06-26
 
 ### Added
