@@ -86,7 +86,7 @@ const MEMORY_EXPAND_SCHEMA = {
     },
     record_id: {
       type: "string",
-      description: "Record ID for causal graph traversal. Use '__user_card__' for identity-anchored expansion.",
+      description: "Record ID for causal graph traversal. Use IDs from memory_search/memory_get results, or '__user_card__' for identity-anchored expansion.",
     },
     maxDepth: {
       type: "number",
@@ -265,11 +265,13 @@ export function createMemoryExpandTool(
     name: "memory_expand",
     label: "Memory Expand",
     description:
-      "Expand compacted summaries OR walk causal graph edges from a record. " +
-      "Summary mode: walk the summary tree up to maxDepth levels. " +
-      "Graph mode (use record_id): walk causal edges (why_ids/how_ids/hop_targets) " +
-      "from a record — use '__user_card__' for identity-anchored traversal after " +
-      "get_user_card. For large expansions (>2500 tokens), spawns a sub-agent. " +
+      "Expand compacted summaries OR walk causal graph edges from ANY record. " +
+      "Summary mode (summaryIds): walk the summary tree up to maxDepth levels. " +
+      "Graph mode (record_id): walk causal edges (why_ids/how_ids/hop_targets) " +
+      "from a record ID. Use IDs from memory_search or memory_get results — " +
+      "any ingested turn, memory, or summary has graph edges. " +
+      "Use '__user_card__' for identity-anchored traversal. " +
+      "For large expansions, spawns a sub-agent. " +
       "Use memory_describe first to check if expansion is warranted.",
     parameters: MEMORY_EXPAND_SCHEMA,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<MemoryExpandDetails>> => {
