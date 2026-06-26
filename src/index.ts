@@ -340,6 +340,7 @@ export function register(api: OpenClawPluginApi) {
 
   // Hard constraint rules — injected as prependSystemContext at the system
   // prompt level (AGENTS.md equivalent) so the model treats them as hard rules.
+  // @ts-expect-error: api.on types declare void return, runtime processes hook results.
   api.on("before_prompt_build", async () => {
     const rulesText = buildRulesContext();
     if (!rulesText) return;
