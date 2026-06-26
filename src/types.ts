@@ -11,6 +11,8 @@ export interface PluginConfig {
   /** Per-agent tenant overrides. Maps agentId → tenantId. Agents not in this
    *  map fall through to tenantId → userId. Opt-in. */
   tenantIdByAgent?: Record<string, string>;
+  /** Maximum number of hard constraint rules. Default 20. */
+  maxRules?: number;
   /** Stable identity for cross-session durable memory. When set, all sessions
    *  share memories under user:{userId}. When unset, the plugin auto-derives
    *  identity from the OS and persists it to the identity file. */

@@ -10,7 +10,11 @@ export interface Rule {
   created_at: number;
 }
 
-const MAX_RULES = 20;
+let maxRules = 20;
+
+export function setMaxRules(n: number): void {
+  maxRules = Math.max(0, n);
+}
 
 type ToolContent = { type: "text"; text: string };
 type ToolResult<T> = { content: ToolContent[]; details: T };
@@ -59,7 +63,7 @@ export function getRule(id: string): Rule | undefined {
 
 export function setRule(ruleText: string, keywords: string[], priority: number): { rule: Rule; replaced: boolean } {
   let replaced = false;
-  if (rules.length >= MAX_RULES) {
+  if (maxRules > 0 && rules.length >= maxRules) {
     let minIdx = 0;
     for (let i = 1; i < rules.length; i++) {
       if (rules[i].priority < rules[minIdx].priority) minIdx = i;

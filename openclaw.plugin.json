@@ -86,6 +86,12 @@
         "additionalProperties": { "type": "string" },
         "description": "Per-agent tenant overrides. Maps agentId to tenantId. Agents not listed fall through to tenantId -> userId. Example: {\"jarvis\": \"jarvis\", \"gideon\": \"gideon\"}."
       },
+      "maxRules": {
+        "type": "number",
+        "default": 20,
+        "minimum": 0,
+        "description": "Maximum hard constraint rules. 0 disables rules. Default 20."
+      },
       "userId": {
         "type": "string",
         "description": "Stable identity for cross-session durable memory. When set, sessions share memories under user:{userId}."

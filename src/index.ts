@@ -8,7 +8,7 @@ import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
 import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool, createListUserCardsTool } from "./tools/memory-recall.js";
-import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore, buildRulesContext, scanReply } from "./rules.js";
+import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore, buildRulesContext, scanReply, setMaxRules } from "./rules.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import { createLibraVdbMemoryTools } from "./memory-tools.js";
@@ -101,7 +101,10 @@ export function register(api: OpenClawPluginApi) {
     const cacheDir = ((api as unknown as Record<string, unknown>).cacheDir as string | undefined)
       ?? process.env.OPENCLAW_CACHE_DIR
       ?? (process.env.HOME || process.env.USERPROFILE || "") + "/.openclaw/cache";
-    if (cacheDir) initRuleStore(cacheDir + "/libravdb", logger);
+    if (cacheDir) {
+      initRuleStore(cacheDir + "/libravdb", logger);
+      if (cfg.maxRules !== undefined) setMaxRules(cfg.maxRules);
+    }
   }
 
   registerMemoryCli(api, runtimeOrNull, cfg, logger);
