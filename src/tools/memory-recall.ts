@@ -555,13 +555,13 @@ export function createUpdateUserCardTool(
       "Merge with previous understanding, don't replace entirely unless the user explicitly contradicts the record.",
     parameters: UPDATE_USER_CARD_SCHEMA,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<UpdateUserCardDetails>> => {
-      const params = asParams(rawParams);
-      const userId = readStr(params, "user_id");
-      const card = readStr(params, "card");
-      if (!userId) throw new Error("update_user_card requires user_id");
-      if (!card) throw new Error("update_user_card requires card");
-
       try {
+        const params = asParams(rawParams);
+        const userId = readStr(params, "user_id");
+        const card = readStr(params, "card");
+        if (!userId) return jsonResult({ ok: false, error: "update_user_card requires user_id" });
+        if (!card) return jsonResult({ ok: false, error: "update_user_card requires card" });
+
         const client = await getClient();
         const resp = await client.upsertUserCard({
           userId,
@@ -590,11 +590,11 @@ export function createGetUserCardTool(
       "Only use memory_search AFTER get_user_card if the card lacks detail.",
     parameters: GET_USER_CARD_SCHEMA,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<GetUserCardDetails>> => {
-      const params = asParams(rawParams);
-      const userId = readStr(params, "user_id");
-      if (!userId) throw new Error("get_user_card requires user_id");
-
       try {
+        const params = asParams(rawParams);
+        const userId = readStr(params, "user_id");
+        if (!userId) return jsonResult({ card: null, error: "get_user_card requires user_id" });
+
         const client = await getClient();
         const resp = await client.getUserCard({ userId });
         return jsonResult({
