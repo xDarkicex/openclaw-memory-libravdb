@@ -205,6 +205,8 @@ Keywords: "acme corp, acmecorp, acme.com"
 If the agent's reply contains any of those keywords, it's blocked and replaced
 with "I cannot answer that." — regardless of what the model chose to say.
 
+**Config:** `maxRules` sets the cap (default 20, set to 0 to disable rules entirely).
+
 **Storage:** persisted to `~/.openclaw/cache/libravdb/rules.json`. Survives
 gateway restarts and plugin updates.
 
@@ -307,6 +309,8 @@ All keys are optional. For the full reference, see [Configuration](./docs/config
 | `onnxDevice` | string | `cpu` | ONNX execution provider; `cpu` is the default; `auto` lets libravdbd auto-detect |
 | `userId` | string | auto-derived | Stable identity for cross-session durable memory |
 | `tenantId` | string | auto-derived | Multi-tenant identifier. Resolved as `cfg.tenantId` > `LIBRAVDB_AGENT_ID` env > `userId`. Isolates the agent to a dedicated `.libravdb` file. |
+| `tenantIdByAgent` | object | — | Per-agent tenant map. `{"agent1": "t1"}`. Unlisted agents fall through to `tenantId` → `userId`. |
+| `maxRules` | number | 20 | Max hard constraint rules. Set to 0 to disable rules entirely. |
 | `crossSessionRecall` | boolean | `true` | When `false`, only session-scoped memories are retrieved |
 | `compactSessionTokenBudget` | number | `2000` | Auto-compaction token threshold; `0` disables |
 
