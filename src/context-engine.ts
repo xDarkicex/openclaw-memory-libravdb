@@ -2234,7 +2234,6 @@ export function buildContextEngineFactory(
       return null;
     }
   }
-  }
 
   async function runCompaction(args: {
     sessionId: string;
