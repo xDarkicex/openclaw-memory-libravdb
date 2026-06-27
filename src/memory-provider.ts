@@ -46,7 +46,8 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
       "Only use memory_search if the card is empty or missing.",
       "",
       "**Autonomous card maintenance:**",
-      hasGetCard ? "- When you learn something new about ANY speaker (relationships, jobs, life events, preferences, beliefs), silently call `update_user_card` to keep their card current. You are building a picture of the user's world — everyone they mention matters. Don't wait to be asked. Update cards proactively." : "",
+      hasGetCard ? "- When ANY speaker is mentioned with new or changed information (status, relationships, jobs, life events, feelings), call `update_user_card` BEFORE responding. Update the card first, then reply. Do NOT wait to be asked. Build the world picture proactively. Every person the user mentions matters." : "",
+      hasGetCard ? "- If a card for the speaker doesn't exist yet, CREATE one with `update_user_card`. Better to have a stub card than no card at all." : "",
       "",
     );
   }
@@ -57,7 +58,10 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
     "questions from prior transcript claims — perform a search every time.",
     "After receiving results, use them directly; do not re-call in the same turn.",
     ...(availableTools.has("memory_get")
-      ? ["After a `memory_search` hit, call `memory_get` when exact wording or more context is needed."]
+      ? [
+        "After a `memory_search` hit, call `memory_get` when exact wording or more context is needed.",
+        "IMPORTANT: If a search snippet is cluttered with metadata, do NOT claim nothing was found. Call `memory_get` on the hit's path to read the full record first. The data is there — expand before giving up."
+      ]
       : []),
     "",
   );
