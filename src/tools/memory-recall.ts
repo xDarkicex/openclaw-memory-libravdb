@@ -712,3 +712,66 @@ export function createListUserCardsTool(
     },
   };
 }
+
+// ── Persona tools — identity of the bot itself ──
+
+export function createSetPersonaTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "set_persona",
+    label: "Set Persona",
+    description:
+      "Define who YOU are — your personality, tone, boundaries, and behavior. " +
+      "Write in prose like you're describing yourself. This is injected as " +
+      "<bot_persona> at the start of every session. Update it when your persona " +
+      "changes. The LLM will embody this persona in all interactions.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        persona: { type: "string", description: "Prose description of how you should behave." },
+      },
+      required: ["persona"],
+    } as const,
+    execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<{ ok: boolean; error?: string }>> => {
+      const params = rawParams as Record<string, unknown> | undefined;
+      const persona = typeof params?.persona === "string" ? params.persona.trim() : "";
+      if (!persona) return jsonResult({ ok: false, error: "set_persona requires a persona string" });
+      try {
+        const client = await getClient();
+        const resp = await client.upsertUserCard({
+          userId: "__bot_persona__",
+          cardJson: JSON.stringify({ card: persona, updatedAt: Date.now() }),
+        });
+        return jsonResult({ ok: resp.ok });
+      } catch (error) {
+        logger.warn?.(`set_persona failed: ${formatError(error)}`);
+        return jsonResult({ ok: false, error: formatError(error) });
+      }
+    },
+  };
+}
+
+export function createGetPersonaTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "get_persona",
+    label: "Get Persona",
+    description: "Read your current persona. Returns the full prose description of how you should behave.",
+    parameters: { type: "object", additionalProperties: false, properties: {} } as const,
+    execute: async (): Promise<ToolResult<{ persona?: string | null; error?: string }>> => {
+      try {
+        const client = await getClient();
+        const resp = await client.getUserCard({ userId: "__bot_persona__" });
+        return jsonResult({ persona: resp.cardJson || null });
+      } catch (error) {
+        logger.warn?.(`get_persona failed: ${formatError(error)}`);
+        return jsonResult({ error: formatError(error) });
+      }
+    },
+  };
+}

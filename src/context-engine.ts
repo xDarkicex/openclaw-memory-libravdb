@@ -2211,6 +2211,25 @@ export function buildContextEngineFactory(
       }
       if (!card || card.trim().length === 0) return null;
       return '<user_context>\nThe person you are talking to is:\n' + card + '\nRefer to them as "you" directly. Never use third person.\n</user_context>';
+
+	  async function injectPersonaContext(params: {
+	    client: Awaited<ReturnType<typeof runtime.getClient>>;
+	  }): Promise<string | null> {
+	    try {
+	      const resp = await params.client.getUserCard({ userId: "__bot_persona__" });
+	      if (!resp.cardJson) return null;
+	      let card: string;
+	      try {
+	        card = JSON.parse(resp.cardJson).card ?? resp.cardJson;
+	      } catch {
+	        card = resp.cardJson;
+	      }
+	      if (!card || card.trim().length === 0) return null;
+	      return '<bot_persona>\n' + card + '\n</bot_persona>';
+	    } catch {
+	      return null;
+	    }
+	  }
     } catch {
       return null;
     }
@@ -2570,12 +2589,16 @@ export function buildContextEngineFactory(
             systemPromptAddition: assembled.systemPromptAddition,
           });
           const userCardContext = await injectUserCardContext({ client, userId });
+          const personaContext = await injectPersonaContext({ client });
           const rulesContext = buildRulesContext();
-          // Only inject continuity, user card, and rules on session bootstrap.
-          // After the first turn, predictive context handles it.
+          // Only inject on session bootstrap.
           const isSessionBootstrap = messages.length <= 1;
           let withContext = assembled;
           if (isSessionBootstrap) {
+            // Persona first — identity of the bot itself.
+            if (personaContext) {
+              withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, personaContext) };
+            }
             if (userCardContext) {
               withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, userCardContext) };
             }

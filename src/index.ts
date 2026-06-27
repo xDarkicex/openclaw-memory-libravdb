@@ -7,7 +7,7 @@ import { createBeforeResetHook, createSessionEndHook } from "./lifecycle-hooks.j
 import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
-import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool, createListUserCardsTool } from "./tools/memory-recall.js";
+import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool, createListUserCardsTool, createSetPersonaTool, createGetPersonaTool } from "./tools/memory-recall.js";
 import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore, buildRulesContext, scanReply, setMaxRules } from "./rules.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
@@ -150,6 +150,14 @@ export function register(api: OpenClawPluginApi) {
     api.registerTool?.(() => createGetRuleTool(logger), { names: ["get_rule"] });
     api.registerTool?.(() => createListRulesTool(logger), { names: ["list_rules"] });
     api.registerTool?.(() => createDeleteRuleTool(logger), { names: ["delete_rule"] });
+    api.registerTool?.(() => {
+      const getClient = runtimeOrNull.getClient;
+      return createSetPersonaTool(getClient, logger);
+    }, { names: ["set_persona"] });
+    api.registerTool?.(() => {
+      const getClient = runtimeOrNull.getClient;
+      return createGetPersonaTool(getClient, logger);
+    }, { names: ["get_persona"] });
   }
 
   if (isLightweight || isDiscovery) {
