@@ -1,0 +1,35 @@
+# ── Quick start with GGUF (recommended, 3-5x faster than ONNX) ──
+# docker compose up -d
+#
+# Model is auto-provisioned on first start by scripts/provision.sh
+# (mount a volume to persist models across restarts).
+#
+# For ONNX instead: set LIBRAVDB_EMBEDDING_BACKEND=onnx-local
+# and volume-mount your ONNX model + runtime directories.
+
+version: "3.8"
+
+services:
+  libravdbd:
+    image: ghcr.io/xdarkicex/libravdbd:latest
+    container_name: libravdbd
+    ports:
+      - "50051:50051"
+    volumes:
+      - libravdb_data:/var/lib/libravdbd/data
+      - libravdb_models:/var/lib/libravdbd/models
+    environment:
+      - LIBRAVDB_GRPC_ENDPOINT=tcp:0.0.0.0:50051
+      - LIBRAVDB_DB_PATH=/var/lib/libravdbd/data/data.libravdb
+      - LIBRAVDB_EMBEDDING_BACKEND=gguf
+      - LIBRAVDB_EMBEDDING_PROFILE=nomic-embed-text-v1.5
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "libravdbd", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  libravdb_data:
+  libravdb_models:
