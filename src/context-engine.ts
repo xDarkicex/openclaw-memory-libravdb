@@ -2211,28 +2211,29 @@ export function buildContextEngineFactory(
       }
       if (!card || card.trim().length === 0) return null;
       return '<user_context>\nThe person you are talking to is:\n' + card + '\nRefer to them as "you" directly. Never use third person.\n</user_context>';
-
-	  async function injectPersonaContext(params: {
-	    client: Awaited<ReturnType<typeof runtime.getClient>>;
-	  }): Promise<string | null> {
-	    try {
-	      const resp = await params.client.getUserCard({ userId: "__bot_persona__" });
-	      if (!resp.cardJson) return null;
-	      let card: string;
-	      try {
-	        card = JSON.parse(resp.cardJson).card ?? resp.cardJson;
-	      } catch {
-	        card = resp.cardJson;
-	      }
-	      if (!card || card.trim().length === 0) return null;
-	      return '<bot_persona>\n' + card + '\n</bot_persona>';
-	    } catch {
-	      return null;
-	    }
-	  }
     } catch {
       return null;
     }
+  }
+
+  async function injectPersonaContext(params: {
+    client: Awaited<ReturnType<typeof runtime.getClient>>;
+  }): Promise<string | null> {
+    try {
+      const resp = await params.client.getUserCard({ userId: "__bot_persona__" });
+      if (!resp.cardJson) return null;
+      let card: string;
+      try {
+        card = JSON.parse(resp.cardJson).card ?? resp.cardJson;
+      } catch {
+        card = resp.cardJson;
+      }
+      if (!card || card.trim().length === 0) return null;
+      return '<bot_persona>\n' + card + '\n</bot_persona>';
+    } catch {
+      return null;
+    }
+  }
   }
 
   async function runCompaction(args: {
