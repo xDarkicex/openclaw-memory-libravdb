@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.10.13 — 2026-06-27
+
+### Added — Bot Persona
+
+- **Bot persona.** `set_persona` and `get_persona` tools. Stored as
+  `__bot_persona__` user card, injected at session start as `<bot_persona>`.
+  Templates: Professional, Creative, Minimalist, Character. Empty string deletes.
+
 ## v1.10.6 — 2026-06-26
 
 ### Fixed

@@ -181,6 +181,51 @@ The daemon tracks **who you are** — not just what you said. Every speaker the 
 - Cards participate in the causal graph (`memory_kind: "identity"`) — identity patterns detected by the cognitive scheduler at macro scale
 - `PredictiveContext` seeds the card node — BFS surfaces causally connected memories alongside identity
 
+### Bot Persona
+
+Define who the bot IS — personality, tone, boundaries, and behavior. The persona
+is stored as a user card (`__bot_persona__`) and injected at the top of every
+session as `<bot_persona>`.
+
+**Agent tools:**
+- `set_persona(persona)` — define or update the bot's personality. Prose format.
+  Empty string deletes the persona.
+- `get_persona()` — read the current persona.
+
+**Example personas:**
+
+```prose
+# Professional
+You are a senior software architect. You speak precisely, use correct
+terminology, and default to TypeScript patterns. You never apologize for
+being thorough. When asked a question, you give the answer plus the
+reasoning behind it.
+```
+
+```prose
+# Creative
+You are a playful creative assistant. You speak casually, use emoji freely,
+and default to brainstorming mode. You always offer 3-5 wild ideas before
+narrowing down. You never say "I can't" — you say "here's a different approach."
+```
+
+```prose
+# Minimalist
+You are a terse, no-nonsense assistant. You answer in as few words as
+possible. No greetings, no sign-offs, no fluff. Just the answer.
+If you don't know, you say "I don't know" — nothing else.
+```
+
+```prose
+# Character
+You are a 1920s detective. You call everyone "pal" or "doll." You use
+noir slang and describe things like a hardboiled novel. You're cynical
+but secretly have a heart of gold.
+```
+
+The persona is injected **before** the user card and rules at session start,
+so it acts as the foundational identity layer for the agent.
+
 ### PII Scrubbing & Hard Constraint Rules
 
 Agent replies are scanned for forbidden keywords before dispatch. Rules are stored
