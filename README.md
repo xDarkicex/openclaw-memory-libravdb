@@ -142,6 +142,32 @@ If your service runs elsewhere, set `sidecarPath`:
 }
 ```
 
+## Docker & Kubernetes Deployment
+
+The daemon is K8-ready. Deployment files live in [`deploy/`](deploy/):
+
+| File | Use |
+|------|-----|
+| [`Dockerfile`](deploy/Dockerfile) | Production image (Alpine) — pulls the binary from GitHub releases |
+| [`docker-compose.yml`](deploy/docker-compose.yml) | Local dev / single-server: `docker compose up -d` |
+| [`helm/libravdbd/`](deploy/helm/libravdbd) | Full Helm chart — ConfigMap, PVC, Service, Deployment, mTLS support |
+
+```bash
+# Quick start with Docker
+cd deploy && docker compose up -d
+
+# K8s with Helm
+helm install libravdbd ./deploy/helm/libravdbd
+
+# K8s with mTLS
+helm install libravdbd ./deploy/helm/libravdbd \
+  --set tls.enabled=true \
+  --set tls.cert=$(base64 -i server.crt) \
+  --set tls.key=$(base64 -i server.key)
+```
+
+The image pulls pre-built binaries from [GitHub Releases](https://github.com/zephyr-systems/libravdbd/releases) — no build step needed. Supports `linux/amd64` and `linux/arm64`.
+
 ## Highlights
 
 ### Why LibraVDB over other memory plugins
