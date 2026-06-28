@@ -2514,3 +2514,86 @@ test("context engine assemble drain handles empty queue gracefully", async () =>
 // consecutive cursor positions, exercising the hasAllToolIdsSeen / recordToolIds
 // path directly.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// tokenBudgetMax — absolute injection ceiling (window-independent)
+// ---------------------------------------------------------------------------
+
+test("tokenBudgetMax caps the daemon budget and truncates the injected system prompt", async () => {
+  const client = new FakeClient();
+  // ~9000 tokens of plain injection (sanitization is a no-op for plain text).
+  const bigInjection = "alpha ".repeat(6000);
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 9000,
+    systemPromptAddition: bigInjection,
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    tokenBudgetMax: 1000,
+    tokenBudgetFraction: 0.2,
+    crossSessionRecall: false, // skip exact recall
+    beforeTurnEnabled: false, // skip beforeTurn injection
+  });
+
+  const messages = [
+    { role: "user", content: "earlier", id: "u0" },
+    { role: "assistant", content: "ok", id: "a0" },
+    { role: "user", content: "what is the status", id: "u1" },
+  ];
+  const result = await engine.assemble({
+    sessionId: "s-cap",
+    sessionKey: "agent:main:session:s-cap",
+    messages,
+    tokenBudget: 1_000_000, // 1M window
+    prompt: "what is the status",
+  });
+
+  // Stage 1: the daemon received min(1M, 1000 / 0.2) = 5000, not the full window.
+  const assembleCall = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(assembleCall, "assembleContextInternal should be called");
+  assert.equal(assembleCall.params.tokenBudget, 5000);
+
+  // Stage 2: combined injection truncated to tokenBudgetMax (1000 tokens =
+  // 4000 chars at APPROX_CHARS_PER_TOKEN=4).
+  assert.ok(
+    result.systemPromptAddition.length <= 4000,
+    `injection ${result.systemPromptAddition.length} chars should be <= 4000`,
+  );
+  assert.ok(result.systemPromptAddition.length > 0, "some injection survives the trim");
+  assert.ok(
+    result.systemPromptAddition.length < bigInjection.length,
+    "injection was actually truncated",
+  );
+});
+
+test("tokenBudgetMax unset: daemon budget passes through uncapped", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 100,
+    systemPromptAddition: "small note",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    crossSessionRecall: false,
+    beforeTurnEnabled: false,
+  });
+
+  const messages = [
+    { role: "user", content: "earlier", id: "u0" },
+    { role: "assistant", content: "ok", id: "a0" },
+    { role: "user", content: "hi", id: "u1" },
+  ];
+  await engine.assemble({
+    sessionId: "s-uncapped",
+    sessionKey: "agent:main:session:s-uncapped",
+    messages,
+    tokenBudget: 1_000_000,
+    prompt: "hi",
+  });
+
+  const assembleCall = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(assembleCall, "assembleContextInternal should be called");
+  assert.equal(assembleCall.params.tokenBudget, 1_000_000, "full window passed when uncapped");
+});
