@@ -147,3 +147,63 @@ test("ok=false ingest responses fail instead of being treated as accepted", asyn
   assert.equal(calls[1]?.mode, IngestMode.REPLACE);
   assert.equal(calls[0]?.text, calls[1]?.text, "rejected chunks must not advance the offset");
 });
+
+test("async queue-time nodesAccepted=0 / nodesRejected=0 is success, not a rejection", async () => {
+  // The daemon queues asynchronously and returns before commit, so a perfectly
+  // good ingest reports nodesAccepted=0, nodesRejected=0 at RPC time. This must
+  // NOT be logged as "permanently rejected" (the bug that flooded logs under
+  // load) and must not trigger pointless chunk-shrinking.
+  const calls: string[] = [];
+  const warnings: string[] = [];
+  const queue = new IngestQueue(
+    async (params) => {
+      calls.push(params.text);
+      return {
+        ok: true,
+        feedback: feedback({ nodesAccepted: 0, nodesRejected: 0, tokensIngested: 0, tokenBurstLimit: 512 }),
+      };
+    },
+    async () => {},
+    { error() {}, warn(m: string) { warnings.push(String(m)); } },
+    { chunkTokens: 8192, maxRetries: 0, retryBaseDelayMs: 0 },
+  );
+
+  const doc = "lorem ipsum dolor sit amet ".repeat(2000); // ~54k chars → multiple chunks
+
+  await queue.enqueueIngest("/vault/dense.md", doc, baseParams());
+
+  assert.equal(
+    warnings.filter((w) => w.toLowerCase().includes("reject")).length,
+    0,
+    "async-queued chunks must not produce rejection warnings",
+  );
+  assert.equal(calls.join(""), doc, "the whole document is submitted contiguously");
+});
+
+test("a real rejection (nodesRejected>0) with a lower burst limit shrinks and retries the same offset", async () => {
+  const calls: string[] = [];
+  let n = 0;
+  const queue = new IngestQueue(
+    async (params) => {
+      calls.push(params.text);
+      n += 1;
+      // First attempt: a genuine rejection reporting a lower per-chunk limit.
+      if (n === 1) {
+        return { ok: true, feedback: feedback({ nodesAccepted: 0, nodesRejected: 2, tokenBurstLimit: 256 }) };
+      }
+      // After shrinking, the smaller chunks queue fine (async, nothing rejected).
+      return { ok: true, feedback: feedback({ nodesAccepted: 0, nodesRejected: 0, tokenBurstLimit: 512 }) };
+    },
+    async () => {},
+    { error() {}, warn() {} },
+    { chunkTokens: 1024, maxRetries: 0, retryBaseDelayMs: 0 },
+  );
+
+  const doc = "x".repeat(8000);
+
+  await queue.enqueueIngest("/d.md", doc, baseParams());
+
+  assert.ok(calls.length >= 2, "should retry after a real rejection");
+  assert.ok(calls[1].length < calls[0].length, "the retry shrinks the chunk");
+  assert.equal(calls[0].slice(0, calls[1].length), calls[1], "the retry is the same offset, just smaller");
+});
