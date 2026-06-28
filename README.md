@@ -1,21 +1,69 @@
-# ♎ LibraVDB - Memory and Context Management
+# ♎ LibraVDB — Cognitive Memory Engine for OpenClaw
 
 <div align="center">
-  <img src="./docs/assets/libravdb-logo.svg" alt="LibraVDB" width="640">
+  <img src="./docs/assets/libravdb-logo.svg" alt="LibraVDB" width="480">
+
+  <p><strong>Local-first memory kernel with causal graph reasoning, identity tracking, and hard PII enforcement.</strong><br/>
+  <em>768-dim vector search • 6-tier cognitive classification • Zero-cloud guarantee</em></p>
+
+  <p>
+    <a href="https://www.npmjs.com/package/@xdarkicex/openclaw-memory-libravdb"><img src="https://img.shields.io/npm/v/%40xdarkicex%2Fopenclaw-memory-libravdb?label=release&color=5B21B6" alt="npm"></a>
+    <a href="https://github.com/xDarkicex/openclaw-memory-libravdb"><img src="https://img.shields.io/github/stars/xDarkicex/openclaw-memory-libravdb?style=social" alt="stars"></a>
+    <a href="https://discord.gg/DWn4BpRQAS"><img src="https://img.shields.io/badge/Discord-LibraVDB-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License"></a>
+    <br>
+    <a href="https://github.com/xDarkicex/libravdbd"><img src="https://img.shields.io/badge/daemon-v1.9.3-00ADD8?logo=go&logoColor=white" alt="Daemon"></a>
+    <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TS">
+    <img src="https://img.shields.io/badge/OpenClaw-2026.3%2B-111827" alt="OC">
+    <img src="https://img.shields.io/badge/K8s-ready-326CE5?logo=kubernetes&logoColor=white" alt="k8s">
+  </p>
 </div>
 
-<div align="center">
-  <a href="https://github.com/xDarkicex/libravdbd"><img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.25+"></a>
-  <a href="./package.json"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.x"></a>
-  <a href="./openclaw.plugin.json"><img src="https://img.shields.io/badge/OpenClaw-memory%20plugin-111827" alt="OpenClaw memory plugin"></a>
-  <a href="https://www.npmjs.com/package/@xdarkicex/openclaw-memory-libravdb"><img src="https://img.shields.io/npm/v/%40xdarkicex%2Fopenclaw-memory-libravdb?label=release&color=5B21B6" alt="Release"></a>
-  <a href="https://discord.gg/DWn4BpRQAS"><img src="https://img.shields.io/badge/Discord-LibraVDB-5865F2?logo=discord&logoColor=white" alt="LibraVDB Discord"></a>
-</div>
+```mermaid
+graph TB
+    OC[OpenClaw Agent] -->|gRPC| PLUGIN[Plugin: context-engine + tools]
+    PLUGIN -->|gRPC + mTLS| DAEMON[libravdbd Memory Kernel]
+    DAEMON --> EMBED[GGUF / ONNX / Remote]
+    DAEMON --> COG[Causal Graph: BOSS + TE/LK + SAT]
+    EMBED --> DB[(Vector DB)]
+    COG --> GRAPH[(Causal DAG)]
+    PLUGIN --> AGENT[LLM Agent]
+```
 
-`@xdarkicex/openclaw-memory-libravdb` is a local-first OpenClaw memory plugin
-backed by the `libravdbd` memory kernel. It replaces the lightweight default memory
-path with scoped session, user, and global memory; continuity-aware prompt
-assembly; durable recall; and kernel-owned compaction.
+## 🚀 Quick Start
+
+```bash
+# 1. Install daemon (pick your OS)
+brew tap xDarkicex/homebrew-openclaw-libravdb-memory && brew install libravdbd && brew services start libravdbd   # macOS
+# apt install libravdbd                                                                                         # Linux
+# yay -S libravdbd-bin                                                                                          # Arch
+
+# 2. Install plugin
+openclaw plugins install @xdarkicex/openclaw-memory-libravdb
+
+# 3. Verify
+openclaw memory status
+```
+
+> ⚡ **Done.** Your agent has persistent vector memory, identity tracking, and causal graph reasoning.
+
+<details>
+<summary>🐳 Docker (30 seconds) · ☸️ Kubernetes</summary>
+
+```bash
+# Docker
+cd deploy && docker compose up -d
+
+# K8s with Helm
+helm install libravdbd ./deploy/helm/libravdbd
+
+# K8s with mTLS
+helm install libravdbd ./deploy/helm/libravdbd \
+  --set tls.enabled=true --set tls.cert=$(base64 -i server.crt) --set tls.key=$(base64 -i server.key)
+```
+
+Terraform modules for EKS/GKE/AKS: [`deploy/terraform/`](deploy/terraform/)
+</details>
 
 [Install](./docs/install.md) · [Full installation reference](./docs/installation.md) · [Architecture](./docs/architecture.md) · [Security](./docs/security.md) · [Performance and tuning](./docs/performance-and-tuning.md) · [Contributing](./docs/contributing.md)
 
@@ -691,3 +739,11 @@ service checkout. For the full source workflow, read [Development](./docs/develo
 - default macOS/Linux endpoint: `unix:$HOME/.libravdbd/run/libravdb.sock`
 - default Windows endpoint: `tcp:127.0.0.1:37421`
 
+
+---
+
+<div align="center">
+  <sub>Built with ♎ by <a href="https://github.com/xDarkicex">xDarkicex</a> — local-first, privacy-first, forever free.</sub>
+
+  [![Star History Chart](https://api.star-history.com/svg?repos=xDarkicex/openclaw-memory-libravdb&type=Date)](https://star-history.com/#xDarkicex/openclaw-memory-libravdb&Date)
+</div>
