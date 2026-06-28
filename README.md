@@ -168,6 +168,15 @@ helm install libravdbd ./deploy/helm/libravdbd \
 
 The image pulls pre-built binaries from [GitHub Releases](https://github.com/zephyr-systems/libravdbd/releases) — no build step needed. Supports `linux/amd64` and `linux/arm64`.
 
+**Terraform** modules for cloud deployment live in [`deploy/terraform/`](deploy/terraform/):
+
+| Provider | Directory | Use |
+|----------|-----------|-----|
+| AWS EKS | [`eks/`](deploy/terraform/eks) | `terraform apply -var cluster_name=my-cluster` |
+| GCP GKE | [`gke/`](deploy/terraform/gke) | `terraform apply -var project=my-project -var cluster_name=my-cluster` |
+| Azure AKS | [`aks/`](deploy/terraform/aks) | `terraform apply -var resource_group=my-rg -var cluster_name=my-cluster` |
+| Standalone VM | [`vm/`](deploy/terraform/vm) | EC2 + Docker, no k8s required |
+
 ## Highlights
 
 ### Why LibraVDB over other memory plugins
