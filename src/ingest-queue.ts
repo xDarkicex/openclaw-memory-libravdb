@@ -18,6 +18,17 @@ const DEFAULT_OPTIONS: IngestQueueOptions = {
   maxRetries: 4,
 };
 
+// Heuristic used to translate a token budget into a character budget. This is a
+// generous average for English prose; dense/structured/CJK text runs well below
+// it, which is why chunk sizing must back off empirically (see enqueueIngest)
+// rather than trust this ratio alone.
+const CHARS_PER_TOKEN = 4;
+
+// Floor for the adaptive chunk-size back-off. If a chunk is still rejected at
+// this token budget we stop shrinking and drop it (last resort), guaranteeing
+// the retry loop terminates.
+const MIN_CHUNK_TOKENS = 16;
+
 interface IngestMarkdownDocumentParams {
   sourceDoc: string;
   text: string;
@@ -123,22 +134,35 @@ export class IngestQueue {
       const resp = await this.ingestWithRetry(chunkParams);
       lastFeedback = resp.feedback;
 
-      if (
-        lastFeedback &&
-        lastFeedback.nodesAccepted === 0 &&
-        lastFeedback.tokenBurstLimit &&
-        lastFeedback.tokenBurstLimit > 0 &&
-        lastFeedback.tokenBurstLimit < currentLimit
-      ) {
-        currentLimit = lastFeedback.tokenBurstLimit;
-        continue;
-      }
-
       if (lastFeedback && lastFeedback.nodesAccepted === 0) {
+        // The daemon rejected the chunk (over its token-burst limit). Shrink the
+        // budget and retry the SAME offset. Prefer the daemon's stated limit
+        // when it is actually lower; otherwise our chars/token estimate was too
+        // generous for this content (dense / CJK text runs well under
+        // CHARS_PER_TOKEN), so base the next budget on half the just-rejected
+        // chunk's real size. This converges for any token density without
+        // needing the true ratio — and crucially does NOT stall when the daemon
+        // keeps reporting the same limit (the original `< currentLimit` guard
+        // could never shrink past it, silently dropping dense documents).
+        const daemonLimit = lastFeedback.tokenBurstLimit;
+        let nextLimit = daemonLimit && daemonLimit > 0 && daemonLimit < currentLimit
+          ? daemonLimit
+          : currentLimit;
+        if (nextLimit * CHARS_PER_TOKEN >= chunkText.length) {
+          nextLimit = Math.floor(chunkText.length / CHARS_PER_TOKEN / 2);
+        }
+        if (nextLimit >= MIN_CHUNK_TOKENS && nextLimit < currentLimit) {
+          currentLimit = nextLimit;
+          continue;
+        }
+
+        // Already at the minimum chunk size and still rejected — drop this chunk
+        // (last resort; advancing the offset prevents an infinite loop).
         this.logger.warn?.(
           `[ingest-queue] Chunk permanently rejected for ${sourceDoc} ` +
           `at offset=${offset} length=${chunkText.length} ` +
-          `tokenBurstLimit=${lastFeedback.tokenBurstLimit ?? "unset"}`,
+          `tokenBurstLimit=${lastFeedback.tokenBurstLimit ?? "unset"} ` +
+          `currentLimit=${currentLimit}`,
         );
       }
 
@@ -194,7 +218,7 @@ function splitIntoChunks(text: string, maxTokens: number): Array<{ text: string;
   if (!(maxTokens > 0)) {
     return [{ text, ordinal: 0 }];
   }
-  const maxChars = maxTokens * 4;
+  const maxChars = maxTokens * CHARS_PER_TOKEN;
   if (text.length <= maxChars) {
     return [{ text, ordinal: 0 }];
   }
