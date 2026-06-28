@@ -207,6 +207,15 @@
       "subagentTokenBudget": {
         "type": "number"
       },
+      "excludeAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Agent ids whose sessions skip ALL LibraVDB memory/context work (no injection, ingestion, compaction, or daemon RPCs). The agent id is parsed from the session key (agent:<agentId>:...). Opt-in; empty by default."
+      },
+      "excludeSubagents": {
+        "type": "boolean",
+        "description": "When true, every subagent session skips ALL LibraVDB memory/context work. Subagents are identified via the prepareSubagentSpawn lifecycle. Opt-in; defaults to false."
+      },
       "beforeTurnEnabled": {
         "type": "boolean"
       },

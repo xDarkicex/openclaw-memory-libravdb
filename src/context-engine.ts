@@ -1680,6 +1680,37 @@ export function buildContextEngineFactory(
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
 
+  // --- Per-agent / per-subagent exclusion ---
+  // Sessions belonging to an excluded agent (or, when excludeSubagents is set,
+  // any subagent) skip ALL memory work: no injection, ingestion, compaction, or
+  // daemon RPCs. Subagents are tracked via the prepareSubagentSpawn lifecycle.
+  const excludedAgents = new Set(
+    (Array.isArray(cfg?.excludeAgents) ? cfg.excludeAgents : [])
+      .map((a) => String(a).trim())
+      .filter(Boolean),
+  );
+  const excludeSubagents = cfg?.excludeSubagents === true;
+  const excludedSubagentKeys = new Set<string>();
+  // compact() only receives sessionId (no sessionKey), so excluded sessions are
+  // recorded here at bootstrap time to let compact() short-circuit too.
+  const excludedSessionIds = new Set<string>();
+  const EXCLUDED_SESSION_IDS_MAX = 1000;
+
+  function agentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
+    const m = /^agent:([^:]+):/.exec(sessionKey ?? "");
+    return m ? m[1] : undefined;
+  }
+  function isExcludedSession(sessionKey: string | undefined): boolean {
+    if (excludedAgents.size) {
+      const agentId = agentIdFromSessionKey(sessionKey);
+      if (agentId && excludedAgents.has(agentId)) return true;
+    }
+    if (excludeSubagents && sessionKey && excludedSubagentKeys.has(subagentKey(sessionKey))) {
+      return true;
+    }
+    return false;
+  }
+
   function resolveUserId(args?: {
     userIdOverride?: string;
     sessionKey?: string;
@@ -2316,6 +2347,14 @@ export function buildContextEngineFactory(
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
+      if (isExcludedSession(args.sessionKey)) {
+        if (excludedSessionIds.size >= EXCLUDED_SESSION_IDS_MAX) {
+          const oldest = excludedSessionIds.values().next().value;
+          if (oldest !== undefined) excludedSessionIds.delete(oldest);
+        }
+        excludedSessionIds.add(sessionId);
+        return { ok: true };
+      }
       predictiveContextCache.delete(sessionId);
       postToolRecallCache.delete(sessionId);
       asyncIngestionQueues.delete(sessionId);
@@ -2336,6 +2375,7 @@ export function buildContextEngineFactory(
     },
     async ingest(args: { sessionId: string; sessionKey?: string; userId?: string; message: { role: string; content: unknown; id?: string }; isHeartbeat?: boolean }) {
       const sessionId = requireSessionId(args.sessionId, "ingest");
+      if (isExcludedSession(args.sessionKey)) return { ok: true };
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2374,6 +2414,19 @@ export function buildContextEngineFactory(
       currentTokenCount?: number;
     }): Promise<OpenClawCompatibleAssembleResult> {
       const sessionId = requireSessionId(args.sessionId, "assemble");
+      // Excluded agents/subagents: a TRUE no-op. Return the host's messages
+      // untouched (byte-identical, no budget-fitting — budget-fitting can drop
+      // messages mid-tool-protocol, which strict providers reject) with zero
+      // injection. Context budget stays the host's responsibility.
+      if (isExcludedSession(args.sessionKey)) {
+        const passthrough = Array.isArray(args.messages) ? args.messages : [];
+        return {
+          messages: passthrough,
+          estimatedTokens: approximateMessagesTokens(passthrough),
+          systemPromptAddition: "",
+          promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+        };
+      }
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2717,6 +2770,9 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
       abortSignal?: AbortSignal;
     }) {
+      if (args.sessionId && excludedSessionIds.has(args.sessionId)) {
+        return { ok: true, compacted: false, reason: "agent excluded" };
+      }
       const tokenBudget =
         normalizeTokenBudget(args.tokenBudget) ??
         normalizeTokenBudget(readRuntimeNumber(args.runtimeContext, "tokenBudget"));
@@ -2766,6 +2822,9 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
     }) {
       const sessionId = requireSessionId(args.sessionId, "afterTurn");
+      if (isExcludedSession(args.sessionKey)) {
+        return { ok: true, skipped: true, reason: "agent excluded" };
+      }
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2920,6 +2979,22 @@ export function buildContextEngineFactory(
       childSessionFile?: string;
       ttlMs?: number;
     }) {
+      // When subagents are excluded, mark this child session so all of its
+      // kernel calls (bootstrap/ingest/assemble/afterTurn/compact) no-op. No
+      // expansion budget is granted because the subagent has no memory to expand.
+      if (excludeSubagents) {
+        const ek = subagentKey(params.childSessionKey);
+        excludedSubagentKeys.add(ek);
+        logger.info?.(
+          `LibraVDB subagent memory disabled (excludeSubagents) ` +
+          `sessionKey=${params.childSessionKey}`,
+        );
+        return {
+          rollback: () => {
+            excludedSubagentKeys.delete(ek);
+          },
+        };
+      }
       // Grant the subagent a token budget for memory expansion.
       // Default 8000 tokens — enough for a focused expansion,
       // small enough to prevent context window destruction.
@@ -2945,6 +3020,7 @@ export function buildContextEngineFactory(
     },
     async onSubagentEnded(params: { childSessionKey: string; reason: string }) {
       const key = subagentKey(params.childSessionKey);
+      excludedSubagentKeys.delete(key);
       const budget = subagentBudgets.get(key);
       if (budget) {
         logger.info?.(
@@ -2980,6 +3056,8 @@ export function buildContextEngineFactory(
       postToolRecallCache.clear();
       asyncIngestionQueues.clear();
       triggerCache.clear();
+      excludedSubagentKeys.clear();
+      excludedSessionIds.clear();
     },
   };
 }

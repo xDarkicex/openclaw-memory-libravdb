@@ -2514,3 +2514,132 @@ test("context engine assemble drain handles empty queue gracefully", async () =>
 // consecutive cursor positions, exercising the hasAllToolIdsSeen / recordToolIds
 // path directly.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Per-agent / per-subagent exclusion (excludeAgents / excludeSubagents)
+// ---------------------------------------------------------------------------
+
+// A runtime whose getClient throws — proves an excluded session never reaches
+// the daemon.
+function throwingRuntime(): PluginRuntime {
+  return {
+    getClient: async () => {
+      throw new Error("client must not be acquired for an excluded session");
+    },
+    emitLifecycleHint: async () => {},
+    onShutdown: () => {},
+    shutdown: async () => {},
+  };
+}
+
+test("excludeAgents: excluded agent skips all kernel work without touching the daemon", async () => {
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+  const sessionKey = "agent:fastbot:session:s1";
+
+  const boot = await engine.bootstrap({ sessionId: "s1", sessionKey });
+  assert.deepEqual(boot, { ok: true });
+
+  const ingested = await engine.ingest({
+    sessionId: "s1",
+    sessionKey,
+    message: { role: "user", content: "hello" },
+  });
+  assert.deepEqual(ingested, { ok: true });
+
+  const messages = [{ role: "user", content: "hello", id: "u1" }];
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey,
+    messages,
+    tokenBudget: 10_000,
+    prompt: "hello",
+  });
+  assert.equal(assembled.systemPromptAddition, "", "no injection for excluded agent");
+  assert.deepEqual(assembled.messages, messages, "messages passed through byte-identical");
+
+  const after = await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey,
+    messages,
+    prePromptMessageCount: 0,
+  });
+  assert.equal(after.ok, true);
+  assert.equal(after.skipped, true);
+
+  // compact() only carries sessionId; bootstrap recorded s1 as excluded so it
+  // short-circuits without acquiring the (throwing) client.
+  const compacted = await engine.compact({
+    sessionId: "s1",
+    tokenBudget: 200_000,
+    currentTokenCount: 199_000,
+    force: true,
+  });
+  assert.equal(compacted.compacted, false);
+  assert.equal(compacted.reason, "agent excluded");
+});
+
+test("excludeAgents: a non-excluded agent still reaches the daemon", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+
+  await engine.bootstrap({ sessionId: "s2", sessionKey: "agent:main:session:s2" });
+
+  assert.ok(
+    client.calls.find((c) => c.method === "bootstrapSessionKernel"),
+    "non-excluded agent bootstraps via the daemon",
+  );
+});
+
+test("excludeSubagents: a spawned subagent skips all kernel work", async () => {
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeSubagents: true,
+  });
+  const childSessionKey = "agent:main:subagent:child1";
+
+  const handle = await engine.prepareSubagentSpawn({
+    parentSessionKey: "agent:main:session:s1",
+    childSessionKey,
+  });
+
+  const boot = await engine.bootstrap({ sessionId: "c1", sessionKey: childSessionKey });
+  assert.deepEqual(boot, { ok: true });
+
+  const messages = [{ role: "user", content: "subagent task", id: "u1" }];
+  const assembled = await engine.assemble({
+    sessionId: "c1",
+    sessionKey: childSessionKey,
+    messages,
+    tokenBudget: 10_000,
+  });
+  assert.equal(assembled.systemPromptAddition, "");
+  assert.deepEqual(assembled.messages, messages);
+
+  // Lifecycle teardown must clear the exclusion marker (idempotent with rollback).
+  handle.rollback?.();
+  await engine.onSubagentEnded({ childSessionKey, reason: "completed" });
+});
+
+test("excludeSubagents off by default: a subagent is granted a normal expansion budget", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const childSessionKey = "agent:main:subagent:child2";
+
+  const handle = await engine.prepareSubagentSpawn({
+    parentSessionKey: "agent:main:session:s1",
+    childSessionKey,
+  });
+  assert.equal(typeof handle.rollback, "function");
+
+  await engine.bootstrap({ sessionId: "c2", sessionKey: childSessionKey });
+  assert.ok(
+    client.calls.find((c) => c.method === "bootstrapSessionKernel"),
+    "a non-excluded subagent still bootstraps via the daemon",
+  );
+});
