@@ -213,7 +213,7 @@ export function createLibraVdbMemoryTools(
           const maxResults = readNumberParam(params, "maxResults", { integer: true });
           const minScore = readNumberParam(params, "minScore");
           const resultLimit = resolveResultLimit(maxResults, cfg.topK);
-          const overfetchIdentityResults = shouldOverfetchForIdentityQuery(query);
+          const overfetchIdentityResults = hasIdentitySearchIntent(query, kind, signals);
           const searchMaxResults = overfetchIdentityResults
             ? Math.min(50, Math.max(resultLimit, resultLimit * 3, 20))
             : maxResults;
@@ -394,6 +394,10 @@ function resolveResultLimit(maxResults: number | undefined, configuredTopK: numb
     : 8);
 }
 
+function hasIdentitySearchIntent(query: string, kind?: string, signals?: string[]): boolean {
+  return kind === "identity" || signals?.includes("identity") === true || shouldOverfetchForIdentityQuery(query);
+}
+
 function shouldOverfetchForIdentityQuery(query: string): boolean {
   const trimmed = query.trim();
   const normalized = normalizeIdentityText(query);
@@ -406,7 +410,7 @@ function shouldOverfetchForIdentityQuery(query: string): boolean {
 
 function rankIdentitySearchResults(query: string, results: MemorySearchResult[]): MemorySearchResult[] {
   if (results.length < 2) return results;
-  const queryTokens = identityTokens(query);
+  const queryTokens = identityEntityTokens(query);
   if (queryTokens.length === 0) return results;
 
   const ranked = results.map((result, index) => {
@@ -464,6 +468,33 @@ function parseOpenClawContextHeader(text: string): Record<string, string> {
 function identityTokens(text: string): string[] {
   const normalized = normalizeIdentityText(text);
   return normalized.match(/[a-z0-9]+/gu)?.filter((token) => token.length >= 3) ?? [];
+}
+
+function identityEntityTokens(text: string): string[] {
+  const ignored = new Set([
+    "about",
+    "are",
+    "author",
+    "discord",
+    "history",
+    "identity",
+    "imessage",
+    "know",
+    "person",
+    "profile",
+    "sender",
+    "speaker",
+    "tell",
+    "user",
+    "what",
+    "when",
+    "where",
+    "who",
+    "with",
+  ]);
+  const tokens = identityTokens(text);
+  const entityTokens = tokens.filter((token) => !ignored.has(token));
+  return entityTokens.length > 0 ? entityTokens : tokens;
 }
 
 function normalizeIdentityText(text: string): string {

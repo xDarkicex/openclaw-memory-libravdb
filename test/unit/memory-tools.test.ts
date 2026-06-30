@@ -95,38 +95,43 @@ class CorpusPriorityRpc extends FakeRpc {
 }
 
 class IdentityRpc extends FakeRpc {
+  constructor(private readonly subjectName = "ExampleUser-1001") {
+    super();
+  }
+
   override async searchTextCollections(params: Record<string, unknown>) {
     this.calls.push({ method: "searchTextCollections", params });
     const encoder = new TextEncoder();
+    const subjectName = this.subjectName;
     const rows = [
       {
         id: "ask-1",
         score: 0.99,
-        text: "[OpenClaw context: sender=CurrentUser; username=current_user; user_id=2001]\n@Assistant who is ExampleUser-1001?",
+        text: `[OpenClaw context: sender=CurrentUser; username=current_user; user_id=2001]\n@Assistant who is ${subjectName}?`,
         metadataJson: encoder.encode(JSON.stringify({ collection: "user:u1" })),
       },
       {
         id: "ask-2",
         score: 0.98,
-        text: "[OpenClaw context: sender=CurrentUser; username=current_user; user_id=2001]\n@Assistant please use memory_search for ExampleUser-1001",
+        text: `[OpenClaw context: sender=CurrentUser; username=current_user; user_id=2001]\n@Assistant please use memory_search for ${subjectName}`,
         metadataJson: encoder.encode(JSON.stringify({ collection: "user:u1" })),
       },
       {
         id: "subject",
         score: 0.72,
-        text: "[OpenClaw context: sender=ExampleUser-1001; username=example_user; user_id=1001]\nThis memory search is semantic.",
+        text: `[OpenClaw context: sender=${subjectName}; username=example_user; user_id=1001]\nThis memory search is semantic.`,
         metadataJson: encoder.encode(JSON.stringify({ collection: "user:u1" })),
       },
       {
         id: "tool-artifact",
         score: 0.71,
-        text: "[tool:get_user_card] {\"user_id\":\"ExampleUser-1001\"}",
+        text: `[tool:get_user_card] {"user_id":"${subjectName}"}`,
         metadataJson: encoder.encode(JSON.stringify({ collection: "session:discord-session" })),
       },
       {
         id: "user-card:discord|channel=c|sender=141",
         score: 0.7,
-        text: "Stable identity card projected by OpenClaw user-cards.\n- speaker id: 1001\n- visible names: ExampleUser-1001\nRelevant high-signal notes:\n- useful detail",
+        text: `Stable identity card projected by OpenClaw user-cards.\n- speaker id: 1001\n- visible names: ${subjectName}\nRelevant high-signal notes:\n- useful detail`,
         metadataJson: encoder.encode(JSON.stringify({ collection: "user:u1" })),
       },
     ];
@@ -206,6 +211,28 @@ test("LibraVDB memory_search prefers user-card identity hits over prompt echoes"
   assert.match(details.results[0]?.snippet ?? "", /visible names: ExampleUser-1001/u);
   assert.equal(details.results[1]?.citation, "user:u1:subject");
   assert.equal(details.results.some((result) => result.citation === "session:discord-session:tool-artifact"), false);
+});
+
+test("LibraVDB memory_search overfetches explicit identity filters and matches entity tokens", async () => {
+  const rpc = new IdentityRpc("SampleName-1001");
+  const cfg: PluginConfig = { userId: "u1" };
+  const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
+  const searchTool = tools.createSearchTool({
+    agentId: "spartacus",
+    sessionId: "discord-session",
+    sessionKey: "discord-key-explicit",
+  });
+
+  const search = await searchTool.execute("call-1", {
+    query: "history with SampleName-1001",
+    kind: "identity",
+    maxResults: 2,
+  });
+  const details = search.details as { results: Array<{ citation: string; snippet: string }> };
+
+  assert.equal(rpc.calls[1]?.params.k, 20, "kind=identity should overfetch even when the raw query is prose");
+  assert.equal(details.results[0]?.citation, "user:u1:user-card:discord|channel=c|sender=141");
+  assert.match(details.results[0]?.snippet ?? "", /visible names: SampleName-1001/u);
 });
 
 test("LibraVDB memory_search supports sessions corpus filtering without memory-core", async () => {

@@ -63,11 +63,11 @@ class FakeRecallClient {
   }
 }
 
-function userCardResult(userId: string, card: string, updatedAt = 100, version = 1, source?: string) {
+function userCardResult(userId: string, card: string, updatedAt = 100, version = 1, source: string | null = "openclaw-user-cards") {
   return {
     metadataJson: new TextEncoder().encode(JSON.stringify({
       _user_id: userId,
-      card_json: JSON.stringify(source ? { card, source } : { card }),
+      card_json: JSON.stringify(source === null ? { card } : { card, source }),
       updated_at: updatedAt,
       version,
     })),
@@ -158,6 +158,43 @@ test("get_user_card alias fallback ignores names that appear only in notes", asy
   const result = await tool.execute("call-1", { user_id: "ExampleUser-1001" });
 
   assert.deepEqual(result.details, { card: null, updatedAt: undefined, version: undefined });
+});
+
+test("get_user_card alias fallback ignores source-less and metadata-only matches", async () => {
+  const client = new FakeRecallClient();
+  client.listResults = [
+    userCardResult(
+      "discord|channel=c|sender=1",
+      [
+        "User card: Source Missing",
+        "Known aliases: Missing",
+      ].join("\n"),
+      300,
+      3,
+      null,
+    ),
+    userCardResult(
+      "discord|channel=c|sender=2",
+      [
+        "User card: Other Person",
+        "Known aliases: Other",
+        "provider: discord",
+        "channel id: ExampleUser-1001",
+      ].join("\n"),
+      200,
+      2,
+    ),
+  ];
+  const tool = createGetUserCardTool(
+    async () => client as unknown as LibravDBClient,
+    silentLogger,
+  );
+
+  const missingSource = await tool.execute("call-1", { user_id: "Missing" });
+  const metadataOnly = await tool.execute("call-2", { user_id: "ExampleUser-1001" });
+
+  assert.deepEqual(missingSource.details, { card: null, updatedAt: undefined, version: undefined });
+  assert.deepEqual(metadataOnly.details, { card: null, updatedAt: undefined, version: undefined });
 });
 
 function fakeRuntime(client: FakeRecallClient): PluginRuntime {

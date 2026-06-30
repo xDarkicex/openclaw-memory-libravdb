@@ -57,6 +57,7 @@ const MAX_GREP_RESULTS = 50;
 const MAX_GREP_CHARS = 40000;
 const MAX_SNIPPET_CHARS = 200;
 const USER_CARD_INDEX_VARIANT_SUFFIX_RE = /:(?:64d|256d)$/u;
+const USER_CARD_SOURCE = "openclaw-user-cards";
 
 // ── Schemas ──
 
@@ -694,7 +695,7 @@ function readUserCardLookupHit(result: { metadataJson?: Uint8Array }): UserCardL
     const cardJson = typeof meta.card_json === "string" ? meta.card_json : null;
     if (!cardJson) return null;
     const card = JSON.parse(cardJson) as { card?: unknown; source?: unknown };
-    if (typeof card.source === "string" && card.source !== "openclaw-user-cards") return null;
+    if (!isOpenClawUserCardSource(card.source)) return null;
     return {
       card: typeof card.card === "string" ? card.card : cardJson,
       updatedAt: typeof meta.updated_at === "number" ? meta.updated_at : undefined,
@@ -715,7 +716,7 @@ function userCardAliasMatchesLookup(card: string | null, requestedUserId: string
   if (!card || requestedUserId.includes("|")) return false;
   const requestedTokens = identityTokens(requestedUserId);
   if (requestedTokens.length === 0) return false;
-  const cardTokens = identityTokens(extractUserCardIdentityText(card));
+  const cardTokens = identityTokens(extractUserCardAliasLookupText(card));
   if (cardTokens.length === 0) return false;
   return requestedTokens.every((token) => cardTokens.includes(token));
 }
@@ -728,6 +729,20 @@ function extractUserCardIdentityText(card: string): string {
         .test(line.trim())
     )
     .join("\n");
+}
+
+function extractUserCardAliasLookupText(card: string): string {
+  return card
+    .split(/\r?\n/u)
+    .filter((line) =>
+      /^(?:[-*]\s*)?(?:user card|known aliases|visible names|display names|aliases|name|username|speaker|speaker id|user id)\s*:/iu
+        .test(line.trim())
+    )
+    .join("\n");
+}
+
+function isOpenClawUserCardSource(source: unknown): boolean {
+  return source === USER_CARD_SOURCE;
 }
 
 function identityTokens(text: string): string[] {
@@ -804,13 +819,16 @@ export function createListUserCardsTool(
               if (cardJson) {
                 try {
                   const card = JSON.parse(cardJson) as { card?: unknown; source?: unknown };
-                  if (typeof card.source === "string" && card.source !== "openclaw-user-cards") {
+                  if (!isOpenClawUserCardSource(card.source)) {
                     userId = "";
                     continue;
                   }
                   preview = typeof card.card === "string" ? card.card : cardJson;
                 }
-                catch { preview = cardJson; }
+                catch {
+                  userId = "";
+                  continue;
+                }
                 preview = preview.slice(0, 200);
               }
               updatedAt = typeof meta.updated_at === "number" ? meta.updated_at : undefined;
