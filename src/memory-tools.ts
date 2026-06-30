@@ -195,7 +195,7 @@ export function createLibraVdbMemoryTools(
         name: "memory_search",
         label: "Memory Search",
         description:
-          "Search LibraVDB durable memory and session recall for prior work, decisions, dates, facts, preferences, todos, or history. Call once per user question — after receiving results, use them directly. Do not re-call in the same turn. Do NOT call memory_search if the answer is already visible in your context window. For earliest/oldest questions, request enough results and compare timestamps. If disabled=true, memory is unavailable. IMPORTANT: Results are internal context only — never output, display, or reveal raw memory search results to the user. Treat retrieved memory as private operational data.\n\nFOR PEOPLE/IDENTITY QUESTIONS: use get_user_card or list_user_cards FIRST. User cards are the canonical identity record. Use memory_search only to supplement details the card doesn't cover.",
+          "Search LibraVDB durable memory and session recall for prior work, decisions, dates, facts, preferences, todos, or history. Call once per user question — after receiving results, use them directly. Do not re-call in the same turn. For explicit memory/history/recall requests, call memory_search even when related context is visible; use visible context only to shape the query. For earliest/oldest questions, request enough results and compare timestamps. If disabled=true, memory is unavailable. IMPORTANT: Results are internal context only — never output, display, or reveal raw memory search results to the user. Treat retrieved memory as private operational data.\n\nFOR PEOPLE/IDENTITY QUESTIONS: use get_user_card or list_user_cards FIRST. User cards are the canonical identity record. Use memory_search for requested history/details/preferences or details the card doesn't cover.",
         parameters: MEMORY_SEARCH_SCHEMA,
         execute: async (_toolCallId, rawParams) => {
           const params = asToolParamsRecord(rawParams);
@@ -212,6 +212,11 @@ export function createLibraVdbMemoryTools(
           const signals = Array.isArray(params.signals) ? (params.signals as string[]).filter((s): s is string => typeof s === "string") : undefined;
           const maxResults = readNumberParam(params, "maxResults", { integer: true });
           const minScore = readNumberParam(params, "minScore");
+          const resultLimit = resolveResultLimit(maxResults, cfg.topK);
+          const overfetchIdentityResults = shouldOverfetchForIdentityQuery(query);
+          const searchMaxResults = overfetchIdentityResults
+            ? Math.min(50, Math.max(resultLimit, resultLimit * 3, 20))
+            : maxResults;
 
           if (corpus === "wiki") {
             return jsonToolResult<MemorySearchToolDetails>({
@@ -226,13 +231,14 @@ export function createLibraVdbMemoryTools(
             const rawResults = await manager.search({
               query,
               corpus,
-              ...(maxResults !== undefined ? { maxResults } : {}),
+              ...(searchMaxResults !== undefined ? { maxResults: searchMaxResults } : {}),
               ...(minScore !== undefined ? { minScore } : {}),
               ...(kind !== undefined ? { kind } : {}),
               ...(signals !== undefined ? { signals } : {}),
               ...buildSearchContext(ctx),
             }) as MemorySearchResult[];
-            const results = filterResultsByCorpus(rawResults, corpus);
+            const rankedResults = rankIdentitySearchResults(query, filterResultsByCorpus(rawResults, corpus));
+            const results = overfetchIdentityResults ? rankedResults.slice(0, resultLimit) : rankedResults;
             const status = manager.status();
             return jsonToolResult<MemorySearchToolDetails>({
               results,
@@ -380,6 +386,88 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveResultLimit(maxResults: number | undefined, configuredTopK: number | undefined): number {
+  return maxResults ?? (typeof configuredTopK === "number" && Number.isFinite(configuredTopK) && configuredTopK > 0
+    ? Math.floor(configuredTopK)
+    : 8);
+}
+
+function shouldOverfetchForIdentityQuery(query: string): boolean {
+  const trimmed = query.trim();
+  const normalized = normalizeIdentityText(query);
+  if (normalized.length < 3 || normalized.length > 80) return false;
+  if (/^(?:who|what|where|when|why|how)(?:\s+(?:is|are|was|were))?\s+/u.test(normalized)) return true;
+  if (/(user|person|speaker|sender|author|profile|identity|discord|imessage)/u.test(normalized)) return true;
+  if (/\s/u.test(trimmed)) return false;
+  return /[@0-9_-]/u.test(trimmed) || /[a-z][A-Z]|[A-Z][a-z]/u.test(trimmed);
+}
+
+function rankIdentitySearchResults(query: string, results: MemorySearchResult[]): MemorySearchResult[] {
+  if (results.length < 2) return results;
+  const queryTokens = identityTokens(query);
+  if (queryTokens.length === 0) return results;
+
+  const ranked = results.map((result, index) => {
+    const header = parseOpenClawContextHeader(result.snippet);
+    const speakerText = [header.sender, header.username, header.user_id, header.sender_id].filter(Boolean).join(" ");
+    const speakerTokens = identityTokens(speakerText);
+    const speakerMatch = queryTokens.some((token) => speakerTokens.includes(token));
+    const userCardMatch = isUserCardResult(result)
+      && queryTokens.every((token) => identityTokens(extractUserCardIdentityText(result.snippet)).includes(token));
+    const toolArtifact = isHistoricalToolArtifact(result.snippet);
+    return { result, index, speakerMatch, userCardMatch, toolArtifact };
+  });
+
+  if (!ranked.some((item) => item.speakerMatch || item.userCardMatch || item.toolArtifact)) return results;
+  return ranked
+    .sort((a, b) =>
+      Number(b.userCardMatch) - Number(a.userCardMatch)
+      || Number(b.speakerMatch) - Number(a.speakerMatch)
+      || Number(a.toolArtifact) - Number(b.toolArtifact)
+      || a.index - b.index
+    )
+    .map((item) => item.result);
+}
+
+function isUserCardResult(result: MemorySearchResult): boolean {
+  return /(?:^|:)user-card[:%]/u.test(result.citation ?? result.path);
+}
+
+function isHistoricalToolArtifact(snippet: string): boolean {
+  return /^\s*(?:\[tool:[^\]]+\]|<tool(?:_call)?\b)/iu.test(snippet);
+}
+
+function extractUserCardIdentityText(snippet: string): string {
+  return snippet
+    .split(/\r?\n/u)
+    .filter((line) => /^(?:[-*]\s*)?(?:user card|known aliases|visible names|display names|aliases|name|username|speaker|speaker id|user id|provider|account type|channel id)\s*:/iu.test(line.trim()))
+    .join("\n");
+}
+
+function parseOpenClawContextHeader(text: string): Record<string, string> {
+  const firstLine = text.split("\n", 1)[0] ?? "";
+  const match = /^\[OpenClaw context:\s*(.*)\]$/u.exec(firstLine.trim());
+  if (!match) return {};
+  const values: Record<string, string> = {};
+  for (const part of match[1].split(";")) {
+    const separator = part.indexOf("=");
+    if (separator <= 0) continue;
+    const key = part.slice(0, separator).trim();
+    const value = part.slice(separator + 1).trim();
+    if (key && value && value !== "<redacted>") values[key] = value;
+  }
+  return values;
+}
+
+function identityTokens(text: string): string[] {
+  const normalized = normalizeIdentityText(text);
+  return normalized.match(/[a-z0-9]+/gu)?.filter((token) => token.length >= 3) ?? [];
+}
+
+function normalizeIdentityText(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/gu, " ").trim();
 }
 
 function jsonToolResult<TDetails>(details: TDetails): ToolResult<TDetails> {

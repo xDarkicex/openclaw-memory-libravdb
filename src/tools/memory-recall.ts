@@ -56,6 +56,7 @@ const MAX_EXPAND_CHARS = MAX_EXPAND_TOKENS * 4;
 const MAX_GREP_RESULTS = 50;
 const MAX_GREP_CHARS = 40000;
 const MAX_SNIPPET_CHARS = 200;
+const USER_CARD_INDEX_VARIANT_SUFFIX_RE = /:(?:64d|256d)$/u;
 
 // ── Schemas ──
 
@@ -573,6 +574,7 @@ const GET_USER_CARD_SCHEMA = {
 
 type UpdateUserCardDetails = { ok: boolean; error?: string };
 type GetUserCardDetails = { card?: string | null; updatedAt?: number; version?: number; error?: string };
+type UserCardLookupHit = { card: string | null; updatedAt?: number; version?: number };
 
 // ── User Card tool factories ──
 
@@ -623,7 +625,8 @@ export function createGetUserCardTool(
       "about a person, pet, place, or named thing ('who/what is X', 'do I have X', " +
       "'tell me about X'). Returns the full prose identity card. " +
       "Do NOT answer from memory or training data. Call this tool FIRST. " +
-      "Only fall through to memory_search if the card is empty or missing.",
+      "For identity-only questions, answer from the card. For details/history/preferences " +
+      "questions, call memory_search after the card when the card lacks profile notes.",
     parameters: GET_USER_CARD_SCHEMA,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<GetUserCardDetails>> => {
       try {
@@ -633,6 +636,14 @@ export function createGetUserCardTool(
 
         const client = await getClient();
         const resp = await client.getUserCard({ userId });
+        const aliasHit = resp.cardJson ? null : await findUserCardByAlias(client, userId);
+        if (aliasHit) {
+          return jsonResult({
+            card: aliasHit.card,
+            updatedAt: aliasHit.updatedAt,
+            version: aliasHit.version,
+          });
+        }
         return jsonResult({
           card: resp.cardJson || null,
           updatedAt: resp.updatedAt ? Number(resp.updatedAt) : undefined,
@@ -659,6 +670,104 @@ type ListUserCardsDetails = {
   error?: string;
 };
 
+type UserCardListEntry = ListUserCardsDetails["users"][number];
+type UserCardListCandidate = UserCardListEntry & { isCanonicalSource: boolean };
+
+function canonicalUserCardId(userId: string): string {
+  return userId.replace(USER_CARD_INDEX_VARIANT_SUFFIX_RE, "");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function userCardIdMatchesLookup(storedUserId: string, requestedUserId: string): boolean {
+  if (storedUserId === requestedUserId) return true;
+  if (requestedUserId.includes("|")) return false;
+  return new RegExp(`(?:^|\\|)sender=${escapeRegExp(requestedUserId)}(?:$|\\|)`, "u").test(storedUserId);
+}
+
+function readUserCardLookupHit(result: { metadataJson?: Uint8Array }): UserCardLookupHit | null {
+  if (!result.metadataJson || result.metadataJson.length === 0) return null;
+  try {
+    const meta = JSON.parse(new TextDecoder().decode(result.metadataJson)) as Record<string, unknown>;
+    const cardJson = typeof meta.card_json === "string" ? meta.card_json : null;
+    if (!cardJson) return null;
+    const card = JSON.parse(cardJson) as { card?: unknown; source?: unknown };
+    if (typeof card.source === "string" && card.source !== "openclaw-user-cards") return null;
+    return {
+      card: typeof card.card === "string" ? card.card : cardJson,
+      updatedAt: typeof meta.updated_at === "number" ? meta.updated_at : undefined,
+      version: typeof meta.version === "number" ? meta.version : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function shouldReplaceUserCardLookupHit(current: UserCardLookupHit, next: UserCardLookupHit): boolean {
+  if ((next.version ?? 0) !== (current.version ?? 0)) return (next.version ?? 0) > (current.version ?? 0);
+  if ((next.updatedAt ?? 0) !== (current.updatedAt ?? 0)) return (next.updatedAt ?? 0) > (current.updatedAt ?? 0);
+  return !current.card && !!next.card;
+}
+
+function userCardAliasMatchesLookup(card: string | null, requestedUserId: string): boolean {
+  if (!card || requestedUserId.includes("|")) return false;
+  const requestedTokens = identityTokens(requestedUserId);
+  if (requestedTokens.length === 0) return false;
+  const cardTokens = identityTokens(extractUserCardIdentityText(card));
+  if (cardTokens.length === 0) return false;
+  return requestedTokens.every((token) => cardTokens.includes(token));
+}
+
+function extractUserCardIdentityText(card: string): string {
+  return card
+    .split(/\r?\n/u)
+    .filter((line) =>
+      /^(?:[-*]\s*)?(?:user card|known aliases|visible names|display names|aliases|name|username|speaker|speaker id|user id|provider|account type|channel id)\s*:/iu
+        .test(line.trim())
+    )
+    .join("\n");
+}
+
+function identityTokens(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+/gu)?.filter((token) => token.length >= 3) ?? [];
+}
+
+async function findUserCardByAlias(client: Awaited<ReturnType<ClientGetter>>, userId: string): Promise<UserCardLookupHit | null> {
+  const resp = await client.listByMeta({
+    collection: "",
+    key: "type",
+    value: "user_card",
+  });
+  let best: UserCardLookupHit | null = null;
+  for (const result of resp.results) {
+    if (!result.metadataJson || result.metadataJson.length === 0) continue;
+    let storedUserId = "";
+    try {
+      const meta = JSON.parse(new TextDecoder().decode(result.metadataJson)) as Record<string, unknown>;
+      storedUserId = typeof meta._user_id === "string" ? canonicalUserCardId(meta._user_id) : "";
+    } catch {
+      continue;
+    }
+    const hit = readUserCardLookupHit(result);
+    if (!storedUserId || !hit) continue;
+    if (!userCardIdMatchesLookup(storedUserId, userId) && !userCardAliasMatchesLookup(hit.card, userId)) continue;
+    if (!best || shouldReplaceUserCardLookupHit(best, hit)) best = hit;
+  }
+  return best;
+}
+
+function shouldReplaceUserCardListEntry(
+  current: UserCardListCandidate,
+  next: UserCardListCandidate,
+): boolean {
+  if (next.isCanonicalSource !== current.isCanonicalSource) return next.isCanonicalSource;
+  if ((next.version ?? 0) !== (current.version ?? 0)) return (next.version ?? 0) > (current.version ?? 0);
+  if ((next.updated_at ?? 0) !== (current.updated_at ?? 0)) return (next.updated_at ?? 0) > (current.updated_at ?? 0);
+  return !current.preview && !!next.preview;
+}
+
 export function createListUserCardsTool(
   getClient: ClientGetter,
   logger: LoggerLike = console,
@@ -680,7 +789,7 @@ export function createListUserCardsTool(
           key: "type",
           value: "user_card",
         });
-        const users: ListUserCardsDetails["users"] = [];
+        const usersById = new Map<string, UserCardListCandidate>();
         for (const result of resp.results) {
           let userId = "";
           let preview = "";
@@ -693,7 +802,14 @@ export function createListUserCardsTool(
               userId = typeof meta._user_id === "string" ? meta._user_id : "";
               const cardJson = typeof meta.card_json === "string" ? meta.card_json : null;
               if (cardJson) {
-                try { preview = JSON.parse(cardJson).card ?? cardJson; }
+                try {
+                  const card = JSON.parse(cardJson) as { card?: unknown; source?: unknown };
+                  if (typeof card.source === "string" && card.source !== "openclaw-user-cards") {
+                    userId = "";
+                    continue;
+                  }
+                  preview = typeof card.card === "string" ? card.card : cardJson;
+                }
                 catch { preview = cardJson; }
                 preview = preview.slice(0, 200);
               }
@@ -702,8 +818,20 @@ export function createListUserCardsTool(
             } catch { /* best-effort metadata parse */ }
           }
           if (!userId) continue;
-          users.push({ user_id: userId, preview, updated_at: updatedAt, version });
+          const canonicalUserId = canonicalUserCardId(userId);
+          const entry = {
+            user_id: canonicalUserId,
+            preview,
+            updated_at: updatedAt,
+            version,
+            isCanonicalSource: userId === canonicalUserId,
+          };
+          const current = usersById.get(canonicalUserId);
+          if (!current || shouldReplaceUserCardListEntry(current, entry)) {
+            usersById.set(canonicalUserId, entry);
+          }
         }
+        const users = Array.from(usersById.values(), ({ isCanonicalSource: _isCanonicalSource, ...user }) => user);
         return jsonResult({ users, total: users.length });
       } catch (error) {
         logger.warn?.(`list_user_cards failed: ${formatError(error)}`);

@@ -8,10 +8,12 @@ import path from "node:path";
 import {
   resolveClientEndpoint,
   createAuthInterceptor,
+  createTenantInterceptor,
   detectLegacyJsonRpcDaemon,
   isLegacyJsonRpcHealthResponse,
   LibravDBClient,
   loadSecretFromEnv,
+  TENANT_KEY_HEADER,
 } from "../../src/libravdb-client.js";
 
 import type { AuthInterceptorState } from "../../src/libravdb-client.js";
@@ -326,6 +328,19 @@ test("no auth headers without secret", async () => {
   }))({ method: { name: "Status" }, header } as any);
 
   assert.equal(sent.has("x-libravdb-auth"), false);
+});
+
+test("tenant interceptor sends daemon-recognized tenant metadata header", async () => {
+  const int = createTenantInterceptor(() => "agent-tenant");
+  const { sent, header } = headerSink();
+
+  await (int as any)(async () => ({
+    header: { get: () => null },
+    trailer: { get: () => null },
+  }))({ method: { name: "Status" }, header } as any);
+
+  assert.equal(sent.get(TENANT_KEY_HEADER), "agent-tenant");
+  assert.equal(sent.has("libravdb-tenant-key"), false);
 });
 
 test("loadSecretFromEnv returns undefined when no env vars are set", () => {

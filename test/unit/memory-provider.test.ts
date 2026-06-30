@@ -83,6 +83,22 @@ test("memory prompt section guides memory tool use when memory_search is availab
   assert.equal(rpc.calls.get("search_text") ?? 0, 0, "should not perform search_text calls");
 });
 
+test("memory prompt section does not let sparse user cards suppress recall", async () => {
+  const rpc = new FakeRpc();
+  const cfg: PluginConfig = { topK: 8 };
+  const getRpc = async () => rpc as never;
+
+  const memorySection = buildMemoryPromptSection(getRpc, cfg);
+  const result = memorySection({
+    availableTools: new Set(["get_user_card", "list_user_cards", "memory_search"]),
+  });
+
+  const resultText = result.join("\n");
+  assert.match(resultText, /memory_search` after the card/u);
+  assert.doesNotMatch(resultText, /Only use memory_search if the card is empty or missing/u);
+  assert.doesNotMatch(resultText, /If the card is empty, then fall through/u);
+});
+
 test("memory prompt section works with citationsMode", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { topK: 8 };

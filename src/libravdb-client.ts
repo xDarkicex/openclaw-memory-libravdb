@@ -78,9 +78,11 @@ export interface LibravDBClientOptions {
   tlsClientCertPath?: string;
   tlsClientKeyPath?: string;
   /** Stable tenant key for multi-agent DB routing. Attached as the
-   *  `libravdb-tenant-key` gRPC metadata header on every call. */
+   *  `x-libravdb-tenant-key` gRPC metadata header on every call. */
   tenantKey?: string;
 }
+
+export const TENANT_KEY_HEADER = "x-libravdb-tenant-key";
 
 export function resolveClientEndpoint(configuredEndpoint?: string): string {
   if (configuredEndpoint && configuredEndpoint !== "auto") return configuredEndpoint;
@@ -243,6 +245,18 @@ export function createAuthInterceptor(
   };
 }
 
+export function createTenantInterceptor(
+  getTenantKey: () => string | undefined,
+): Interceptor {
+  return (next) => async (req) => {
+    const tenantKey = getTenantKey();
+    if (tenantKey) {
+      req.header.set(TENANT_KEY_HEADER, tenantKey);
+    }
+    return next(req);
+  };
+}
+
 export class LibravDBClient {
   private client: PromiseClient;
   private readonly secret: string | undefined;
@@ -293,12 +307,7 @@ export class LibravDBClient {
     this.tenantKey = options.tenantKey;
 
     const interceptors: Interceptor[] = [];
-    interceptors.push((next) => async (req) => {
-      if (self.tenantKey) {
-        req.header.set("libravdb-tenant-key", self.tenantKey);
-      }
-      return next(req);
-    });
+    interceptors.push(createTenantInterceptor(() => self.tenantKey));
     interceptors.push(authInterceptor);
 
     const transport = createGrpcTransport({
