@@ -224,7 +224,7 @@ test("LibraVDB memory_search overfetches explicit identity filters and matches e
   });
 
   const search = await searchTool.execute("call-1", {
-    query: "history with SampleName-1001",
+    query: "what kind of SampleName-1001",
     kind: "identity",
     maxResults: 2,
   });

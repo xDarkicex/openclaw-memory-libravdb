@@ -479,6 +479,8 @@ function identityEntityTokens(text: string): string[] {
     "history",
     "identity",
     "imessage",
+    "kind",
+    "kinds",
     "know",
     "person",
     "profile",
@@ -491,6 +493,7 @@ function identityEntityTokens(text: string): string[] {
     "where",
     "who",
     "with",
+    "you",
   ]);
   const tokens = identityTokens(text);
   const entityTokens = tokens.filter((token) => !ignored.has(token));
