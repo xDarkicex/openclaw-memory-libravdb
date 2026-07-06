@@ -1700,12 +1700,19 @@ export function buildContextEngineFactory(
     const m = /^agent:([^:]+):/.exec(sessionKey ?? "");
     return m ? m[1] : undefined;
   }
-  function isExcludedSession(sessionKey: string | undefined): boolean {
+  function isExcludedSession(sessionKey: string | undefined, sessionId?: string): boolean {
+    const key = sessionKey?.trim();
+    if (!key) {
+      // sessionKey is optional on these hooks; fall back to the sessionId
+      // recorded at bootstrap so an excluded session is still detected when the
+      // host omits sessionKey on a later hook.
+      return sessionId !== undefined && excludedSessionIds.has(sessionId);
+    }
     if (excludedAgents.size) {
-      const agentId = agentIdFromSessionKey(sessionKey);
+      const agentId = agentIdFromSessionKey(key);
       if (agentId && excludedAgents.has(agentId)) return true;
     }
-    if (excludeSubagents && sessionKey && excludedSubagentKeys.has(subagentKey(sessionKey))) {
+    if (excludeSubagents && excludedSubagentKeys.has(subagentKey(key))) {
       return true;
     }
     return false;
@@ -2347,7 +2354,7 @@ export function buildContextEngineFactory(
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
-      if (isExcludedSession(args.sessionKey)) {
+      if (isExcludedSession(args.sessionKey, sessionId)) {
         if (excludedSessionIds.size >= EXCLUDED_SESSION_IDS_MAX) {
           const oldest = excludedSessionIds.values().next().value;
           if (oldest !== undefined) excludedSessionIds.delete(oldest);
@@ -2355,6 +2362,9 @@ export function buildContextEngineFactory(
         excludedSessionIds.add(sessionId);
         return { ok: true };
       }
+      // Not excluded: clear any stale marker so a reused sessionId can't keep
+      // making compact() return "agent excluded".
+      excludedSessionIds.delete(sessionId);
       predictiveContextCache.delete(sessionId);
       postToolRecallCache.delete(sessionId);
       asyncIngestionQueues.delete(sessionId);
@@ -2375,7 +2385,7 @@ export function buildContextEngineFactory(
     },
     async ingest(args: { sessionId: string; sessionKey?: string; userId?: string; message: { role: string; content: unknown; id?: string }; isHeartbeat?: boolean }) {
       const sessionId = requireSessionId(args.sessionId, "ingest");
-      if (isExcludedSession(args.sessionKey)) return { ok: true };
+      if (isExcludedSession(args.sessionKey, sessionId)) return { ok: true };
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2418,7 +2428,7 @@ export function buildContextEngineFactory(
       // untouched (byte-identical, no budget-fitting — budget-fitting can drop
       // messages mid-tool-protocol, which strict providers reject) with zero
       // injection. Context budget stays the host's responsibility.
-      if (isExcludedSession(args.sessionKey)) {
+      if (isExcludedSession(args.sessionKey, sessionId)) {
         const passthrough = Array.isArray(args.messages) ? args.messages : [];
         return {
           messages: passthrough,
@@ -2822,7 +2832,7 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
     }) {
       const sessionId = requireSessionId(args.sessionId, "afterTurn");
-      if (isExcludedSession(args.sessionKey)) {
+      if (isExcludedSession(args.sessionKey, sessionId)) {
         return { ok: true, skipped: true, reason: "agent excluded" };
       }
       const userId = resolveUserId({
