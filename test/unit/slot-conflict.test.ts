@@ -22,6 +22,32 @@ type InstrumentedApi = OpenClawPluginApi & {
   };
 };
 
+const RUNTIME_TOOL_NAMES = [
+  "memory_describe",
+  "memory_expand",
+  "memory_grep",
+  "update_user_card",
+  "get_user_card",
+  "list_user_cards",
+  "set_rule",
+  "get_rule",
+  "list_rules",
+  "delete_rule",
+  "set_persona",
+  "get_persona",
+];
+
+const ACTIVE_HOOK_NAMES = [
+  "before_prompt_build",
+  "before_prompt_build",
+  "before_prompt_build",
+  "before_agent_reply",
+  "session_end",
+  "before_reset",
+  "session_end",
+  "gateway_stop",
+];
+
 /** Builds a fake OpenClawPluginApi for register(). */
 function makeFakeApi(overrides: {
   registrationMode?: string;
@@ -101,22 +127,14 @@ test("slot check — ours: register succeeds", () => {
   assert.deepEqual(api.registrations.tools, [
     "memory_search",
     "memory_get",
-    "memory_describe",
-    "memory_expand",
-    "memory_grep",
+    ...RUNTIME_TOOL_NAMES,
   ]);
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
     "libravdb-dream-promotion",
   ]);
   assert.deepEqual(api.registrations.runtimeLifecycles, ["libravdb-shutdown"]);
-  assert.deepEqual(api.registrations.hooks, [
-    "before_prompt_build",
-    "session_end",
-    "before_reset",
-    "session_end",
-    "gateway_stop",
-  ]);
+  assert.deepEqual(api.registrations.hooks, ACTIVE_HOOK_NAMES);
 });
 
 // slot: another plugin — should throw with slot name in message
@@ -146,25 +164,15 @@ test("slot check — unset: register succeeds with warning", () => {
     "libravdb-onnx",
   ]);
   // When the memory slot is unset, memory_search / memory_get are not
-  // registered (ownsMemorySlot is false), but the recall tools still
+  // registered (ownsMemorySlot is false), but the runtime tools still
   // register because they only require a runtime, not slot ownership.
-  assert.deepEqual(api.registrations.tools, [
-    "memory_describe",
-    "memory_expand",
-    "memory_grep",
-  ]);
+  assert.deepEqual(api.registrations.tools, RUNTIME_TOOL_NAMES);
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
     "libravdb-dream-promotion",
   ]);
   assert.deepEqual(api.registrations.runtimeLifecycles, ["libravdb-shutdown"]);
-  assert.deepEqual(api.registrations.hooks, [
-    "before_prompt_build",
-    "session_end",
-    "before_reset",
-    "session_end",
-    "gateway_stop",
-  ]);
+  assert.deepEqual(api.registrations.hooks, ACTIVE_HOOK_NAMES);
 });
 
 // slot: "none" — memory disabled, should not throw or register hooks
