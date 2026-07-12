@@ -1691,10 +1691,29 @@ export function buildContextEngineFactory(
   );
   const excludeSubagents = cfg?.excludeSubagents === true;
   const excludedSubagentKeys = new Set<string>();
-  // compact() only receives sessionId (no sessionKey), so excluded sessions are
-  // recorded here at bootstrap time to let compact() short-circuit too.
+  // Fallback exclusion marker for compact(). The host threads sessionKey through
+  // on every compaction path (timeout/overflow recovery and the manual /compact
+  // lane), so compact() resolves exclusion authoritatively from the agent id — but
+  // sessionKey is backfilled best-effort and can, rarely, be absent. This set lets
+  // compact() still short-circuit by sessionId in that case.
   const excludedSessionIds = new Set<string>();
   const EXCLUDED_SESSION_IDS_MAX = 1000;
+
+  // Record (or refresh) an excluded session's id so compact() can short-circuit by
+  // sessionId when the host omits sessionKey. Re-adding moves the id to the
+  // most-recently-used end (Set preserves insertion order), so the capped eviction
+  // below only ever discards the *least recently active* excluded session, never
+  // one that is still taking turns. Every per-turn hook that carries the
+  // authoritative sessionKey (assemble/ingest/afterTurn) refreshes the marker, so
+  // an id evicted while idle is re-established on the session's next turn.
+  function markExcludedSession(sessionId: string): void {
+    excludedSessionIds.delete(sessionId);
+    if (excludedSessionIds.size >= EXCLUDED_SESSION_IDS_MAX) {
+      const oldest = excludedSessionIds.values().next().value;
+      if (oldest !== undefined) excludedSessionIds.delete(oldest);
+    }
+    excludedSessionIds.add(sessionId);
+  }
 
   function agentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
     const m = /^agent:([^:]+):/.exec(sessionKey ?? "");
@@ -2355,11 +2374,7 @@ export function buildContextEngineFactory(
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
       if (isExcludedSession(args.sessionKey, sessionId)) {
-        if (excludedSessionIds.size >= EXCLUDED_SESSION_IDS_MAX) {
-          const oldest = excludedSessionIds.values().next().value;
-          if (oldest !== undefined) excludedSessionIds.delete(oldest);
-        }
-        excludedSessionIds.add(sessionId);
+        markExcludedSession(sessionId);
         return { ok: true };
       }
       // Not excluded: clear any stale marker so a reused sessionId can't keep
@@ -2385,7 +2400,10 @@ export function buildContextEngineFactory(
     },
     async ingest(args: { sessionId: string; sessionKey?: string; userId?: string; message: { role: string; content: unknown; id?: string }; isHeartbeat?: boolean }) {
       const sessionId = requireSessionId(args.sessionId, "ingest");
-      if (isExcludedSession(args.sessionKey, sessionId)) return { ok: true };
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        return { ok: true };
+      }
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2429,6 +2447,7 @@ export function buildContextEngineFactory(
       // messages mid-tool-protocol, which strict providers reject) with zero
       // injection. Context budget stays the host's responsibility.
       if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
         const passthrough = Array.isArray(args.messages) ? args.messages : [];
         return {
           messages: passthrough,
@@ -2772,6 +2791,7 @@ export function buildContextEngineFactory(
     },
     async compact(args: {
       sessionId: string;
+      sessionKey?: string;
       force?: boolean;
       targetSize?: number;
       tokenBudget?: number;
@@ -2780,7 +2800,12 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
       abortSignal?: AbortSignal;
     }) {
-      if (args.sessionId && excludedSessionIds.has(args.sessionId)) {
+      // Resolve exclusion authoritatively from sessionKey (the host threads it
+      // through on every compaction path, including the manual /compact lane), so
+      // an excluded session stays inert even if its id was evicted from the bounded
+      // side table. The sessionId set is only the fallback for the rare case where
+      // the host could not backfill a sessionKey.
+      if (isExcludedSession(args.sessionKey, args.sessionId)) {
         return { ok: true, compacted: false, reason: "agent excluded" };
       }
       const tokenBudget =
@@ -2833,6 +2858,7 @@ export function buildContextEngineFactory(
     }) {
       const sessionId = requireSessionId(args.sessionId, "afterTurn");
       if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
         return { ok: true, skipped: true, reason: "agent excluded" };
       }
       const userId = resolveUserId({

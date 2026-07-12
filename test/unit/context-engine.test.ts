@@ -2581,6 +2581,92 @@ test("excludeAgents: excluded agent skips all kernel work without touching the d
   assert.equal(compacted.reason, "agent excluded");
 });
 
+// Overflow the bounded excludedSessionIds side table so a target session's id is
+// evicted, exercising the path where compact() can no longer rely on that set.
+async function overflowExclusionSideTable(
+  engine: Awaited<ReturnType<typeof buildContextEngineFactory>>,
+): Promise<void> {
+  for (let i = 0; i < 1001; i++) {
+    await engine.bootstrap({
+      sessionId: `evictor-${i}`,
+      sessionKey: `agent:fastbot:session:evictor-${i}`,
+    });
+  }
+}
+
+test("excludeAgents: a direct compact() carrying sessionKey stays inert after the side table overflows", async () => {
+  // Regression for the reviewer finding: a manual/host-scheduled compact() is not
+  // preceded by an assemble() in the same turn, so it cannot depend on a per-turn
+  // refresh. It must resolve exclusion authoritatively from the sessionKey the host
+  // threads through — even after the target's id has been evicted from the capped
+  // side table — without ever acquiring the (throwing) client.
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+
+  const targetKey = "agent:fastbot:session:target";
+  await engine.bootstrap({ sessionId: "target", sessionKey: targetKey });
+  await overflowExclusionSideTable(engine); // evicts "target" from excludedSessionIds
+
+  // No assemble()/ingest() first: a bare on-demand compact() that only carries the
+  // authoritative sessionKey must still short-circuit.
+  const compacted = await engine.compact({
+    sessionId: "target",
+    sessionKey: targetKey,
+    tokenBudget: 200_000,
+    currentTokenCount: 199_000,
+    force: true,
+  });
+  assert.equal(compacted.compacted, false);
+  assert.equal(
+    compacted.reason,
+    "agent excluded",
+    "an excluded agent must stay inert for a direct compact() even after the side table overflows",
+  );
+});
+
+test("excludeAgents: an active excluded session stays inert for a sessionKey-less compact via the refreshed side table", async () => {
+  // Fallback path: when the host cannot backfill a sessionKey, compact() relies on
+  // the sessionId side table. A still-active session (one that assembles each turn)
+  // is re-marked by assemble(), so it survives eviction and short-circuits compact()
+  // even without a sessionKey.
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+
+  const targetKey = "agent:fastbot:session:target";
+  await engine.bootstrap({ sessionId: "target", sessionKey: targetKey });
+  await overflowExclusionSideTable(engine); // evicts "target" from excludedSessionIds
+
+  // The active session takes a turn: assemble() re-establishes the marker from the
+  // authoritative sessionKey before any compaction runs.
+  const messages = [{ role: "user", content: "still here", id: "u1" }];
+  const assembled = await engine.assemble({
+    sessionId: "target",
+    sessionKey: targetKey,
+    messages,
+    tokenBudget: 10_000,
+    prompt: "still here",
+  });
+  assert.equal(assembled.systemPromptAddition, "", "still no injection after overflow");
+
+  // compact() with NO sessionKey must still find the refreshed sessionId marker.
+  const compacted = await engine.compact({
+    sessionId: "target",
+    tokenBudget: 200_000,
+    currentTokenCount: 199_000,
+    force: true,
+  });
+  assert.equal(compacted.compacted, false);
+  assert.equal(
+    compacted.reason,
+    "agent excluded",
+    "a sessionKey-less compact must stay inert for an active excluded session after overflow",
+  );
+});
+
 test("excludeAgents: a non-excluded agent still reaches the daemon", async () => {
   const client = new FakeClient();
   const engine = buildContextEngineFactory(fakeRuntime(client), {
