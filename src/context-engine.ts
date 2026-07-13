@@ -1240,8 +1240,105 @@ function escapeMemoryFactText(text: string): string {
 // Matches [tool:name] followed by optional whitespace and any trailing JSON object {...}, array [...], or string "..."
 const TOOL_CALL_BRACKET_RE = /\[tool:([^\]]+)\](?:\s*(?:\{[\s\S]*?\}|\[[\s\S]*?\]|".*?"))?/gi;
 
-// Matches raw JSON tool-call objects targeting a "name\" field
-const TOOL_CALL_JSON_RE = /\{[^\r\n]*"name"\s*:\s*"([^"]+)"[^\r\n]*(?:"arguments"|"args"|"toolCallId"|"tool_call_id"|"type"\s*:\s*"toolCall")[^\r\n]*\}/g;
+const TOOL_CALL_JSON_MARKER_KEYS = ["arguments", "args", "toolCallId", "tool_call_id"] as const;
+
+function containsJsonToolCall(value: unknown): boolean {
+  const pending: unknown[] = [value];
+
+  while (pending.length > 0) {
+    const candidate = pending.pop();
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) pending.push(item);
+      continue;
+    }
+    if (!candidate || typeof candidate !== "object") continue;
+
+    const record = candidate as Record<string, unknown>;
+    if (
+      typeof record.name === "string" &&
+      record.name.length > 0 &&
+      (
+        record.type === "toolCall" ||
+        TOOL_CALL_JSON_MARKER_KEYS.some((key) => Object.prototype.hasOwnProperty.call(record, key))
+      )
+    ) {
+      return true;
+    }
+    for (const item of Object.values(record)) pending.push(item);
+  }
+
+  return false;
+}
+
+function findBalancedJsonObjectEnd(text: string, start: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index++) {
+    const char = text[index]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{") {
+      depth++;
+    } else if (char === "}") {
+      depth--;
+      if (depth === 0) return index + 1;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Strips complete JSON objects that contain a tool-call record. Brace-aware
+ * scanning keeps each match bounded to one object, so multiline support cannot
+ * start in nearby ordinary JSON and finish at a later tool-call object.
+ */
+function stripJsonToolCallObjects(text: string): string {
+  let scanFrom = 0;
+  let keptFrom = 0;
+  let result = "";
+
+  while (scanFrom < text.length) {
+    const start = text.indexOf("{", scanFrom);
+    if (start < 0) break;
+
+    const end = findBalancedJsonObjectEnd(text, start);
+    if (end == null) {
+      // The opening brace may be prose or malformed JSON. Resume after it so
+      // a later complete object can still be considered independently.
+      scanFrom = start + 1;
+      continue;
+    }
+
+    const parsed = parseJsonRecord(text.slice(start, end));
+    if (parsed && containsJsonToolCall(parsed)) {
+      result += text.slice(keptFrom, start);
+      keptFrom = end;
+      scanFrom = end;
+      continue;
+    }
+
+    // A valid ordinary object has already been checked recursively. For an
+    // invalid outer candidate, advance one character so nested JSON can still
+    // be discovered without allowing a match to cross object boundaries.
+    scanFrom = parsed ? end : start + 1;
+  }
+
+  return keptFrom === 0 ? text : result + text.slice(keptFrom);
+}
 
 // Strip only the [tool:name] annotation tag; preserve payload on the same line
 const TOOL_RESULT_ANNOTATION_RE = /\[tool:[^\]]+\]\s*/g;
@@ -1269,7 +1366,7 @@ function sanitizeToolCallPatterns(
 
   sanitized = sanitized.replace(TOOL_CALL_BRACKET_RE, "");
 
-  sanitized = sanitized.replace(TOOL_CALL_JSON_RE, "");
+  sanitized = stripJsonToolCallObjects(sanitized);
 
   sanitized = sanitized.replace(TOOL_RESULT_ANNOTATION_RE, "");
 
