@@ -1809,6 +1809,7 @@ export function buildContextEngineFactory(
     if (state.class !== cls) {
       state.class = cls;
       state.consecutive = 0;
+      state.cooldownUntil = 0;
     }
     state.consecutive++;
     state.lastFailure = Date.now();
