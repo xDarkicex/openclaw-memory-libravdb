@@ -109,6 +109,7 @@ test("memory runtime bridge merges, deduplicates, and caps dream and normal resu
       results: [
         { id: "dream", score: 0.9, text: "dream memory", metadata: { collection: "dream:u1" } },
         { id: "shared", score: 0.8, text: "higher-ranked duplicate", metadata: { collection: "dream:u1" } },
+        { id: "overflow", score: 0.6, text: "outside result limit", metadata: { collection: "dream:u1" } },
       ],
     };
   };
