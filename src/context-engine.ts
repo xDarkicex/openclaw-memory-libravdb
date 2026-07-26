@@ -3047,12 +3047,24 @@ export function buildContextEngineFactory(
 
           // Apply token budget cap only to new messages
           const ingestMessages = boundAfterTurnMessagesForIngest(newMessages, logger, sessionId);
-          const startIndex = manifestStore.deriveStartingIndex(manifest, args.prePromptMessageCount);
-          const cursor = {
-            lastProcessedIndex: startIndex > 0 ? startIndex - 1 : 0,
-            sessionVersion: manifest.version,
-            manifestTailHash: manifest.tailHash,
-          };
+          // A manifest with no acknowledged turns is an initial/recovery
+          // ingest, not an OpenClaw transcript offset. Sending the host's
+          // pre-prompt count here makes the daemon reject the batch as a gap
+          // (its durable tail is -1 while the plugin claims hundreds of
+          // prior turns), leaving it with one or zero turns forever.
+          // Omit the cursor for this seed batch so the daemon accepts the
+          // bounded source tail starting at index zero.
+          const isSeedIngest = manifest.turns.length === 0;
+          const startIndex = isSeedIngest
+            ? 0
+            : manifestStore.deriveStartingIndex(manifest, args.prePromptMessageCount);
+          const cursor = isSeedIngest
+            ? undefined
+            : {
+              lastProcessedIndex: startIndex > 0 ? startIndex - 1 : 0,
+              sessionVersion: manifest.version,
+              manifestTailHash: manifest.tailHash,
+            };
 
           const client = await runtime.getClient();
           const currentTokenCount = normalizeCurrentTokenCount(
@@ -3061,13 +3073,13 @@ export function buildContextEngineFactory(
               : undefined,
           );
 
-          const result = await client.afterTurnKernel({
+          let result = await client.afterTurnKernel({
             sessionId,
             sessionKey: args.sessionKey,
             userId,
             messages: ingestMessages,
             isHeartbeat: args.isHeartbeat,
-            cursor,
+            ...(cursor ? { cursor } : {}),
           } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
 
           updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
@@ -3076,7 +3088,8 @@ export function buildContextEngineFactory(
           // The daemon returns a cursor even when it ingests zero messages
           // (e.g. gap detected, all messages deduped). Trust its
           // lastProcessedIndex over our optimistic startIndex math.
-          const daemonCursor = extractCursorFromResult(result);
+          let daemonCursor = extractCursorFromResult(result);
+          let repairedCursorGap = false;
 
           if (daemonCursor) {
             if (!daemonCursor.manifestTailHash) {
@@ -3087,7 +3100,35 @@ export function buildContextEngineFactory(
                 `[LibraVDB] Daemon reported cursor gap for session ${sessionId}. ` +
                 `Resetting manifest for full re-sync next turn.`,
               );
-              manifestStore.save(manifestStore.createEmpty(sessionId));
+              const seedMessages = boundAfterTurnMessagesForIngest(
+                normalizeKernelMessages(args.messages, { retainOpenClawContext: true }),
+                logger,
+                sessionId,
+              );
+              const emptyManifest = manifestStore.createEmpty(sessionId);
+              if (seedMessages.length > 0) {
+                // Recover in the same serialized task. The retry deliberately
+                // omits a cursor: the daemon just proved its durable history
+                // is behind ours, so claiming the old index again would cause
+                // another gap and strand compaction on a singleton turn.
+                result = await client.afterTurnKernel({
+                  sessionId,
+                  sessionKey: args.sessionKey,
+                  userId,
+                  messages: seedMessages,
+                  isHeartbeat: args.isHeartbeat,
+                } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+                manifestStore.save(
+                  manifestStore.appendACKedMessages(emptyManifest, seedMessages, 0),
+                );
+                repairedCursorGap = true;
+                daemonCursor = extractCursorFromResult(result);
+                logger.info?.(
+                  `[LibraVDB] Re-seeded daemon session ${sessionId} with ${seedMessages.length} source messages after cursor gap.`,
+                );
+              } else {
+                manifestStore.save(emptyManifest);
+              }
             } else if (ingestMessages.length > 0) {
               // Normal path: reconcile to what the daemon actually confirmed.
               const confirmedIndex = daemonCursor.lastProcessedIndex;
@@ -3102,7 +3143,7 @@ export function buildContextEngineFactory(
                 manifestStore.save(updatedManifest);
               }
             }
-          } else if (ingestMessages.length > 0) {
+          } else if (!repairedCursorGap && ingestMessages.length > 0) {
             // Legacy daemon (no cursor in response): optimistic ACK.
             const updatedManifest = manifestStore.appendACKedMessages(
               manifest,
