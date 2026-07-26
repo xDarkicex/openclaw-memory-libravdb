@@ -38,7 +38,7 @@ type OpenClawCompatibleMessage = {
   [key: string]: unknown;
 };
 
-type OpenClawCompatiblePromptAuthority = "preassembly_may_overflow";
+type OpenClawCompatiblePromptAuthority = "assembled" | "preassembly_may_overflow";
 
 type OpenClawCompatibleAssembleResult = {
   messages: OpenClawCompatibleMessage[];
@@ -119,7 +119,6 @@ type OpenClawCompatibleCompactResult = {
   reason?: string;
   result?: {
     summary?: string;
-    summaryText?: string;
     firstKeptEntryId?: string;
     tokensBefore: number;
     tokensAfter?: number;
@@ -191,7 +190,7 @@ function normalizeCompactResult(
   const engineRefused = !didCompact && overBudget;
 
   const tokensAfter =
-    didCompact && typeof response?.tokensAfter === "number" && response.tokensAfter > 0
+    didCompact && typeof response?.tokensAfter === "number" && response.tokensAfter >= 0
       ? response.tokensAfter
       : undefined;
 
@@ -202,8 +201,7 @@ function normalizeCompactResult(
     result: {
       tokensBefore,
       ...(tokensAfter != null ? { tokensAfter } : {}),
-      ...(details.summaryMethod ? { summary: details.summaryMethod } : {}),
-      ...(details.summaryText ? { summaryText: details.summaryText } : {}),
+      ...(details.summaryText ? { summary: details.summaryText } : {}),
       details: { ...details, ...(threshold != null ? { threshold } : {}) },
     },
   };
@@ -314,6 +312,33 @@ function findLastUserMessageIndex(messages: OpenClawCompatibleMessage[]): number
     if (messages[index]?.role === "user") return index;
   }
   return -1;
+}
+
+/**
+ * Selects one exact contiguous suffix from the OpenClaw transcript.
+ *
+ * The cut is moved backward to a user-message boundary so an assistant tool
+ * call and its tool results can never be separated by tail windowing. Message
+ * objects are returned untouched; daemon-normalized messages are never mapped
+ * back onto the provider transcript.
+ */
+function selectTurnAlignedSourceSuffix(
+  messages: OpenClawCompatibleMessage[],
+  maxMessages: number,
+): OpenClawCompatibleMessage[] {
+  if (messages.length === 0) return [];
+
+  let start = Math.max(0, messages.length - Math.max(1, Math.floor(maxMessages)));
+  while (start > 0 && messages[start]?.role !== "user") {
+    start -= 1;
+  }
+
+  if (messages[start]?.role !== "user") {
+    const firstUserIndex = messages.findIndex((message) => message.role === "user");
+    start = firstUserIndex >= 0 ? firstUserIndex : 0;
+  }
+
+  return messages.slice(start);
 }
 
 type KernelContentNormalizationOptions = {
@@ -880,6 +905,47 @@ function trimMessagesToBudget(
 }
 
 /**
+ * Trims a compacted source projection only at user-turn boundaries.
+ *
+ * The newest user turn is mandatory, even if it alone exceeds the budget:
+ * dropping part of an in-flight tool-call/result sequence is more dangerous
+ * than surfacing a truthful overflow. Older turns are kept only as a
+ * contiguous suffix and only when their complete bundle fits.
+ */
+function trimTurnAlignedSourceSuffixToBudget(
+  messages: OpenClawCompatibleMessage[],
+  tokenBudget: number,
+): OpenClawCompatibleMessage[] {
+  if (messages.length === 0) return [];
+
+  const userStarts: number[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index]?.role === "user") userStarts.push(index);
+  }
+  if (userStarts.length === 0) {
+    return messages;
+  }
+
+  const keptBundles: OpenClawCompatibleMessage[][] = [];
+  let used = 0;
+  let bundleEnd = messages.length;
+  for (let index = userStarts.length - 1; index >= 0; index -= 1) {
+    const bundleStart = userStarts[index]!;
+    const bundle = messages.slice(bundleStart, bundleEnd);
+    const bundleCost = approximateMessagesTokens(bundle);
+    if (keptBundles.length > 0 && used + bundleCost > tokenBudget) {
+      break;
+    }
+    keptBundles.unshift(bundle);
+    used += bundleCost;
+    bundleEnd = bundleStart;
+    if (used >= tokenBudget) break;
+  }
+
+  return keptBundles.flat();
+}
+
+/**
  * Bounds after-turn messages for ingest, trimming if over max tokens.
  */
 function boundAfterTurnMessagesForIngest(
@@ -942,6 +1008,50 @@ function enforceTokenBudgetInvariant(
   };
 }
 
+/**
+ * Enforces the model budget for a daemon-compacted projection without ever
+ * splitting the newest user/tool turn. The compacted system context and older
+ * complete turns yield budget before the live turn does.
+ */
+function enforceCompactedProjectionBudgetInvariant(
+  result: OpenClawCompatibleAssembleResult,
+  tokenBudget: number | undefined,
+): OpenClawCompatibleAssembleResult {
+  if (typeof tokenBudget !== "number" || !Number.isFinite(tokenBudget) || tokenBudget <= 0) {
+    return result;
+  }
+
+  const effectiveBudget = resolveEffectiveAssembleBudget(Math.max(1, Math.floor(tokenBudget)));
+  const approximateTotal =
+    approximateTokenCount(result.systemPromptAddition) +
+    approximateMessagesTokens(result.messages);
+  if (result.estimatedTokens <= effectiveBudget && approximateTotal <= effectiveBudget) {
+    return result;
+  }
+
+  const lastUserIndex = findLastUserMessageIndex(result.messages);
+  const mandatoryMessages = lastUserIndex >= 0
+    ? result.messages.slice(lastUserIndex)
+    : result.messages;
+  const mandatoryTokens = approximateMessagesTokens(mandatoryMessages);
+  const systemPromptBudget = Math.max(0, effectiveBudget - mandatoryTokens);
+  const systemPromptAddition = truncateSystemPromptAdditionToTokenBudget(
+    result.systemPromptAddition,
+    systemPromptBudget,
+  );
+  const systemPromptTokens = approximateTokenCount(systemPromptAddition);
+  const messageBudget = Math.max(mandatoryTokens, effectiveBudget - systemPromptTokens);
+  const messages = trimTurnAlignedSourceSuffixToBudget(result.messages, messageBudget);
+  const estimatedTokens = systemPromptTokens + approximateMessagesTokens(messages);
+
+  return {
+    ...result,
+    messages,
+    systemPromptAddition,
+    estimatedTokens,
+  };
+}
+
 function buildBudgetFallbackContext(
   messages: OpenClawCompatibleMessage[],
   tokenBudget: number | undefined,
@@ -964,8 +1074,13 @@ const DAEMON_AUTHORED_CONTEXT_GUIDANCE_RE =
   /^\s*Treat the authored entries below as active project rules and identity context\.?\s*$/i;
 const COMPACTED_SESSION_CONTEXT_RE =
   /<compacted_session_context\b([^>]*)>([\s\S]*?)<\/compacted_session_context>/gi;
+const HAS_COMPACTED_SESSION_CONTEXT_RE = /<compacted_session_context\b/i;
 const COMPACTED_SESSION_RENDER_LEDGER_RE =
   /(?:^|\n)(?:Artifacts:|Constraints:|Open Next Steps:|Extracted context anchors:)(?:\n|$)/;
+
+function hasCompactedSessionContext(text: string): boolean {
+  return HAS_COMPACTED_SESSION_CONTEXT_RE.test(text);
+}
 
 function sanitizeDaemonSystemPromptAddition(text: string): string {
   return demoteDaemonAuthoredContextBlocks(
@@ -1531,12 +1646,13 @@ export function normalizeAssembleResult(
     systemPromptAddition?: string;
     debug?: AssembleContextInternalResponse["debug"];
   },
-  sourceMessages?: OpenClawCompatibleMessage[]
+  sourceMessages?: OpenClawCompatibleMessage[],
+  promptAuthority: OpenClawCompatiblePromptAuthority = PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
 ): OpenClawCompatibleAssembleResult {
-  // The daemon's visibleMsgs is a filtered echo of args.Messages (toolResult
-  // stripped). Use sourceMessages directly — they carry the full transcript
-  // with tool protocol intact. The daemon contributes memory context via
-  // systemPromptAddition, not message manipulation.
+  // The daemon's visibleMsgs is a normalized projection that cannot preserve
+  // provider tool protocol. Use only an exact source transcript projection.
+  // The caller decides whether that is the full pre-compaction transcript or
+  // the user-turn-aligned suffix owned by daemon compaction.
   const systemPromptAddition = typeof result.systemPromptAddition === "string"
     ? sanitizeDaemonSystemPromptAddition(result.systemPromptAddition)
     : "";
@@ -1545,7 +1661,7 @@ export function normalizeAssembleResult(
     messages: sourceMessages ?? [],
     estimatedTokens: typeof result.estimatedTokens === "number" ? result.estimatedTokens : 0,
     systemPromptAddition,
-    promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+    promptAuthority,
     ...(result.debug != null ? { debug: result.debug } : {}),
   };
 }
@@ -1670,6 +1786,7 @@ export function buildContextEngineFactory(
   }
 
   const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
+  const compactedProjectionSessions = new Set<string>();
   const PREDICTIVE_CACHE_MAX_SIZE = 100;
   // BeforeTurnKernel state
   const turnCache = new TurnMemoryCache(100);
@@ -1679,6 +1796,29 @@ export function buildContextEngineFactory(
 
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
+
+  function activateCompactedProjection(sessionId: string, source: "compact" | "assemble"): void {
+    const wasActive = compactedProjectionSessions.has(sessionId);
+    compactedProjectionSessions.add(sessionId);
+    predictiveContextCache.delete(sessionId);
+    postToolRecallCache.delete(sessionId);
+    turnCache.invalidateSession(sessionId);
+    if (!wasActive) {
+      logger.info?.(
+        `LibraVDB activated daemon-owned compacted projection sessionId=${sessionId} source=${source}`,
+      );
+    }
+  }
+
+  function enforceAssembleBudget(
+    result: OpenClawCompatibleAssembleResult,
+    tokenBudget: number | undefined,
+    compactionProjectionActive: boolean,
+  ): OpenClawCompatibleAssembleResult {
+    return compactionProjectionActive
+      ? enforceCompactedProjectionBudgetInvariant(result, tokenBudget)
+      : enforceTokenBudgetInvariant(result, tokenBudget);
+  }
 
   function resolveUserId(args?: {
     userIdOverride?: string;
@@ -2246,11 +2386,15 @@ export function buildContextEngineFactory(
     try {
       const client = await runtime.getClient();
       const threshold = getDynamicCompactThreshold(args.tokenBudget);
-      return normalizeCompactResult(await client.compactSession(request), {
+      const result = normalizeCompactResult(await client.compactSession(request), {
         tokensBefore: args.currentTokenCount,
         logger,
         ...(threshold != null ? { threshold } : {}),
       });
+      if (result.ok && result.compacted) {
+        activateCompactedProjection(args.sessionId, "compact");
+      }
+      return result;
     } catch (error) {
       return {
         ok: false,
@@ -2318,6 +2462,7 @@ export function buildContextEngineFactory(
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
       predictiveContextCache.delete(sessionId);
       postToolRecallCache.delete(sessionId);
+      turnCache.invalidateSession(sessionId);
       asyncIngestionQueues.delete(sessionId);
       const userId = resolveUserId({
         userIdOverride: args.userId,
@@ -2374,6 +2519,7 @@ export function buildContextEngineFactory(
       currentTokenCount?: number;
     }): Promise<OpenClawCompatibleAssembleResult> {
       const sessionId = requireSessionId(args.sessionId, "assemble");
+      let compactionProjectionActive = compactedProjectionSessions.has(sessionId);
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2383,10 +2529,22 @@ export function buildContextEngineFactory(
       // Processing the full history on every turn is O(N²) and the
       // primary source of growing turn latency.
       const normalizeWindow = 50;
-      const recentMessages = args.messages.length > normalizeWindow
-        ? args.messages.slice(-normalizeWindow)
-        : args.messages;
+      const recentMessages = selectTurnAlignedSourceSuffix(args.messages, normalizeWindow);
       const messages = normalizeKernelMessages(recentMessages);
+      const projectedSourceMessages = () => compactionProjectionActive
+        ? recentMessages
+        : args.messages;
+      const buildAssembleFallback = (): OpenClawCompatibleAssembleResult => {
+        if (!compactionProjectionActive) {
+          return buildBudgetFallbackContext(args.messages, args.tokenBudget);
+        }
+        return enforceCompactedProjectionBudgetInvariant({
+          messages: projectedSourceMessages(),
+          estimatedTokens: approximateMessagesTokens(projectedSourceMessages()),
+          systemPromptAddition: "",
+          promptAuthority: "assembled",
+        }, args.tokenBudget);
+      };
       const strippedPrompt = args.prompt
         ? normalizeKernelContent(args.prompt, { retainOpenClawContext: false })
         : "";
@@ -2437,16 +2595,23 @@ export function buildContextEngineFactory(
           compacted: compactionResult.compacted,
           reason: compactionResult.reason,
         });
-        if (!compactionResult.ok) {
+        compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+        if (!compactionResult.ok && !compactionProjectionActive) {
           logger.info?.(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
             `(threshold=${dynamicCompactThreshold}): ${compactionResult.reason ?? "compaction failed"}`,
           );
           return ensureReplaySafeUserTurn(
-            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            buildAssembleFallback(),
             args.messages,
             logger,
             args.tokenBudget,
+          );
+        }
+        if (!compactionResult.ok) {
+          logger.info?.(
+            `LibraVDB predictive compaction made no additional progress at ${currentContextTokens} tokens; ` +
+            "continuing with the existing daemon-owned compacted projection.",
           );
         }
       }
@@ -2505,10 +2670,20 @@ export function buildContextEngineFactory(
         }
 
         if (cachedSystemPrompt !== undefined) {
-          const mockResp = { messages: args.messages, systemPromptAddition: cachedSystemPrompt };
-          enforced = enforceTokenBudgetInvariant(
-            normalizeAssembleResult(mockResp, args.messages),
-            args.tokenBudget
+          if (hasCompactedSessionContext(cachedSystemPrompt)) {
+            activateCompactedProjection(sessionId, "assemble");
+            compactionProjectionActive = true;
+          }
+          const sourceProjection = projectedSourceMessages();
+          const mockResp = { messages: sourceProjection, systemPromptAddition: cachedSystemPrompt };
+          enforced = enforceAssembleBudget(
+            normalizeAssembleResult(
+              mockResp,
+              sourceProjection,
+              compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+            ),
+            args.tokenBudget,
+            compactionProjectionActive,
           );
         } else {
           // Drain pending async ingestion for this session so the daemon's
@@ -2578,7 +2753,19 @@ export function buildContextEngineFactory(
               setTimeout(() => reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`)), assembleTimeout)
             ),
           ]);
-          const assembled = normalizeAssembleResult(resp, args.messages);
+          if (
+            typeof resp.systemPromptAddition === "string" &&
+            hasCompactedSessionContext(resp.systemPromptAddition)
+          ) {
+            activateCompactedProjection(sessionId, "assemble");
+            compactionProjectionActive = true;
+          }
+          const sourceProjection = projectedSourceMessages();
+          const assembled = normalizeAssembleResult(
+            resp,
+            sourceProjection,
+            compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+          );
           const continuityContext = await injectContinuityContext({
             client,
             userId,
@@ -2610,7 +2797,7 @@ export function buildContextEngineFactory(
               withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, rulesContext) };
             }
           }
-          enforced = enforceTokenBudgetInvariant(
+          enforced = enforceAssembleBudget(
             await augmentWithExactRecall(withContext, {
               queryText: retrievalQuery,
               userId,
@@ -2619,6 +2806,7 @@ export function buildContextEngineFactory(
               reservedTokens: reservedCurrentTurnTokens,
             }),
             args.tokenBudget,
+            compactionProjectionActive,
           );
           const predictions = predictiveContextCache.get(sessionId) || [];
           predictiveContextCache.delete(sessionId);
@@ -2688,19 +2876,21 @@ export function buildContextEngineFactory(
           });
         }
 
-        enforced = enforceTokenBudgetInvariant(
+        enforced = enforceAssembleBudget(
           enforced,
           args.tokenBudget,
+          compactionProjectionActive,
         );
-        // normalizeAssembleResult uses sourceMessages directly — full transcript
-        // with tool protocol intact. No message re-classification needed.
+        // The returned transcript is always an untouched source projection.
+        // Once daemon compaction owns history, OpenClaw must precheck this
+        // assembled suffix rather than the unwindowed session transcript.
         return ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
         return ensureReplaySafeUserTurn(
-          buildBudgetFallbackContext(args.messages, args.tokenBudget),
+          buildAssembleFallback(),
           args.messages,
           logger,
           args.tokenBudget,
@@ -2977,6 +3167,7 @@ export function buildContextEngineFactory(
         }
       }
       predictiveContextCache.clear();
+      compactedProjectionSessions.clear();
       postToolRecallCache.clear();
       asyncIngestionQueues.clear();
       triggerCache.clear();

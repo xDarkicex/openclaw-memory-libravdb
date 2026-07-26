@@ -104,6 +104,15 @@ test("slot check — ours: register succeeds", () => {
     "memory_describe",
     "memory_expand",
     "memory_grep",
+    "update_user_card",
+    "get_user_card",
+    "list_user_cards",
+    "set_rule",
+    "get_rule",
+    "list_rules",
+    "delete_rule",
+    "set_persona",
+    "get_persona",
   ]);
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
@@ -112,6 +121,9 @@ test("slot check — ours: register succeeds", () => {
   assert.deepEqual(api.registrations.runtimeLifecycles, ["libravdb-shutdown"]);
   assert.deepEqual(api.registrations.hooks, [
     "before_prompt_build",
+    "before_prompt_build",
+    "before_prompt_build",
+    "before_agent_reply",
     "session_end",
     "before_reset",
     "session_end",
@@ -152,6 +164,15 @@ test("slot check — unset: register succeeds with warning", () => {
     "memory_describe",
     "memory_expand",
     "memory_grep",
+    "update_user_card",
+    "get_user_card",
+    "list_user_cards",
+    "set_rule",
+    "get_rule",
+    "list_rules",
+    "delete_rule",
+    "set_persona",
+    "get_persona",
   ]);
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
@@ -160,6 +181,9 @@ test("slot check — unset: register succeeds with warning", () => {
   assert.deepEqual(api.registrations.runtimeLifecycles, ["libravdb-shutdown"]);
   assert.deepEqual(api.registrations.hooks, [
     "before_prompt_build",
+    "before_prompt_build",
+    "before_prompt_build",
+    "before_agent_reply",
     "session_end",
     "before_reset",
     "session_end",
