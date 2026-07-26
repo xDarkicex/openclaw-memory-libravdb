@@ -53,6 +53,7 @@ class FakeClient {
     systemPromptAddition: "",
   };
   public afterTurnResponse: Record<string, unknown> = { ok: true, turnCount: 1 };
+  public afterTurnResponses: Array<Record<string, unknown>> = [];
   public compactResponse: Record<string, unknown> = { ok: true, didCompact: false };
 
   async bootstrapSessionKernel(params: Record<string, unknown>) {
@@ -65,7 +66,7 @@ class FakeClient {
   }
   async afterTurnKernel(params: Record<string, unknown>) {
     this.calls.push({ method: "afterTurnKernel", params });
-    return this.afterTurnResponse;
+    return this.afterTurnResponses.shift() ?? this.afterTurnResponse;
   }
   async compactSession(params: Record<string, unknown>) {
     this.calls.push({ method: "compactSession", params });
@@ -503,6 +504,52 @@ test("context engine afterTurn is idempotent when manifest has already ACKed eve
   const secondCallCount = client.calls.filter((c) => c.method === "afterTurnKernel").length;
   assert.equal(secondCallCount, 1, "duplicate afterTurn should not call daemon again");
   assert.deepEqual(secondResult, { ok: true, skipped: true, reason: "no-new-messages" });
+});
+
+test("context engine afterTurn repairs a daemon cursor gap in the same task", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const sessionId = `s1-after-turn-cursor-gap-${process.pid}`;
+  const history = [
+    makeMessage("user", "older question"),
+    makeMessage("user", "new question"),
+  ];
+
+  // Establish the plugin manifest first. The second afterTurn therefore sends
+  // a cursor, which the daemon rejects as a gap after it has lost state.
+  client.afterTurnResponses = [
+    { cursor: { lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "old-daemon-tail" } },
+  ];
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: [history[0]!],
+  });
+  await flushIngestion(engine);
+
+  // First response proves the daemon rejected the now-stale manifest cursor.
+  // The retry then acknowledges a cursor-free full-history seed at index zero.
+  client.afterTurnResponses = [
+    { cursor: { lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "" } },
+    { cursor: { lastProcessedIndex: history.length - 1, sessionVersion: 1, manifestTailHash: "daemon-tail" } },
+  ];
+
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: history,
+    prePromptMessageCount: history.length,
+  });
+  await flushIngestion(engine);
+
+  const afterTurnCalls = client.calls.filter((call) => call.method === "afterTurnKernel");
+  assert.equal(afterTurnCalls.length, 3, "cursor gap must trigger an immediate retry");
+  assert.equal("cursor" in afterTurnCalls[1]!.params, true, "the normal incremental attempt carries the stale cursor");
+  assert.equal("cursor" in afterTurnCalls[2]!.params, false, "gap-repair retry must be cursor-free");
+  assert.deepEqual(
+    (afterTurnCalls[2]!.params.messages as Array<{ role: string; content: string }>).map(({ role, content }) => ({ role, content })),
+    history,
+  );
 });
 
 test("context engine afterTurn strips OpenClaw untrusted metadata envelope before ingest", async () => {
