@@ -546,6 +546,31 @@ test("compact normalizes daemon compact response into SDK CompactResult", async 
   assert.equal(details?.meanConfidence, 0.91);
 });
 
+test("compact treats an already-compacted daemon session as a successful handoff", async () => {
+  const rpc = new StaticContractRpc();
+  rpc.mockResponses.set("compact_session", {
+    didCompact: false,
+    skippedNoNewTurns: true,
+    lastCompactedTurn: 37n,
+    totalTurns: 37n,
+    tokenAccumulatorAfter: 0,
+  });
+
+  const context = buildContextEngineFactory(async () => rpc as never, { rpcTimeoutMs: 1000 });
+  const result = await context.compact({
+    sessionId: "already-compacted-session",
+    tokenBudget: 2048,
+    currentTokenCount: 12000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.compacted, true);
+  assert.equal(result.reason, undefined);
+  const details = result.result?.details as Record<string, unknown> | undefined;
+  assert.equal(details?.skippedNoNewTurns, true);
+  assert.equal(details?.lastCompactedTurn, "37");
+});
+
 test("compact rejects empty sessionId to prevent accidental session rollover", async () => {
   const rpc = new StaticContractRpc();
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };

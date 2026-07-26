@@ -153,6 +153,15 @@ function normalizeCompactResult(
   const totalTurns = typeof response?.totalTurns === "bigint" ? response.totalTurns : undefined;
   const skippedNoNewTurns =
     typeof response?.skippedNoNewTurns === "boolean" ? response.skippedNoNewTurns : undefined;
+  // The daemon deliberately reports didCompact=false when the session has
+  // already been compacted and no new turns have arrived. That is still a
+  // successful compaction handoff for OpenClaw: the daemon-owned projection
+  // remains valid and must be activated so the host retries against it.
+  const alreadyCompacted =
+    skippedNoNewTurns === true &&
+    lastCompactedTurn != null &&
+    lastCompactedTurn > 0n;
+  const effectiveCompacted = didCompact || alreadyCompacted;
 
   if (
     lastCompactedTurn != null ||
@@ -187,7 +196,7 @@ function normalizeCompactResult(
   // instead of accepting a bloated session.
   const threshold = options.threshold;
   const overBudget = threshold != null && tokensBefore >= threshold;
-  const engineRefused = !didCompact && overBudget;
+  const engineRefused = !effectiveCompacted && overBudget;
 
   const tokensAfter =
     didCompact && typeof response?.tokensAfter === "number" && response.tokensAfter >= 0
@@ -197,7 +206,7 @@ function normalizeCompactResult(
   return {
     ok: !engineRefused,
     compacted: didCompact,
-    ...(didCompact ? {} : { reason: engineRefused ? "overbudget_not_compacted" : "not_compacted" }),
+    ...(effectiveCompacted ? {} : { reason: engineRefused ? "overbudget_not_compacted" : "not_compacted" }),
     result: {
       tokensBefore,
       ...(tokensAfter != null ? { tokensAfter } : {}),
