@@ -313,6 +313,11 @@ test("assemble fail-closed on sidecar errors with budget-clamped fallback", asyn
   assert.ok(assembled.messages.length >= 1);
   assert.equal(assembled.messages[0]?.role, "user");
   assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(
+    assembled.promptAuthority,
+    "assembled",
+    "a budget-clamped exact source suffix must be the precheck authority",
+  );
 });
 
 test("assemble triggers force compaction at dynamic 80% threshold before daemon assembly", async () => {

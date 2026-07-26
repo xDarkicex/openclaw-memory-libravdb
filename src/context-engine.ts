@@ -205,7 +205,7 @@ function normalizeCompactResult(
 
   return {
     ok: !engineRefused,
-    compacted: didCompact,
+    compacted: effectiveCompacted,
     ...(effectiveCompacted ? {} : { reason: engineRefused ? "overbudget_not_compacted" : "not_compacted" }),
     result: {
       tokensBefore,
@@ -1066,15 +1066,57 @@ function buildBudgetFallbackContext(
   tokenBudget: number | undefined,
 ): OpenClawCompatibleAssembleResult {
   const effectiveBudget = resolveEffectiveAssembleBudget(tokenBudget);
-  const fallbackMessages = trimMessagesToBudget(
-    messages.map((message) => ({ ...message })),
-    effectiveBudget,
-  );
-  return {
-    messages: fallbackMessages,
-    estimatedTokens: approximateMessagesTokens(fallbackMessages),
+  const sourceTokens = approximateMessagesTokens(messages);
+  if (sourceTokens <= effectiveBudget) {
+    return {
+      messages,
+      estimatedTokens: sourceTokens,
+      systemPromptAddition: "",
+      promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+    };
+  }
+
+  // This is a pressure-relief projection, not an attempt to replay the
+  // daemon's normalized messages. It retains exact OpenClaw source objects
+  // and keeps the newest user/tool bundle intact. Because it is strictly
+  // smaller than the preassembly transcript, OpenClaw must precheck this
+  // projection itself; otherwise it discards the trim and retries the full
+  // overflowing session forever when daemon compaction is temporarily unable
+  // to make semantic progress (for example a singleton source turn).
+  const projection = enforceCompactedProjectionBudgetInvariant({
+    messages,
+    estimatedTokens: sourceTokens,
     systemPromptAddition: "",
-    promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+    promptAuthority: "assembled",
+  }, tokenBudget);
+  if (projection.estimatedTokens <= effectiveBudget) {
+    return projection;
+  }
+
+  // A single newest user message can itself exceed the entire safe prompt
+  // budget. There is no tool-protocol-safe suffix to select in that case, so
+  // preserve the latest replay-safe user request and truncate only its text.
+  // This is the terminal local safety valve; it is preferable to repeatedly
+  // re-sending the unbounded transcript and permanently wedging the session.
+  const latestUser = findLastReplaySafeUserMessage(messages);
+  if (latestUser) {
+    const content = truncateContentToTokenBudget(latestUser.content, Math.max(1, effectiveBudget - 8));
+    if (content) {
+      const truncatedUser = { ...latestUser, content };
+      return {
+        ...projection,
+        messages: [truncatedUser],
+        estimatedTokens: Math.min(effectiveBudget, approximateMessageTokens(truncatedUser)),
+      };
+    }
+  }
+
+  // Non-conversational/system-only transcripts have no user turn to protect.
+  // Drop them rather than claiming an under-budget projection that is not one.
+  return {
+    ...projection,
+    messages: [],
+    estimatedTokens: 0,
   };
 }
 
