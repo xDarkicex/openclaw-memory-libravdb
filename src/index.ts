@@ -112,8 +112,8 @@ export function register(api: OpenClawPluginApi) {
   const ownsMemorySlot = memSlot === MEMORY_ID;
   if (runtimeOrNull && ownsMemorySlot) {
     const memoryTools = createLibraVdbMemoryTools(runtimeOrNull.getClient, cfg, logger);
-    api.registerTool?.((ctx) => memoryTools.createSearchTool(ctx), { names: ["memory_search"] });
-    api.registerTool?.((ctx) => memoryTools.createGetTool(ctx), { names: ["memory_get"] });
+    api.registerTool?.((ctx) => memoryTools.createSearchTool(ctx), { names: ["libravdb_memory_search"] });
+    api.registerTool?.((ctx) => memoryTools.createGetTool(ctx), { names: ["libravdb_memory_get"] });
   }
 
   // Recall tools: describe, expand, grep — available when the runtime exists.

@@ -94,7 +94,7 @@ class CorpusPriorityRpc extends FakeRpc {
   }
 }
 
-test("LibraVDB memory tools expose memory_search and memory_get through the runtime bridge", async () => {
+test("LibraVDB memory tools expose libravdb_memory_search and libravdb_memory_get through the runtime bridge", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { userId: "u1", topK: 4 };
   const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
@@ -102,8 +102,8 @@ test("LibraVDB memory tools expose memory_search and memory_get through the runt
   const searchTool = tools.createSearchTool(ctx);
   const getTool = tools.createGetTool(ctx);
 
-  assert.equal(searchTool.name, "memory_search");
-  assert.equal(getTool.name, "memory_get");
+  assert.equal(searchTool.name, "libravdb_memory_search");
+  assert.equal(getTool.name, "libravdb_memory_get");
 
   const search = await searchTool.execute("call-1", {
     query: "earliest memory",
@@ -141,7 +141,7 @@ test("LibraVDB memory tools expose memory_search and memory_get through the runt
   });
 });
 
-test("LibraVDB memory_search supports sessions corpus filtering without memory-core", async () => {
+test("LibraVDB libravdb_memory_search supports sessions corpus filtering without memory-core", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { userId: "u1" };
   const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
@@ -166,7 +166,7 @@ test("LibraVDB memory_search supports sessions corpus filtering without memory-c
   assert.equal(details.results[0]?.snippet, "single collection result");
 });
 
-test("LibraVDB memory_search constrains sessions corpus before top-k ranking", async () => {
+test("LibraVDB libravdb_memory_search constrains sessions corpus before top-k ranking", async () => {
   const rpc = new CorpusPriorityRpc();
   const cfg: PluginConfig = { userId: "u1" };
   const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
@@ -203,7 +203,7 @@ test("LibraVDB memory_search constrains sessions corpus before top-k ranking", a
   ]);
 });
 
-test("LibraVDB memory_search constrains memory corpus before top-k ranking", async () => {
+test("LibraVDB libravdb_memory_search constrains memory corpus before top-k ranking", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { userId: "u1" };
   const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
@@ -228,7 +228,7 @@ test("LibraVDB memory_search constrains memory corpus before top-k ranking", asy
   );
 });
 
-test("LibraVDB memory_search duplicate guard expires instead of blocking the whole session", async () => {
+test("LibraVDB libravdb_memory_search duplicate guard expires instead of blocking the whole session", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { userId: "u1" };
   const tools = createLibraVdbMemoryTools(async () => rpc as never, cfg, silentLogger);
@@ -259,7 +259,7 @@ test("LibraVDB memory_search duplicate guard expires instead of blocking the who
   }
 });
 
-test("LibraVDB memory_get reports unknown paths as disabled instead of reading arbitrary files", async () => {
+test("LibraVDB libravdb_memory_get reports unknown paths as disabled instead of reading arbitrary files", async () => {
   const rpc = new FakeRpc();
   const tools = createLibraVdbMemoryTools(async () => rpc as never, { userId: "u1" }, silentLogger);
   const getTool = tools.createGetTool({ agentId: "spartacus" });

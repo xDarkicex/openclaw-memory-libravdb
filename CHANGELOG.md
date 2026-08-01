@@ -1,5 +1,81 @@
 # Changelog
 
+## v1.10.18 — 2026-08-01
+
+### Fixed
+
+- **Circuit breaker cooldown not reset on failure class change.** When the
+  BeforeTurnKernel failure class changed (e.g., timeout → unavailable), the
+  code reset `class` and `consecutive` but retained the old class's
+  `cooldownUntil`. The stale cooldown blocked calls even though the new failure
+  class hadn't reached its open threshold. Now cleared on class transition.
+
+## v1.10.17 — 2026-08-01
+
+### Fixed
+
+- **Multiline tool-call JSON sanitization.** The old `TOOL_CALL_JSON_RE` regex used
+  `[^\r\n]*` and could never match formatted JSON tool calls spanning multiple
+  lines. Replaced with a brace-aware, string-aware JSON object scanner that finds
+  balanced `{...}` objects, parses as JSON, recursively checks for tool-call
+  markers, and strips matches. Adjacent ordinary JSON is preserved. Eliminates a
+  path where historical tool syntax in recalled context could prime models to
+  repeat tool calls.
+
+## v1.10.16 — 2026-08-01
+
+### Fixed
+
+- **Markdown oversized file retraction.** When an ingested markdown file grows
+  beyond `markdownIngestionMaxTokensPerFile`, previously-ingested chunks were
+  left in the vector DB as stale authored content. The scan loop now retracts
+  cached documents that become oversized via `delete_authored_document`, both in
+  the pre-read estimate path and the streamed `too_large` path. Previously
+  skipped — now actively cleaned up.
+
+## v1.10.15 — 2026-08-01
+
+### Fixed
+
+- **Non-object metadata JSON crash.** The daemon can return `metadataJson: "null"`
+  (valid JSON null) for search results. `parseMetadataJson()` was passing the
+  parsed value straight through, causing `TypeError: Cannot read properties of
+  null (reading 'collection')` on a public search path. Non-object values (null,
+  primitives, arrays) are now treated as missing metadata, falling back to `{}`.
+
+## v1.10.14 — 2026-08-01
+
+### Changed
+
+- **Tool name prefix: `memory_search` → `libravdb_memory_search`, `memory_get` → `libravdb_memory_get`.**
+  OpenClaw >=2026.5.x moved `memory_search` and `memory_get` into the core tool catalog,
+  colonizing generic names that were the de facto community contract. Prefixing avoids the
+  namespace collision while preserving the semantic contract. All other tool names are
+  unaffected. Prompt guidance and continuity context messages updated accordingly.
+
+### Added
+
+- **Per-agent memory opt-out (`excludeAgents`, `excludeSubagents`).** Multi-agent gateways
+  can now skip ALL LibraVDB memory/context work for specific agents or all subagents.
+  `excludeAgents: ["fastbot"]` skips injection, ingestion, compaction, and daemon RPCs for
+  a latency-critical voice agent. `excludeSubagents: true` makes every ephemeral subagent
+  run lean. Both default off — fully opt-in.
+
+- **Absolute injection ceiling (`tokenBudgetMax`).** Caps memory injection tokens per turn
+  independent of the model's context window. On large-window models (1M tokens), the
+  existing `tokenBudgetFraction` approach balloons injection to ~200k tokens, trashing the
+  prompt cache every turn. `tokenBudgetMax` adds a two-stage ceiling: the daemon budget is
+  pre-capped, then the combined system prompt addition is truncated after all injection
+  paths land. Only injection is bounded — the conversation window is untouched.
+
+### Fixed
+
+- **Ingest queue false rejection under WAL load.** The daemon's `ingest_markdown_document`
+  RPC returns at queue-time (before embed/commit), so `nodesAccepted: 0` is the normal
+  async response. The ingest loop was treating this as permanent rejection, spraying false
+  `Chunk permanently rejected` warnings on every chunk under load. Rejection is now gated
+  on `nodesRejected > 0` — the only signal of actual rejection.
+
 ## v1.10.13 — 2026-06-27
 
 ### Added — Bot Persona

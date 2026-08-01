@@ -425,6 +425,13 @@ libravdbd search --tenant <key> --session <id> -k 10 "query"
 # Tenant management
 libravdbd tenant evict <key>        # force-close a tenant DB
 libravdbd migrate                   # run pending DB migrations
+
+# Database export (libravdbd v1.10.0+)
+libravdbd export                    # export all collections as JSON to stdout
+libravdbd export --tenant <key>     # export a specific tenant's data
+libravdbd export --collection <name># export a single collection
+libravdbd export --format jsonl     # newline-delimited JSON (one record per line)
+libravdbd export --output out.json  # write to file instead of stdout
 ```
 
 Use [Install](./docs/install.md) for service lifecycle commands and

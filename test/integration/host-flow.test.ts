@@ -247,16 +247,21 @@ test("assemble passes correct configuration mapping and returns expected payload
   assert.equal(params.config.recoveryMinConfidenceMean, 0.42);
   assert.equal(params.emitDebug, true);
 
-  // Verify inbound response handling: daemon-only recall is injected as
-  // untrusted prompt context while the current user turn is preserved.
+  // Daemon-normalized messages are not replayed into provider history. They
+  // cannot preserve structured tool protocol; only the daemon's explicit
+  // system prompt addition and exact OpenClaw source messages are authoritative.
   assert.ok(assembled.estimatedTokens >= 150);
-  assert.match(
+  assert.equal(
     assembled.systemPromptAddition,
-    /^<recalled_memories>static memory data<\/recalled_memories>/,
+
+    "<recalled_memories>static memory data</recalled_memories>",
   );
+  assert.doesNotMatch(assembled.systemPromptAddition, /Mocked recalled context/);
+
   assert.equal(assembled.messages.length, 1);
   assert.equal(assembled.messages[0]?.role, "user");
   assert.equal(assembled.messages[0]?.content, "what do you remember?");
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
   assert.equal(assembled.debug?.recoveryTriggerFired, true);
 });
 
@@ -310,6 +315,11 @@ test("assemble fail-closed on sidecar errors with budget-clamped fallback", asyn
   assert.ok(assembled.messages.length >= 1);
   assert.equal(assembled.messages[0]?.role, "user");
   assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(
+    assembled.promptAuthority,
+    "assembled",
+    "a budget-clamped exact source suffix must be the precheck authority",
+  );
 });
 
 test("assemble triggers force compaction at dynamic 80% threshold before daemon assembly", async () => {
@@ -318,7 +328,8 @@ test("assemble triggers force compaction at dynamic 80% threshold before daemon 
   rpc.mockResponses.set("assemble_context_internal", {
     messages: [{ role: "assistant", content: "ok" }],
     estimatedTokens: 32,
-    systemPromptAddition: "",
+    systemPromptAddition:
+      "<compacted_session_context>\nCompacted history\n</compacted_session_context>",
   });
 
   const cfg: PluginConfig = {
@@ -328,10 +339,14 @@ test("assemble triggers force compaction at dynamic 80% threshold before daemon 
   const logger = createMemoryLogger();
   const context = buildContextEngineFactory(async () => rpc as never, cfg, logger);
 
+  const sourceMessages = Array.from({ length: 60 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `${index} ${"X".repeat(220)}`,
+  }));
   const assembled = await context.assemble({
     sessionId: "test-session",
     userId: "test-user",
-    messages: [{ role: "assistant", content: "X".repeat(12000) }],
+    messages: sourceMessages,
     tokenBudget: 3000,
   });
 
@@ -343,15 +358,18 @@ test("assemble triggers force compaction at dynamic 80% threshold before daemon 
 
   const assembleParams = rpc.getLastCall("assemble_context_internal");
   assert.ok(assembleParams, "Expected assemble_context_internal to be called after compaction");
-  assert.equal(assembled.systemPromptAddition, "");
-  assert.equal(assembled.messages[0]?.role, "assistant");
-  assert.equal(typeof assembled.messages[0]?.content, "string");
-  assert.ok((assembled.messages[0]?.content as string).startsWith("X"));
-  assert.ok((assembled.messages[0]?.content as string).length < 12000);
-  assert.ok(assembled.estimatedTokens <= effectiveAssembleBudget(3000));
+
+  assert.match(
+    assembled.systemPromptAddition,
+    /<compacted_session_context>/,
+  );
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.ok(assembled.messages.length < sourceMessages.length);
+  assert.doesNotMatch(JSON.stringify(assembled.messages), /"content":"ok"/);
+
   assert.equal(logger.warns.length, 0);
-  assert.match(logger.infos[0] ?? "", /predictive compaction trigger phase=assemble/);
-  assert.match(logger.infos[1] ?? "", /predictive compaction completed phase=assemble/);
+  assert.ok(logger.infos.some((message) => /predictive compaction trigger phase=assemble/.test(message)));
+  assert.ok(logger.infos.some((message) => /predictive compaction completed phase=assemble/.test(message)));
 });
 
 test("assemble prefers authoritative currentTokenCount for predictive compaction", async () => {
@@ -411,7 +429,7 @@ test("assemble keeps compactThreshold explicit override when compactSessionToken
   assert.equal(compactParams.currentTokenCount, 3354);
 });
 
-test("assemble proceeds to assembly when server legitimately declines compaction", async () => {
+test("assemble blocks assembly when server declines over-budget compaction", async () => {
   const rpc = new StaticContractRpc();
   rpc.mockResponses.set("compact_session", { didCompact: false });
   rpc.mockResponses.set("assemble_context_internal", {
@@ -440,7 +458,9 @@ test("assemble proceeds to assembly when server legitimately declines compaction
   const assembleCalls = rpc.calls.filter((call) => call.method === "assemble_context_internal");
   assert.equal(assembleCalls.length, 0, "assemble_context_internal must be blocked when compaction declines over budget");
   assert.ok(assembled.estimatedTokens <= effectiveAssembleBudget(3000));
-  assert.equal(logger.warns.length, 0);
+
+  assert.ok(logger.infos.some((message) => /did not compact.*phase=assemble/.test(message)));
+
 });
 
 test("assemble blocks daemon assembly when predictive compaction fails", async () => {
@@ -506,7 +526,9 @@ test("compact normalizes daemon compact response into SDK CompactResult", async 
     clustersDeclined: 1,
     turnsRemoved: 7,
     summaryMethod: "extractive",
+    summaryText: "Compacted session history",
     meanConfidence: 0.91,
+    tokensAfter: 4567,
   });
 
   const cfg: PluginConfig = { rpcTimeoutMs: 1000 };
@@ -524,14 +546,40 @@ test("compact normalizes daemon compact response into SDK CompactResult", async 
   assert.equal(result.ok, true);
   assert.equal(result.compacted, true);
   assert.equal(result.reason, undefined);
-  assert.equal(result.result?.summary, "extractive");
+  assert.equal(result.result?.summary, "Compacted session history");
   assert.equal(result.result?.tokensBefore, 12345);
+  assert.equal(result.result?.tokensAfter, 4567);
   const details = result.result?.details as Record<string, unknown> | undefined;
   assert.equal(details?.clustersFormed, 2);
   assert.equal(details?.clustersDeclined, 1);
   assert.equal(details?.turnsRemoved, 7);
   assert.equal(details?.summaryMethod, "extractive");
   assert.equal(details?.meanConfidence, 0.91);
+});
+
+test("compact treats an already-compacted daemon session as a successful handoff", async () => {
+  const rpc = new StaticContractRpc();
+  rpc.mockResponses.set("compact_session", {
+    didCompact: false,
+    skippedNoNewTurns: true,
+    lastCompactedTurn: 37n,
+    totalTurns: 37n,
+    tokenAccumulatorAfter: 0,
+  });
+
+  const context = buildContextEngineFactory(async () => rpc as never, { rpcTimeoutMs: 1000 });
+  const result = await context.compact({
+    sessionId: "already-compacted-session",
+    tokenBudget: 2048,
+    currentTokenCount: 12000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.compacted, true);
+  assert.equal(result.reason, undefined);
+  const details = result.result?.details as Record<string, unknown> | undefined;
+  assert.equal(details?.skippedNoNewTurns, true);
+  assert.equal(details?.lastCompactedTurn, "37");
 });
 
 test("compact rejects empty sessionId to prevent accidental session rollover", async () => {

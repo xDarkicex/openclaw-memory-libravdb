@@ -541,6 +541,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       const estimatedTokens = estimateTokens(candidate.size);
       if (estimatedTokens > this.maxTokensPerFile) {
         stats.filesDeferred++;
+        if (await this.deleteCachedSourceDocument(candidate.path)) {
+          stats.filesDeleted++;
+        }
         continue;
       }
       try {
@@ -665,6 +668,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     const maxBytes = this.maxTokensPerFile * 4 + 3;
     const streamed = await this.safeReadFileStreamed(filePath, maxBytes);
     if (streamed === "too_large") {
+      if (cached && await this.deleteCachedSourceDocument(sourceDoc)) {
+        return "deleted";
+      }
       return "skipped";
     }
     if (!streamed) {
@@ -778,6 +784,16 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private async deleteSourceDocument(sourceDoc: string): Promise<void> {
     const queue = await this.getIngestQueue();
     await queue.enqueueDelete(sourceDoc);
+  }
+
+  private async deleteCachedSourceDocument(sourceDoc: string): Promise<boolean> {
+    if (!this.fileStates.has(sourceDoc)) {
+      return false;
+    }
+    await this.deleteSourceDocument(sourceDoc);
+    this.fileStates.delete(sourceDoc);
+    this.snapshotDirty = true;
+    return true;
   }
 
   private async getIngestQueue(): Promise<IngestQueue> {

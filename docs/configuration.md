@@ -51,7 +51,7 @@ other public CAs automatically.
 Set `grpcEndpointTlsCa` to the path of the CA certificate PEM file:
 ```json
 {
-  "grpcEndpoint": "tcp:yourvector service.internal:50051",
+  "grpcEndpoint": "tcp:libravdb.internal:50051",
   "grpcEndpointTlsCa": "/etc/certs/ca.pem"
 }
 ```
@@ -64,7 +64,7 @@ When the vector service requires client certificate authentication, set both
 be present or both be omitted):
 ```json
 {
-  "grpcEndpoint": "tcp:yourvector service.internal:50051",
+  "grpcEndpoint": "tcp:libravdb.internal:50051",
   "grpcEndpointTlsCa": "/etc/certs/ca.pem",
   "grpcEndpointTlsClientCert": "/etc/certs/client-cert.pem",
   "grpcEndpointTlsClientKey": "/etc/certs/client-key.pem"

@@ -53,6 +53,8 @@ class FakeClient {
     systemPromptAddition: "",
   };
   public afterTurnResponse: Record<string, unknown> = { ok: true, turnCount: 1 };
+  public afterTurnResponses: Array<Record<string, unknown>> = [];
+  public compactResponse: Record<string, unknown> = { ok: true, didCompact: false };
 
   async bootstrapSessionKernel(params: Record<string, unknown>) {
     this.calls.push({ method: "bootstrapSessionKernel", params });
@@ -64,11 +66,11 @@ class FakeClient {
   }
   async afterTurnKernel(params: Record<string, unknown>) {
     this.calls.push({ method: "afterTurnKernel", params });
-    return this.afterTurnResponse;
+    return this.afterTurnResponses.shift() ?? this.afterTurnResponse;
   }
   async compactSession(params: Record<string, unknown>) {
     this.calls.push({ method: "compactSession", params });
-    return { ok: true, didCompact: false };
+    return this.compactResponse;
   }
   async assembleContextInternal(params: Record<string, unknown>) {
     this.calls.push({ method: "assembleContextInternal", params });
@@ -504,6 +506,52 @@ test("context engine afterTurn is idempotent when manifest has already ACKed eve
   assert.deepEqual(secondResult, { ok: true, skipped: true, reason: "no-new-messages" });
 });
 
+test("context engine afterTurn repairs a daemon cursor gap in the same task", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const sessionId = `s1-after-turn-cursor-gap-${process.pid}`;
+  const history = [
+    makeMessage("user", "older question"),
+    makeMessage("user", "new question"),
+  ];
+
+  // Establish the plugin manifest first. The second afterTurn therefore sends
+  // a cursor, which the daemon rejects as a gap after it has lost state.
+  client.afterTurnResponses = [
+    { cursor: { lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "old-daemon-tail" } },
+  ];
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: [history[0]!],
+  });
+  await flushIngestion(engine);
+
+  // First response proves the daemon rejected the now-stale manifest cursor.
+  // The retry then acknowledges a cursor-free full-history seed at index zero.
+  client.afterTurnResponses = [
+    { cursor: { lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "" } },
+    { cursor: { lastProcessedIndex: history.length - 1, sessionVersion: 1, manifestTailHash: "daemon-tail" } },
+  ];
+
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: history,
+    prePromptMessageCount: history.length,
+  });
+  await flushIngestion(engine);
+
+  const afterTurnCalls = client.calls.filter((call) => call.method === "afterTurnKernel");
+  assert.equal(afterTurnCalls.length, 3, "cursor gap must trigger an immediate retry");
+  assert.equal("cursor" in afterTurnCalls[1]!.params, true, "the normal incremental attempt carries the stale cursor");
+  assert.equal("cursor" in afterTurnCalls[2]!.params, false, "gap-repair retry must be cursor-free");
+  assert.deepEqual(
+    (afterTurnCalls[2]!.params.messages as Array<{ role: string; content: string }>).map(({ role, content }) => ({ role, content })),
+    history,
+  );
+});
+
 test("context engine afterTurn strips OpenClaw untrusted metadata envelope before ingest", async () => {
   const client = new FakeClient();
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
@@ -575,6 +623,57 @@ test("context engine assemble strips OpenClaw untrusted metadata envelope from p
   const call = client.calls.find((c) => c.method === "assembleContextInternal");
   assert.ok(call, "assemble_context_internal RPC was called");
   assert.equal(call.params.prompt, "@User-1234 Reply with exactly PONG.");
+});
+
+test("context engine clears a stale circuit cooldown when the failure class changes", async () => {
+  class DeferredBeforeTurnClient extends FakeClient {
+    public pendingBeforeTurn: Array<{ reject(error: unknown): void }> = [];
+    public beforeTurnSucceeds = false;
+
+    beforeTurnKernel(params: Record<string, unknown>): Promise<{ predictions: [] }> {
+      this.calls.push({ method: "beforeTurnKernel", params });
+      if (this.beforeTurnSucceeds) return Promise.resolve({ predictions: [] });
+      return new Promise((_resolve, reject) => {
+        this.pendingBeforeTurn.push({ reject });
+      });
+    }
+  }
+
+  const client = new DeferredBeforeTurnClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    beforeTurnTimeoutMs: 1000,
+    assembleTimeoutMs: 1000,
+  });
+  const assemble = (turn: number) => engine.assemble({
+    sessionId: "circuit-class-change",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `query ${turn}`)],
+    prompt: `query ${turn}`,
+    tokenBudget: 4000,
+  });
+  const nextEventLoopTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const grpcError = (code: number, message: string) => Object.assign(new Error(message), { code });
+
+  const attempts = [1, 2, 3, 4].map(assemble);
+  await nextEventLoopTurn();
+  assert.equal(client.pendingBeforeTurn.length, 4, "all failures should already be in flight");
+
+  for (let index = 0; index < 3; index++) {
+    client.pendingBeforeTurn[index].reject(grpcError(4, "deadline exceeded"));
+    await nextEventLoopTurn();
+  }
+  client.pendingBeforeTurn[3].reject(grpcError(14, "unavailable"));
+  await Promise.all(attempts);
+
+  client.beforeTurnSucceeds = true;
+  await assemble(5);
+
+  assert.equal(
+    client.calls.filter((call) => call.method === "beforeTurnKernel").length,
+    5,
+    "the new failure class should not inherit the timeout cooldown",
+  );
 });
 
 test("context engine assemble uses latest selected-context user utterance as retrieval query", async () => {
@@ -941,6 +1040,194 @@ test("context engine assemble does not duplicate consumed live tool protocol", a
   assert.doesNotMatch(assembled.systemPromptAddition, /SAME_RESULT_TEXT|\[tool:web_search\]/u);
 });
 
+test("successful daemon compaction makes an exact turn-aligned source suffix authoritative", async () => {
+  const client = new FakeClient();
+  client.compactResponse = {
+    ok: true,
+    didCompact: true,
+    summaryText: "Authoritative compacted history",
+    summaryMethod: "extractive",
+    tokensAfter: 1200,
+  };
+
+  const sourceMessages: Array<Record<string, unknown> & { role: string; content: string | unknown[] }> = [];
+  for (let index = 0; index < 35; index += 1) {
+    sourceMessages.push(
+      makeMessage("user", `historical user ${index}`, `history-user-${index}`),
+      makeMessage("assistant", `historical assistant ${index}`, `history-assistant-${index}`),
+    );
+  }
+  const currentUser = makeMessage("user", "search the current fact", "current-user");
+  const currentToolCall = {
+    role: "assistant",
+    id: "current-tool-call",
+    content: [{
+      type: "toolCall",
+      id: "call-current",
+      name: "web_search",
+      arguments: { query: "current fact" },
+    }],
+  };
+  const currentToolResult = {
+    role: "toolResult",
+    id: "current-tool-result",
+    toolCallId: "call-current",
+    content: [{ type: "text", text: "CURRENT_TOOL_RESULT" }],
+  };
+  const currentAnswer = makeMessage("assistant", "current answer", "current-answer");
+  const currentFollowup = makeMessage("assistant", "current followup", "current-followup");
+  sourceMessages.push(
+    currentUser,
+    currentToolCall,
+    currentToolResult,
+    currentAnswer,
+    currentFollowup,
+  );
+
+  client.assembleResponse = {
+    messages: [
+      makeMessage("assistant", '[tool:web_search] {"query":"current fact"}'),
+      makeMessage("toolResult", "CURRENT_TOOL_RESULT"),
+      makeMessage("toolResult", "CURRENT_TOOL_RESULT"),
+    ],
+    estimatedTokens: 1200,
+    systemPromptAddition:
+      "<compacted_session_context>\nAuthoritative compacted history\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const compacted = await engine.compact({
+    sessionId: "s1-owned-compaction",
+    force: true,
+    tokenBudget: 100_000,
+    currentTokenCount: 90_000,
+  });
+  assert.equal(compacted.ok, true);
+  assert.equal(compacted.compacted, true);
+  assert.equal(compacted.result?.summary, "Authoritative compacted history");
+  assert.equal(compacted.result?.tokensAfter, 1200);
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-owned-compaction",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "search the current fact",
+    tokenBudget: 100_000,
+  });
+
+  // 75 source messages means the nominal 50-message cut lands on an
+  // assistant message. The projection moves back to its user boundary.
+  const expectedProjection = sourceMessages.slice(24);
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.equal(assembled.messages.length, expectedProjection.length);
+  assert.ok(assembled.messages.length < sourceMessages.length, "compaction must shrink the next prompt");
+  for (let index = 0; index < expectedProjection.length; index += 1) {
+    assert.strictEqual(
+      assembled.messages[index],
+      expectedProjection[index],
+      `projected source message ${index} must retain exact object identity`,
+    );
+  }
+  assert.equal(assembled.messages.filter((message) => message === currentToolCall).length, 1);
+  assert.equal(assembled.messages.filter((message) => message === currentToolResult).length, 1);
+  assert.doesNotMatch(JSON.stringify(assembled.messages), /\[tool:web_search\]/u);
+  assert.match(assembled.systemPromptAddition, /<compacted_session_context>/u);
+});
+
+test("compacted projection budget clamp preserves the complete live tool bundle", async () => {
+  const client = new FakeClient();
+  client.compactResponse = {
+    ok: true,
+    didCompact: true,
+    summaryText: "Compacted prefix",
+    tokensAfter: 500,
+  };
+
+  const sourceMessages: Array<Record<string, unknown> & { role: string; content: string | unknown[] }> = [];
+  for (let index = 0; index < 30; index += 1) {
+    sourceMessages.push(
+      makeMessage("user", `old user ${index} ${"u".repeat(40)}`),
+      makeMessage("assistant", `old answer ${index} ${"a".repeat(40)}`),
+    );
+  }
+  const liveUser = makeMessage("user", "run the live tool", "live-user");
+  const liveToolCall = {
+    role: "assistant",
+    id: "live-tool-call",
+    content: [{
+      type: "toolCall",
+      id: "live-call",
+      name: "web_search",
+      arguments: { query: "live query" },
+    }],
+  };
+  const liveToolResult = {
+    role: "toolResult",
+    id: "live-tool-result",
+    toolCallId: "live-call",
+    content: [{ type: "text", text: `LIVE_RESULT_${"r".repeat(240)}` }],
+  };
+  const liveAnswer = makeMessage("assistant", "live final answer", "live-answer");
+  sourceMessages.push(liveUser, liveToolCall, liveToolResult, liveAnswer);
+
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 9999,
+    systemPromptAddition:
+      `<compacted_session_context>\n${"summary ".repeat(500)}\n</compacted_session_context>`,
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  await engine.compact({
+    sessionId: "s1-owned-compaction-budget",
+    force: true,
+    tokenBudget: 1000,
+    currentTokenCount: 900,
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-owned-compaction-budget",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "run the live tool",
+    tokenBudget: 1000,
+  });
+
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.deepEqual(assembled.messages, [liveUser, liveToolCall, liveToolResult, liveAnswer]);
+  assert.strictEqual(assembled.messages[0], liveUser);
+  assert.strictEqual(assembled.messages[1], liveToolCall);
+  assert.strictEqual(assembled.messages[2], liveToolResult);
+  assert.strictEqual(assembled.messages[3], liveAnswer);
+  assert.ok(assembled.estimatedTokens <= 800);
+});
+
+test("daemon compacted context marker restores assembled authority after plugin restart", async () => {
+  const client = new FakeClient();
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 300,
+    systemPromptAddition:
+      "<compacted_session_context>\nPreviously compacted daemon session\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-restored-owned-compaction",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 20_000,
+  });
+
+  assert.equal(client.calls.some((call) => call.method === "compactSession"), false);
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.ok(assembled.messages.length < sourceMessages.length);
+  assert.strictEqual(assembled.messages.at(-1), sourceMessages.at(-1));
+});
+
 test("context engine assemble drops consecutive duplicate provider replay messages", async () => {
   const client = new FakeClient();
   client.assembleResponse = {
@@ -1159,6 +1446,43 @@ test("context engine assemble preserves ordinary JSON with name fields in memory
   assert.match(assembled.systemPromptAddition, /"name":"computment"/u);
   assert.match(assembled.systemPromptAddition, /visible channel name/u);
   assert.doesNotMatch(assembled.systemPromptAddition, /"arguments":\{"query":"old"\}/u);
+});
+
+test("context engine assemble strips multiline tool-call JSON without consuming nearby ordinary JSON", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [makeMessage("user", "current request", "current-user")],
+    estimatedTokens: 64,
+    systemPromptAddition: [
+      "<retrieved_memory>",
+      '<memory_item>{"name":"ordinary-before","note":"keep before"}</memory_item>',
+      "<memory_item>{",
+      '  "name": "web_search",',
+      '  "arguments": {',
+      '    "query": "old",',
+      '    "filters": { "language": "en" }',
+      "  },",
+      '  "toolCallId": "call-old"',
+      "}</memory_item>",
+      '<memory_item>{"name":"ordinary-after","note":"keep after"}</memory_item>',
+      "</retrieved_memory>",
+    ].join("\n"),
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-system-addition-multiline-tool-json",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "current request", "current-user")],
+    prompt: "current request",
+    tokenBudget: 4000,
+  });
+
+  assert.match(assembled.systemPromptAddition, /"name":"ordinary-before"/u);
+  assert.match(assembled.systemPromptAddition, /keep before/u);
+  assert.match(assembled.systemPromptAddition, /"name":"ordinary-after"/u);
+  assert.match(assembled.systemPromptAddition, /keep after/u);
+  assert.doesNotMatch(assembled.systemPromptAddition, /web_search|call-old|"query": "old"/u);
 });
 
 
@@ -2514,3 +2838,302 @@ test("context engine assemble drain handles empty queue gracefully", async () =>
 // consecutive cursor positions, exercising the hasAllToolIdsSeen / recordToolIds
 // path directly.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+
+// tokenBudgetMax — absolute injection ceiling (window-independent)
+// ---------------------------------------------------------------------------
+
+test("tokenBudgetMax caps the daemon budget and truncates the injected system prompt", async () => {
+  const client = new FakeClient();
+  // ~9000 tokens of plain injection (sanitization is a no-op for plain text).
+  const bigInjection = "alpha ".repeat(6000);
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 9000,
+    systemPromptAddition: bigInjection,
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    tokenBudgetMax: 1000,
+    tokenBudgetFraction: 0.2,
+    crossSessionRecall: false, // skip exact recall
+    beforeTurnEnabled: false, // skip beforeTurn injection
+  });
+
+  const messages = [
+    { role: "user", content: "earlier", id: "u0" },
+    { role: "assistant", content: "ok", id: "a0" },
+    { role: "user", content: "what is the status", id: "u1" },
+  ];
+  const result = await engine.assemble({
+    sessionId: "s-cap",
+    sessionKey: "agent:main:session:s-cap",
+    messages,
+    tokenBudget: 1_000_000, // 1M window
+    prompt: "what is the status",
+  });
+
+  // Stage 1: the daemon received min(1M, 1000 / 0.2) = 5000, not the full window.
+  const assembleCall = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(assembleCall, "assembleContextInternal should be called");
+  assert.equal(assembleCall.params.tokenBudget, 5000);
+
+  // Stage 2: combined injection truncated to tokenBudgetMax (1000 tokens =
+  // 4000 chars at APPROX_CHARS_PER_TOKEN=4).
+  assert.ok(
+    result.systemPromptAddition.length <= 4000,
+    `injection ${result.systemPromptAddition.length} chars should be <= 4000`,
+  );
+  assert.ok(result.systemPromptAddition.length > 0, "some injection survives the trim");
+  assert.ok(
+    result.systemPromptAddition.length < bigInjection.length,
+    "injection was actually truncated",
+  );
+});
+
+test("tokenBudgetMax unset: daemon budget passes through uncapped", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 100,
+    systemPromptAddition: "small note",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    crossSessionRecall: false,
+    beforeTurnEnabled: false,
+  });
+
+  const messages = [
+    { role: "user", content: "earlier", id: "u0" },
+    { role: "assistant", content: "ok", id: "a0" },
+    { role: "user", content: "hi", id: "u1" },
+  ];
+  await engine.assemble({
+    sessionId: "s-uncapped",
+    sessionKey: "agent:main:session:s-uncapped",
+    messages,
+    tokenBudget: 1_000_000,
+    prompt: "hi",
+  });
+
+  const assembleCall = client.calls.find((c) => c.method === "assembleContextInternal");
+  assert.ok(assembleCall, "assembleContextInternal should be called");
+  assert.equal(assembleCall.params.tokenBudget, 1_000_000, "full window passed when uncapped");
+});
+
+// Per-agent / per-subagent exclusion (excludeAgents / excludeSubagents)
+// ---------------------------------------------------------------------------
+
+// A runtime whose getClient throws — proves an excluded session never reaches
+// the daemon.
+function throwingRuntime(): PluginRuntime {
+  return {
+    getClient: async () => {
+      throw new Error("client must not be acquired for an excluded session");
+    },
+    emitLifecycleHint: async () => {},
+    onShutdown: () => {},
+    shutdown: async () => {},
+  };
+}
+
+test("excludeAgents: excluded agent skips all kernel work without touching the daemon", async () => {
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+  const sessionKey = "agent:fastbot:session:s1";
+
+  const boot = await engine.bootstrap({ sessionId: "s1", sessionKey });
+  assert.deepEqual(boot, { ok: true });
+
+  const ingested = await engine.ingest({
+    sessionId: "s1",
+    sessionKey,
+    message: { role: "user", content: "hello" },
+  });
+  assert.deepEqual(ingested, { ok: true });
+
+  const messages = [{ role: "user", content: "hello", id: "u1" }];
+  const assembled = await engine.assemble({
+    sessionId: "s1",
+    sessionKey,
+    messages,
+    tokenBudget: 10_000,
+    prompt: "hello",
+  });
+  assert.equal(assembled.systemPromptAddition, "", "no injection for excluded agent");
+  assert.deepEqual(assembled.messages, messages, "messages passed through byte-identical");
+
+  const after = await engine.afterTurn({
+    sessionId: "s1",
+    sessionKey,
+    messages,
+    prePromptMessageCount: 0,
+  });
+  assert.equal(after.ok, true);
+  assert.equal(after.skipped, true);
+
+  // compact() only carries sessionId; bootstrap recorded s1 as excluded so it
+  // short-circuits without acquiring the (throwing) client.
+  const compacted = await engine.compact({
+    sessionId: "s1",
+    tokenBudget: 200_000,
+    currentTokenCount: 199_000,
+    force: true,
+  });
+  assert.equal(compacted.compacted, false);
+  assert.equal(compacted.reason, "agent excluded");
+});
+
+// Overflow the bounded excludedSessionIds side table so a target session's id is
+// evicted, exercising the path where compact() can no longer rely on that set.
+async function overflowExclusionSideTable(
+  engine: Awaited<ReturnType<typeof buildContextEngineFactory>>,
+): Promise<void> {
+  for (let i = 0; i < 1001; i++) {
+    await engine.bootstrap({
+      sessionId: `evictor-${i}`,
+      sessionKey: `agent:fastbot:session:evictor-${i}`,
+    });
+  }
+}
+
+test("excludeAgents: a direct compact() carrying sessionKey stays inert after the side table overflows", async () => {
+  // Regression for the reviewer finding: a manual/host-scheduled compact() is not
+  // preceded by an assemble() in the same turn, so it cannot depend on a per-turn
+  // refresh. It must resolve exclusion authoritatively from the sessionKey the host
+  // threads through — even after the target's id has been evicted from the capped
+  // side table — without ever acquiring the (throwing) client.
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+
+  const targetKey = "agent:fastbot:session:target";
+  await engine.bootstrap({ sessionId: "target", sessionKey: targetKey });
+  await overflowExclusionSideTable(engine); // evicts "target" from excludedSessionIds
+
+  // No assemble()/ingest() first: a bare on-demand compact() that only carries the
+  // authoritative sessionKey must still short-circuit.
+  const compacted = await engine.compact({
+    sessionId: "target",
+    sessionKey: targetKey,
+    tokenBudget: 200_000,
+    currentTokenCount: 199_000,
+    force: true,
+  });
+  assert.equal(compacted.compacted, false);
+  assert.equal(
+    compacted.reason,
+    "agent excluded",
+    "an excluded agent must stay inert for a direct compact() even after the side table overflows",
+  );
+});
+
+test("excludeAgents: an active excluded session stays inert for a sessionKey-less compact via the refreshed side table", async () => {
+  // Fallback path: when the host cannot backfill a sessionKey, compact() relies on
+  // the sessionId side table. A still-active session (one that assembles each turn)
+  // is re-marked by assemble(), so it survives eviction and short-circuits compact()
+  // even without a sessionKey.
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+
+  const targetKey = "agent:fastbot:session:target";
+  await engine.bootstrap({ sessionId: "target", sessionKey: targetKey });
+  await overflowExclusionSideTable(engine); // evicts "target" from excludedSessionIds
+
+  // The active session takes a turn: assemble() re-establishes the marker from the
+  // authoritative sessionKey before any compaction runs.
+  const messages = [{ role: "user", content: "still here", id: "u1" }];
+  const assembled = await engine.assemble({
+    sessionId: "target",
+    sessionKey: targetKey,
+    messages,
+    tokenBudget: 10_000,
+    prompt: "still here",
+  });
+  assert.equal(assembled.systemPromptAddition, "", "still no injection after overflow");
+
+  // compact() with NO sessionKey must still find the refreshed sessionId marker.
+  const compacted = await engine.compact({
+    sessionId: "target",
+    tokenBudget: 200_000,
+    currentTokenCount: 199_000,
+    force: true,
+  });
+  assert.equal(compacted.compacted, false);
+  assert.equal(
+    compacted.reason,
+    "agent excluded",
+    "a sessionKey-less compact must stay inert for an active excluded session after overflow",
+  );
+});
+
+test("excludeAgents: a non-excluded agent still reaches the daemon", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+
+  await engine.bootstrap({ sessionId: "s2", sessionKey: "agent:main:session:s2" });
+
+  assert.ok(
+    client.calls.find((c) => c.method === "bootstrapSessionKernel"),
+    "non-excluded agent bootstraps via the daemon",
+  );
+});
+
+test("excludeSubagents: a spawned subagent skips all kernel work", async () => {
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeSubagents: true,
+  });
+  const childSessionKey = "agent:main:subagent:child1";
+
+  const handle = await engine.prepareSubagentSpawn({
+    parentSessionKey: "agent:main:session:s1",
+    childSessionKey,
+  });
+
+  const boot = await engine.bootstrap({ sessionId: "c1", sessionKey: childSessionKey });
+  assert.deepEqual(boot, { ok: true });
+
+  const messages = [{ role: "user", content: "subagent task", id: "u1" }];
+  const assembled = await engine.assemble({
+    sessionId: "c1",
+    sessionKey: childSessionKey,
+    messages,
+    tokenBudget: 10_000,
+  });
+  assert.equal(assembled.systemPromptAddition, "");
+  assert.deepEqual(assembled.messages, messages);
+
+  // Lifecycle teardown must clear the exclusion marker (idempotent with rollback).
+  handle.rollback?.();
+  await engine.onSubagentEnded({ childSessionKey, reason: "completed" });
+});
+
+test("excludeSubagents off by default: a subagent is granted a normal expansion budget", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const childSessionKey = "agent:main:subagent:child2";
+
+  const handle = await engine.prepareSubagentSpawn({
+    parentSessionKey: "agent:main:session:s1",
+    childSessionKey,
+  });
+  assert.equal(typeof handle.rollback, "function");
+
+  await engine.bootstrap({ sessionId: "c2", sessionKey: childSessionKey });
+  assert.ok(
+    client.calls.find((c) => c.method === "bootstrapSessionKernel"),
+    "a non-excluded subagent still bootstraps via the daemon",
+  );
+
+});

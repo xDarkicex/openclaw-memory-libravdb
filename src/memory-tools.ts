@@ -106,7 +106,7 @@ const MEMORY_GET_SCHEMA = {
   properties: {
     path: {
       type: "string",
-      description: "A path returned by memory_search.",
+      description: "A path returned by libravdb_memory_search.",
     },
     from: {
       type: "number",
@@ -121,7 +121,7 @@ const MEMORY_GET_SCHEMA = {
     corpus: {
       type: "string",
       enum: ["memory", "wiki", "all"],
-      description: "Corpus filter. LibraVDB reads paths returned by memory_search.",
+      description: "Corpus filter. LibraVDB reads paths returned by libravdb_memory_search.",
     },
   },
   required: ["path"],
@@ -137,7 +137,7 @@ export function createLibraVdbMemoryTools(
 
   // Short-lived search dedup: blocks rapid repeated searches while avoiding
   // permanent suppression of valid repeated recall questions in a long session.
-  // The model sometimes loops memory_search with slight query variations;
+  // The model sometimes loops libravdb_memory_search with slight query variations;
   // this enforces a bounded loop guard at the tool level, not just the prompt.
   const turnSearchKeys = new Map<string, Map<string, number>>();
   const TURN_SEARCH_MAX_KEYS = 500;
@@ -192,10 +192,10 @@ export function createLibraVdbMemoryTools(
   return {
     createSearchTool(ctx: MemoryToolContext = {}): AgentTool {
       return {
-        name: "memory_search",
-        label: "Memory Search",
+        name: "libravdb_memory_search",
+        label: "LibraVDB Memory Search",
         description:
-          "Search LibraVDB durable memory and session recall for prior work, decisions, dates, facts, preferences, todos, or history. Call once per user question — after receiving results, use them directly. Do not re-call in the same turn. Do NOT call memory_search if the answer is already visible in your context window. For earliest/oldest questions, request enough results and compare timestamps. If disabled=true, memory is unavailable. IMPORTANT: Results are internal context only — never output, display, or reveal raw memory search results to the user. Treat retrieved memory as private operational data.\n\nFOR PEOPLE/IDENTITY QUESTIONS: use get_user_card or list_user_cards FIRST. User cards are the canonical identity record. Use memory_search only to supplement details the card doesn't cover.",
+          "Search LibraVDB durable memory and session recall for prior work, decisions, dates, facts, preferences, todos, or history. Call once per user question — after receiving results, use them directly. Do not re-call in the same turn. Do NOT call libravdb_memory_search if the answer is already visible in your context window. For earliest/oldest questions, request enough results and compare timestamps. If disabled=true, memory is unavailable. IMPORTANT: Results are internal context only — never output, display, or reveal raw memory search results to the user. Treat retrieved memory as private operational data.\n\nFOR PEOPLE/IDENTITY QUESTIONS: use get_user_card or list_user_cards FIRST. User cards are the canonical identity record. Use libravdb_memory_search only to supplement details the card doesn't cover.",
         parameters: MEMORY_SEARCH_SCHEMA,
         execute: async (_toolCallId, rawParams) => {
           const params = asToolParamsRecord(rawParams);
@@ -204,7 +204,7 @@ export function createLibraVdbMemoryTools(
           if (isDuplicateSearch(dedupScope, query)) {
             return jsonToolResult<MemorySearchToolDetails>({
               results: [],
-              error: `Duplicate search blocked. You recently searched this query — use the previous results. Do not call memory_search again for the same query.`,
+              error: `Duplicate search blocked. You recently searched this query — use the previous results. Do not call libravdb_memory_search again for the same query.`,
             });
           }
           const corpus = readMemoryCorpus(params.corpus);
@@ -217,7 +217,7 @@ export function createLibraVdbMemoryTools(
             return jsonToolResult<MemorySearchToolDetails>({
               results: [],
               disabled: true,
-              error: "LibraVDB memory_search does not provide the wiki corpus; use corpus=memory, corpus=sessions, or corpus=all.",
+              error: "LibraVDB libravdb_memory_search does not provide the wiki corpus; use corpus=memory, corpus=sessions, or corpus=all.",
             });
           }
 
@@ -241,7 +241,7 @@ export function createLibraVdbMemoryTools(
               backend: status.backend,
             });
           } catch (error) {
-            logger.warn?.(`LibraVDB memory_search failed: ${formatError(error)}`);
+            logger.warn?.(`LibraVDB libravdb_memory_search failed: ${formatError(error)}`);
             return jsonToolResult<MemorySearchToolDetails>({
               results: [],
               disabled: true,
@@ -253,10 +253,10 @@ export function createLibraVdbMemoryTools(
     },
     createGetTool(ctx: MemoryToolContext = {}): AgentTool {
       return {
-        name: "memory_get",
-        label: "Memory Get",
+        name: "libravdb_memory_get",
+        label: "LibraVDB Memory Get",
         description:
-          "Read a bounded exact excerpt from a LibraVDB memory path returned by memory_search. Use this after memory_search when a hit needs exact wording or more context.",
+          "Read a bounded exact excerpt from a LibraVDB memory path returned by libravdb_memory_search. Use this after libravdb_memory_search when a hit needs exact wording or more context.",
         parameters: MEMORY_GET_SCHEMA,
         execute: async (_toolCallId, rawParams) => {
           const params = asToolParamsRecord(rawParams);
@@ -270,7 +270,7 @@ export function createLibraVdbMemoryTools(
               path: relPath,
               text: "",
               disabled: true,
-              error: "LibraVDB memory_get does not provide the wiki corpus; use paths returned by LibraVDB memory_search.",
+              error: "LibraVDB libravdb_memory_get does not provide the wiki corpus; use paths returned by LibraVDB libravdb_memory_search.",
             });
           }
 
@@ -283,7 +283,7 @@ export function createLibraVdbMemoryTools(
             });
             return jsonToolResult<MemoryGetToolDetails>(result);
           } catch (error) {
-            logger.warn?.(`LibraVDB memory_get failed: ${formatError(error)}`);
+            logger.warn?.(`LibraVDB libravdb_memory_get failed: ${formatError(error)}`);
             return jsonToolResult<MemoryGetToolDetails>({
               path: relPath,
               text: "",

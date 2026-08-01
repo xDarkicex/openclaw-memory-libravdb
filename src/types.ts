@@ -85,6 +85,15 @@ export interface PluginConfig {
   recencyLambdaUser?: number;
   recencyLambdaGlobal?: number;
   tokenBudgetFraction?: number;
+  /** Absolute ceiling (in tokens) on memory injection per turn, independent of
+   *  the model's context window. Without it, injection is sized as
+   *  tokenBudgetFraction × window, so a large-window model balloons injection.
+   *  Two stages: the daemon budget is pre-capped to min(window,
+   *  tokenBudgetMax / tokenBudgetFraction), then the combined systemPromptAddition
+   *  is truncated to tokenBudgetMax after all injection paths land. Only the
+   *  injection is bounded — the usable conversation window is untouched.
+   *  Unset disables the cap. */
+  tokenBudgetMax?: number;
   authoredHardBudgetFraction?: number;
   authoredSoftBudgetFraction?: number;
   elevatedGuidanceBudgetFraction?: number;
@@ -98,6 +107,17 @@ export interface PluginConfig {
    *  Prevents a subagent from blowing its context window via repeated
    *  expansions. Set to 0 to disable the cap entirely. */
   subagentTokenBudget?: number;
+  /** Agent ids whose sessions skip ALL LibraVDB memory/context work — no
+   *  injection, ingestion, compaction, or daemon RPCs. The agent id is parsed
+   *  from the session key (`agent:<agentId>:...`). Useful for latency-critical
+   *  agents (e.g. a voice agent) where injected tokens and embed round-trips
+   *  are pure overhead. Opt-in; empty by default. */
+  excludeAgents?: string[];
+  /** When true, every subagent session skips ALL LibraVDB memory/context work.
+   *  Subagents are identified via the prepareSubagentSpawn lifecycle. Useful
+   *  when ephemeral subagent tasks should run lean without inheriting the
+   *  parent's memory injection. Opt-in; defaults to false. */
+  excludeSubagents?: boolean;
   section7CoarseTopK?: number;
   section7SecondPassTopK?: number;
   section7Theta1?: number;

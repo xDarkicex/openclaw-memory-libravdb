@@ -7,7 +7,7 @@ const MEMORY_PROMPT_HEADER = [
   "Every turn is auto-ingested into the vector store — you do not need",
   "to explicitly save anything. When asked about past conversations,",
   "facts, preferences, decisions, or anything the user might have told",
-  "you before, call `memory_search` once per user question. Do not",
+  "you before, call `libravdb_memory_search` once per user question. Do not",
   "answer from memory until you have called it. Once you have results,",
   "use them — do not re-call in the same turn.",
   "",
@@ -16,7 +16,7 @@ const MEMORY_PROMPT_HEADER = [
   "('who is X', 'what is X', 'do I have X', 'tell me about X', 'what kind of X'):",
   "you MUST call `list_user_cards` or `get_user_card`. This is not optional.",
   "Do NOT answer from memory, context, or training data. Call the tool FIRST.",
-  "If the card is empty, then fall through to `memory_search`. ",
+  "If the card is empty, then fall through to `libravdb_memory_search`. ",
   "FAILURE TO CALL THE TOOL IS A CRITICAL ERROR.",
   "",
   "Conversations are captured automatically. Never say \"I'll remember",
@@ -26,11 +26,17 @@ const MEMORY_PROMPT_HEADER = [
 ] as const;
 
 function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): string[] {
-  if (!availableTools?.has("memory_search")) {
+  if (!availableTools?.has("libravdb_memory_search")) {
     return [];
   }
 
   const lines: string[] = [];
+	const hasSearch = availableTools.has("libravdb_memory_search");
+	const hasGet = availableTools.has("libravdb_memory_get");
+	const hasDescribe = availableTools.has("memory_describe");
+	const hasExpand = availableTools.has("memory_expand");
+	const hasGrep = availableTools.has("memory_grep");
+	const hasUserCard = availableTools.has("get_user_card");
 
   // ── User card tools (identity-first override) ──
   const hasGetCard = availableTools.has("get_user_card");
@@ -43,7 +49,7 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
       hasListCards ? "- `list_user_cards()` — MANDATORY roster check. Call if unsure whether a card exists." : "",
       "Cards are the canonical record. You MUST call these tools. Do NOT answer from",
       "memory, context, or training data without checking the card first.",
-      "Only use memory_search if the card is empty or missing.",
+		hasSearch ? "Only use libravdb_memory_search if the card is empty or missing." : "Use the card result as the available identity record.",
       "",
       "**Autonomous card maintenance:**",
       hasGetCard ? "- When ANY speaker is mentioned with new or changed information (status, relationships, jobs, life events, feelings), call `update_user_card` BEFORE responding. Update the card first, then reply. Do NOT wait to be asked. Build the world picture proactively. Every person the user mentions matters." : "",
@@ -52,24 +58,23 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
     );
   }
 
-  lines.push(
-    "Call `memory_search` once per user question for prior turns, remembered",
-    "facts, earliest interactions, and channel history. Do not answer memory",
-    "questions from prior transcript claims — perform a search every time.",
-    "After receiving results, use them directly; do not re-call in the same turn.",
-    ...(availableTools.has("memory_get")
+	if (hasSearch) {
+		lines.push(
+			"Call `libravdb_memory_search` once per user question for prior turns, remembered",
+			"facts, earliest interactions, and channel history. Do not answer memory",
+			"questions from prior transcript claims — perform a search every time.",
+			"After receiving results, use them directly; do not re-call in the same turn.",
+			...(hasGet
       ? [
-        "After a `memory_search` hit, call `memory_get` when exact wording or more context is needed.",
-        "IMPORTANT: If a search snippet is cluttered with metadata, do NOT claim nothing was found. Call `memory_get` on the hit's path to read the full record first. The data is there — expand before giving up."
+        "After a `libravdb_memory_search` hit, call `libravdb_memory_get` when exact wording or more context is needed.",
+        "IMPORTANT: If a search snippet is cluttered with metadata, do NOT claim nothing was found. Call `libravdb_memory_get` on the hit's path to read the full record first. The data is there — expand before giving up."
       ]
       : []),
-    "",
-  );
+			"",
+		);
+	}
 
   // ── Summaries / recall (when available) ──
-  const hasDescribe = availableTools.has("memory_describe");
-  const hasExpand = availableTools.has("memory_expand");
-  const hasGrep = availableTools.has("memory_grep");
 
   if (hasDescribe || hasExpand || hasGrep) {
     lines.push(
@@ -122,13 +127,20 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
 
   // ── Causal graph traversal (when expand supports record_id) ──
   if (hasExpand) {
+		const traversalSteps = [
+			hasSearch
+				? "1. `libravdb_memory_search` for the people/events in question to get record IDs"
+				: "1. Start from a record ID already present in context or another tool result",
+			"2. `memory_expand` with the most relevant `record_id` to walk typed causal and 6W1H hop edges",
+			hasGet
+				? "3. Follow interesting edges; use `libravdb_memory_get` for exact detail on connected records"
+				: "3. Use the typed edge snippets to decide whether the connected records answer the question",
+			...(hasUserCard ? ["4. Use `get_user_card` to cross-reference identity context"] : []),
+		];
     lines.push(
       "### Causal Graph Traversal",
       "When the user asks about causes, patterns, or relationships:",
-      "1. `memory_search` for the people/events in question to get record IDs",
-      "2. `memory_expand` with the most relevant `record_id` to walk causal edges",
-      "3. Follow interesting edges — use `memory_get` for full detail on connected records",
-      "4. Use `get_user_card` to cross-reference identity context",
+		...traversalSteps,
       "",
     );
   }
