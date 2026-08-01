@@ -625,6 +625,57 @@ test("context engine assemble strips OpenClaw untrusted metadata envelope from p
   assert.equal(call.params.prompt, "@User-1234 Reply with exactly PONG.");
 });
 
+test("context engine clears a stale circuit cooldown when the failure class changes", async () => {
+  class DeferredBeforeTurnClient extends FakeClient {
+    public pendingBeforeTurn: Array<{ reject(error: unknown): void }> = [];
+    public beforeTurnSucceeds = false;
+
+    beforeTurnKernel(params: Record<string, unknown>): Promise<{ predictions: [] }> {
+      this.calls.push({ method: "beforeTurnKernel", params });
+      if (this.beforeTurnSucceeds) return Promise.resolve({ predictions: [] });
+      return new Promise((_resolve, reject) => {
+        this.pendingBeforeTurn.push({ reject });
+      });
+    }
+  }
+
+  const client = new DeferredBeforeTurnClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    beforeTurnTimeoutMs: 1000,
+    assembleTimeoutMs: 1000,
+  });
+  const assemble = (turn: number) => engine.assemble({
+    sessionId: "circuit-class-change",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", `query ${turn}`)],
+    prompt: `query ${turn}`,
+    tokenBudget: 4000,
+  });
+  const nextEventLoopTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const grpcError = (code: number, message: string) => Object.assign(new Error(message), { code });
+
+  const attempts = [1, 2, 3, 4].map(assemble);
+  await nextEventLoopTurn();
+  assert.equal(client.pendingBeforeTurn.length, 4, "all failures should already be in flight");
+
+  for (let index = 0; index < 3; index++) {
+    client.pendingBeforeTurn[index].reject(grpcError(4, "deadline exceeded"));
+    await nextEventLoopTurn();
+  }
+  client.pendingBeforeTurn[3].reject(grpcError(14, "unavailable"));
+  await Promise.all(attempts);
+
+  client.beforeTurnSucceeds = true;
+  await assemble(5);
+
+  assert.equal(
+    client.calls.filter((call) => call.method === "beforeTurnKernel").length,
+    5,
+    "the new failure class should not inherit the timeout cooldown",
+  );
+});
+
 test("context engine assemble uses latest selected-context user utterance as retrieval query", async () => {
   const client = new FakeClient();
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
