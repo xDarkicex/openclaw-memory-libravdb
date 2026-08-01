@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.10.15 — 2026-08-01
+
+### Fixed
+
+- **Non-object metadata JSON crash.** The daemon can return `metadataJson: "null"`
+  (valid JSON null) for search results. `parseMetadataJson()` was passing the
+  parsed value straight through, causing `TypeError: Cannot read properties of
+  null (reading 'collection')` on a public search path. Non-object values (null,
+  primitives, arrays) are now treated as missing metadata, falling back to `{}`.
+
 ## v1.10.14 — 2026-08-01
 
 ### Changed
