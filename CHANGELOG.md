@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.10.17 — 2026-08-01
+
+### Fixed
+
+- **Multiline tool-call JSON sanitization.** The old `TOOL_CALL_JSON_RE` regex used
+  `[^\r\n]*` and could never match formatted JSON tool calls spanning multiple
+  lines. Replaced with a brace-aware, string-aware JSON object scanner that finds
+  balanced `{...}` objects, parses as JSON, recursively checks for tool-call
+  markers, and strips matches. Adjacent ordinary JSON is preserved. Eliminates a
+  path where historical tool syntax in recalled context could prime models to
+  repeat tool calls.
+
 ## v1.10.16 — 2026-08-01
 
 ### Fixed
