@@ -24,6 +24,15 @@ test("manifest and package metadata satisfy checklist structure", async () => {
     "memory_describe",
     "memory_expand",
     "memory_grep",
+    "update_user_card",
+    "get_user_card",
+    "list_user_cards",
+    "set_rule",
+    "get_rule",
+    "list_rules",
+    "delete_rule",
+    "set_persona",
+    "get_persona",
   ]);
 
   assert.equal(pkg.main, "./dist/index.js");

@@ -53,6 +53,8 @@ class FakeClient {
     systemPromptAddition: "",
   };
   public afterTurnResponse: Record<string, unknown> = { ok: true, turnCount: 1 };
+  public afterTurnResponses: Array<Record<string, unknown>> = [];
+  public compactResponse: Record<string, unknown> = { ok: true, didCompact: false };
 
   async bootstrapSessionKernel(params: Record<string, unknown>) {
     this.calls.push({ method: "bootstrapSessionKernel", params });
@@ -64,11 +66,11 @@ class FakeClient {
   }
   async afterTurnKernel(params: Record<string, unknown>) {
     this.calls.push({ method: "afterTurnKernel", params });
-    return this.afterTurnResponse;
+    return this.afterTurnResponses.shift() ?? this.afterTurnResponse;
   }
   async compactSession(params: Record<string, unknown>) {
     this.calls.push({ method: "compactSession", params });
-    return { ok: true, didCompact: false };
+    return this.compactResponse;
   }
   async assembleContextInternal(params: Record<string, unknown>) {
     this.calls.push({ method: "assembleContextInternal", params });
@@ -502,6 +504,52 @@ test("context engine afterTurn is idempotent when manifest has already ACKed eve
   const secondCallCount = client.calls.filter((c) => c.method === "afterTurnKernel").length;
   assert.equal(secondCallCount, 1, "duplicate afterTurn should not call daemon again");
   assert.deepEqual(secondResult, { ok: true, skipped: true, reason: "no-new-messages" });
+});
+
+test("context engine afterTurn repairs a daemon cursor gap in the same task", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const sessionId = `s1-after-turn-cursor-gap-${process.pid}`;
+  const history = [
+    makeMessage("user", "older question"),
+    makeMessage("user", "new question"),
+  ];
+
+  // Establish the plugin manifest first. The second afterTurn therefore sends
+  // a cursor, which the daemon rejects as a gap after it has lost state.
+  client.afterTurnResponses = [
+    { cursor: { lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "old-daemon-tail" } },
+  ];
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: [history[0]!],
+  });
+  await flushIngestion(engine);
+
+  // First response proves the daemon rejected the now-stale manifest cursor.
+  // The retry then acknowledges a cursor-free full-history seed at index zero.
+  client.afterTurnResponses = [
+    { cursor: { lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "" } },
+    { cursor: { lastProcessedIndex: history.length - 1, sessionVersion: 1, manifestTailHash: "daemon-tail" } },
+  ];
+
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: history,
+    prePromptMessageCount: history.length,
+  });
+  await flushIngestion(engine);
+
+  const afterTurnCalls = client.calls.filter((call) => call.method === "afterTurnKernel");
+  assert.equal(afterTurnCalls.length, 3, "cursor gap must trigger an immediate retry");
+  assert.equal("cursor" in afterTurnCalls[1]!.params, true, "the normal incremental attempt carries the stale cursor");
+  assert.equal("cursor" in afterTurnCalls[2]!.params, false, "gap-repair retry must be cursor-free");
+  assert.deepEqual(
+    (afterTurnCalls[2]!.params.messages as Array<{ role: string; content: string }>).map(({ role, content }) => ({ role, content })),
+    history,
+  );
 });
 
 test("context engine afterTurn strips OpenClaw untrusted metadata envelope before ingest", async () => {
@@ -939,6 +987,194 @@ test("context engine assemble does not duplicate consumed live tool protocol", a
   ]);
   assert.doesNotMatch(JSON.stringify(assembled.messages), /\[tool:web_search\]/u);
   assert.doesNotMatch(assembled.systemPromptAddition, /SAME_RESULT_TEXT|\[tool:web_search\]/u);
+});
+
+test("successful daemon compaction makes an exact turn-aligned source suffix authoritative", async () => {
+  const client = new FakeClient();
+  client.compactResponse = {
+    ok: true,
+    didCompact: true,
+    summaryText: "Authoritative compacted history",
+    summaryMethod: "extractive",
+    tokensAfter: 1200,
+  };
+
+  const sourceMessages: Array<Record<string, unknown> & { role: string; content: string | unknown[] }> = [];
+  for (let index = 0; index < 35; index += 1) {
+    sourceMessages.push(
+      makeMessage("user", `historical user ${index}`, `history-user-${index}`),
+      makeMessage("assistant", `historical assistant ${index}`, `history-assistant-${index}`),
+    );
+  }
+  const currentUser = makeMessage("user", "search the current fact", "current-user");
+  const currentToolCall = {
+    role: "assistant",
+    id: "current-tool-call",
+    content: [{
+      type: "toolCall",
+      id: "call-current",
+      name: "web_search",
+      arguments: { query: "current fact" },
+    }],
+  };
+  const currentToolResult = {
+    role: "toolResult",
+    id: "current-tool-result",
+    toolCallId: "call-current",
+    content: [{ type: "text", text: "CURRENT_TOOL_RESULT" }],
+  };
+  const currentAnswer = makeMessage("assistant", "current answer", "current-answer");
+  const currentFollowup = makeMessage("assistant", "current followup", "current-followup");
+  sourceMessages.push(
+    currentUser,
+    currentToolCall,
+    currentToolResult,
+    currentAnswer,
+    currentFollowup,
+  );
+
+  client.assembleResponse = {
+    messages: [
+      makeMessage("assistant", '[tool:web_search] {"query":"current fact"}'),
+      makeMessage("toolResult", "CURRENT_TOOL_RESULT"),
+      makeMessage("toolResult", "CURRENT_TOOL_RESULT"),
+    ],
+    estimatedTokens: 1200,
+    systemPromptAddition:
+      "<compacted_session_context>\nAuthoritative compacted history\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const compacted = await engine.compact({
+    sessionId: "s1-owned-compaction",
+    force: true,
+    tokenBudget: 100_000,
+    currentTokenCount: 90_000,
+  });
+  assert.equal(compacted.ok, true);
+  assert.equal(compacted.compacted, true);
+  assert.equal(compacted.result?.summary, "Authoritative compacted history");
+  assert.equal(compacted.result?.tokensAfter, 1200);
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-owned-compaction",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "search the current fact",
+    tokenBudget: 100_000,
+  });
+
+  // 75 source messages means the nominal 50-message cut lands on an
+  // assistant message. The projection moves back to its user boundary.
+  const expectedProjection = sourceMessages.slice(24);
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.equal(assembled.messages.length, expectedProjection.length);
+  assert.ok(assembled.messages.length < sourceMessages.length, "compaction must shrink the next prompt");
+  for (let index = 0; index < expectedProjection.length; index += 1) {
+    assert.strictEqual(
+      assembled.messages[index],
+      expectedProjection[index],
+      `projected source message ${index} must retain exact object identity`,
+    );
+  }
+  assert.equal(assembled.messages.filter((message) => message === currentToolCall).length, 1);
+  assert.equal(assembled.messages.filter((message) => message === currentToolResult).length, 1);
+  assert.doesNotMatch(JSON.stringify(assembled.messages), /\[tool:web_search\]/u);
+  assert.match(assembled.systemPromptAddition, /<compacted_session_context>/u);
+});
+
+test("compacted projection budget clamp preserves the complete live tool bundle", async () => {
+  const client = new FakeClient();
+  client.compactResponse = {
+    ok: true,
+    didCompact: true,
+    summaryText: "Compacted prefix",
+    tokensAfter: 500,
+  };
+
+  const sourceMessages: Array<Record<string, unknown> & { role: string; content: string | unknown[] }> = [];
+  for (let index = 0; index < 30; index += 1) {
+    sourceMessages.push(
+      makeMessage("user", `old user ${index} ${"u".repeat(40)}`),
+      makeMessage("assistant", `old answer ${index} ${"a".repeat(40)}`),
+    );
+  }
+  const liveUser = makeMessage("user", "run the live tool", "live-user");
+  const liveToolCall = {
+    role: "assistant",
+    id: "live-tool-call",
+    content: [{
+      type: "toolCall",
+      id: "live-call",
+      name: "web_search",
+      arguments: { query: "live query" },
+    }],
+  };
+  const liveToolResult = {
+    role: "toolResult",
+    id: "live-tool-result",
+    toolCallId: "live-call",
+    content: [{ type: "text", text: `LIVE_RESULT_${"r".repeat(240)}` }],
+  };
+  const liveAnswer = makeMessage("assistant", "live final answer", "live-answer");
+  sourceMessages.push(liveUser, liveToolCall, liveToolResult, liveAnswer);
+
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 9999,
+    systemPromptAddition:
+      `<compacted_session_context>\n${"summary ".repeat(500)}\n</compacted_session_context>`,
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  await engine.compact({
+    sessionId: "s1-owned-compaction-budget",
+    force: true,
+    tokenBudget: 1000,
+    currentTokenCount: 900,
+  });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-owned-compaction-budget",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "run the live tool",
+    tokenBudget: 1000,
+  });
+
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.deepEqual(assembled.messages, [liveUser, liveToolCall, liveToolResult, liveAnswer]);
+  assert.strictEqual(assembled.messages[0], liveUser);
+  assert.strictEqual(assembled.messages[1], liveToolCall);
+  assert.strictEqual(assembled.messages[2], liveToolResult);
+  assert.strictEqual(assembled.messages[3], liveAnswer);
+  assert.ok(assembled.estimatedTokens <= 800);
+});
+
+test("daemon compacted context marker restores assembled authority after plugin restart", async () => {
+  const client = new FakeClient();
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 300,
+    systemPromptAddition:
+      "<compacted_session_context>\nPreviously compacted daemon session\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-restored-owned-compaction",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 20_000,
+  });
+
+  assert.equal(client.calls.some((call) => call.method === "compactSession"), false);
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.ok(assembled.messages.length < sourceMessages.length);
+  assert.strictEqual(assembled.messages.at(-1), sourceMessages.at(-1));
 });
 
 test("context engine assemble drops consecutive duplicate provider replay messages", async () => {

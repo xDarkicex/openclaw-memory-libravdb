@@ -97,3 +97,17 @@ test("memory prompt section works with citationsMode", async () => {
   assert.ok(Array.isArray(result));
   assert.ok(result.some((line) => line.toLowerCase().includes("memory")));
 });
+
+test("causal traversal guidance includes the available causal follow-up tools", () => {
+  const memorySection = buildMemoryPromptSection(async () => new FakeRpc() as never, { topK: 8 });
+
+  const full = memorySection({ availableTools: new Set(["memory_search", "memory_get", "memory_expand", "get_user_card"]) }).join("\n");
+  assert.match(full, /`memory_search` for the people\/events/);
+  assert.match(full, /use `memory_get` for exact detail/);
+  assert.match(full, /`get_user_card` to cross-reference/);
+
+  const noGet = memorySection({ availableTools: new Set(["memory_search", "memory_expand"]) }).join("\n");
+  assert.match(noGet, /typed edge snippets/);
+  assert.doesNotMatch(noGet, /use `memory_get` for exact detail/);
+  assert.doesNotMatch(noGet, /`get_user_card` to cross-reference/);
+});

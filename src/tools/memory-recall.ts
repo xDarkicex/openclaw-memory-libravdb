@@ -21,13 +21,20 @@ type MemoryDescribeDetails = {
 };
 
 type MemoryExpandDetails = {
-  summaryId: string;
-  depth: number;
-  text: string;
-  truncated: boolean;
-  exceededBudget: boolean;
-  parentCount: number;
-  error?: string;
+	summaryId: string;
+	depth: number;
+	text: string;
+	truncated: boolean;
+	exceededBudget: boolean;
+	parentCount: number;
+	connected?: Array<{
+		recordId: string;
+		text: string;
+		depth: number;
+		edgeType: string;
+		edgeWeight: number;
+	}>;
+	error?: string;
 };
 
 type MemoryGrepDetails = {
@@ -270,8 +277,6 @@ export function createMemoryExpandTool(
       "Graph mode (record_id): walk causal edges (why_ids/how_ids/hop_targets) " +
       "from a record ID. Use exact IDs from memory_search or memory_get results — " +
       "any ingested turn, memory, or summary has graph edges. " +
-      "After get_user_card for context, search for related people/events then " +
-      "expand the most relevant hit. " +
       "For large expansions, spawns a sub-agent. " +
       "Use memory_describe first to check if expansion is warranted.",
     parameters: MEMORY_EXPAND_SCHEMA,
@@ -291,10 +296,16 @@ export function createMemoryExpandTool(
           const client = await getClient();
           const resp = await client.expandSummary({ recordId, maxDepth });
           let text = resp.text ?? "";
-          const connected = resp.connected;
-          if (connected && connected.length > 0) {
+          const connected = (resp.connected ?? []).map((c) => ({
+            recordId: c.recordId,
+            text: c.text ?? "",
+            depth: c.depth,
+            edgeType: c.edgeType || "unknown",
+            edgeWeight: c.edgeWeight ?? 0,
+          }));
+          if (connected.length > 0) {
             text = connected.map((c) =>
-              `[depth=${c.depth}] ${c.recordId}: ${c.text || ""}`
+              `[depth=${c.depth} edge=${c.edgeType} weight=${c.edgeWeight}] ${c.recordId}: ${c.text}`
             ).join("\n\n");
           }
           if (!text && resp.whyIds?.length) {
@@ -302,7 +313,7 @@ export function createMemoryExpandTool(
           }
           return {
             content: [{ type: "text", text: text || "(no graph edges found)" }],
-            details: { summaryId: recordId, depth: maxDepth, text: text || "", truncated: false, exceededBudget: false, parentCount: connected?.length ?? 0 },
+            details: { summaryId: recordId, depth: maxDepth, text: text || "", truncated: false, exceededBudget: false, parentCount: connected.length, connected },
           };
         } catch (error) {
           logger.warn?.(`memory_expand graph mode failed: ${formatError(error)}`);

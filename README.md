@@ -36,7 +36,7 @@ graph TB
 # 1. Install daemon (pick your OS)
 brew tap xDarkicex/homebrew-openclaw-libravdb-memory && brew install libravdbd && brew services start libravdbd   # macOS
 # apt install libravdbd                                                                                         # Linux
-# yay -S libravdbd-bin                                                                                          # Arch
+# See Arch Linux instructions below                                                                             # Arch (AUR postponed)
 
 # 2. Install plugin
 openclaw plugins install @xdarkicex/openclaw-memory-libravdb
@@ -105,10 +105,18 @@ sudo apt install libravdbd
 systemctl --user enable --now libravdbd
 ```
 
-**Linux (AUR)**
+**Linux (Arch — custom pacman repo)**
+
+AUR distribution is temporarily postponed due to the June 2026 AUR supply chain incident (new account registrations frozen). Use the official pacman repository instead:
 
 ```bash
-yay -S libravdbd-bin
+# Add the repo to /etc/pacman.conf:
+# [libravdbd]
+# SigLevel = Optional
+# Server = https://raw.githubusercontent.com/xDarkicex/aur-libravdbd-bin/main/$arch
+
+echo -e '\n[libravdbd]\nSigLevel = Optional\nServer = https://raw.githubusercontent.com/xDarkicex/aur-libravdbd-bin/main/$arch' | sudo tee -a /etc/pacman.conf
+sudo pacman -Sy libravdbd-bin
 systemctl --user enable --now libravdbd
 ```
 
@@ -417,6 +425,13 @@ libravdbd search --tenant <key> --session <id> -k 10 "query"
 # Tenant management
 libravdbd tenant evict <key>        # force-close a tenant DB
 libravdbd migrate                   # run pending DB migrations
+
+# Database export (libravdbd v1.10.0+)
+libravdbd export                    # export all collections as JSON to stdout
+libravdbd export --tenant <key>     # export a specific tenant's data
+libravdbd export --collection <name># export a single collection
+libravdbd export --format jsonl     # newline-delimited JSON (one record per line)
+libravdbd export --output out.json  # write to file instead of stdout
 ```
 
 Use [Install](./docs/install.md) for service lifecycle commands and
