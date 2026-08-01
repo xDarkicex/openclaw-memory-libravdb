@@ -2961,6 +2961,7 @@ export function buildContextEngineFactory(
         const client = await runtime.getClient();
 
 
+
         let enforced: OpenClawCompatibleAssembleResult;
         let cachedSystemPrompt: string | undefined;
 
@@ -2969,6 +2970,7 @@ export function buildContextEngineFactory(
           if (cached && cached.lastUserIndex === lastUserIndex) {
             cachedSystemPrompt = cached.systemPromptAddition;
             logger.info?.(`LibraVDB skipping assemble context search for post-tool continuation sessionId=${sessionId}`);
+
 
           }
         }
@@ -3015,6 +3017,8 @@ export function buildContextEngineFactory(
             }
             try {
               const beforeTurnTimeout = cfg.beforeTurnTimeoutMs ?? 5000;
+              const beforeTurnAbort = new AbortController();
+              let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
               const btResult = await Promise.race([
                 client.beforeTurnKernel({
                   sessionId,
@@ -3024,11 +3028,20 @@ export function buildContextEngineFactory(
                   queryHint: beforeTurnQueryHint,
                   cursor: undefined,
                   isHeartbeat: false,
-                } as unknown as Parameters<typeof client.beforeTurnKernel>[0]),
-                new Promise<never>((_, reject) =>
-                  setTimeout(() => reject(new Error(`BeforeTurnKernel timed out after ${beforeTurnTimeout}ms`)), beforeTurnTimeout)
-                ),
-              ]);
+                } as unknown as Parameters<typeof client.beforeTurnKernel>[0], {
+                  signal: beforeTurnAbort.signal,
+                } as Parameters<typeof client.beforeTurnKernel>[1]),
+                new Promise<never>((_, reject) => {
+                  timeoutHandle = setTimeout(() => {
+                    beforeTurnAbort.abort();
+                    reject(new Error(`BeforeTurnKernel timed out after ${beforeTurnTimeout}ms`));
+                  }, beforeTurnTimeout);
+                }),
+              ]).finally(() => {
+                if (timeoutHandle) {
+                  clearTimeout(timeoutHandle);
+                }
+              });
               const maxMemories = cfg.beforeTurnMaxMemories ?? 5;
               const clamped = btResult.predictions && btResult.predictions.length > maxMemories
                 ? selectTopByRelevance(btResult.predictions, retrievalQuery, maxMemories)

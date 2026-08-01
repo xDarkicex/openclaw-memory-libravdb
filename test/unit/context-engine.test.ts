@@ -290,6 +290,94 @@ function makeMessage(role: string, content: string, id?: string) {
   return { role, content, ...(id ? { id } : {}) };
 }
 
+test("context engine clears BeforeTurnKernel timeout after successful retrieval", async () => {
+  class BeforeTurnClient extends FakeClient {
+    async beforeTurnKernel(params: Record<string, unknown>) {
+      this.calls.push({ method: "beforeTurnKernel", params });
+      return { predictions: [] };
+    }
+  }
+
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const scheduled = new Set<ReturnType<typeof setTimeout>>();
+  const cleared = new Set<ReturnType<typeof setTimeout>>();
+
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+    const handle = Reflect.apply(originalSetTimeout, globalThis, args) as ReturnType<typeof setTimeout>;
+    scheduled.add(handle);
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: Parameters<typeof clearTimeout>[0]) => {
+    if (handle) {
+      cleared.add(handle as ReturnType<typeof setTimeout>);
+    }
+    return Reflect.apply(originalClearTimeout, globalThis, [handle]);
+  }) as typeof clearTimeout;
+
+  try {
+    const client = new BeforeTurnClient();
+    const engine = buildContextEngineFactory(fakeRuntime(client), {
+      userId: "fixed-user",
+      beforeTurnTimeoutMs: 60_000,
+    });
+
+    await engine.assemble({
+      sessionId: "s1-before-turn-clears-timeout",
+      sessionKey: "sk1",
+      messages: [makeMessage("user", "what do you remember?")],
+      prompt: "what do you remember?",
+      tokenBudget: 4000,
+    });
+
+    assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 1);
+    assert.ok(scheduled.size >= 1, "at least one timeout should be scheduled");
+    const anyCleared = [...scheduled].some((h) => cleared.has(h));
+    assert.ok(anyCleared, "at least one scheduled timeout was cleared");
+  } finally {
+    for (const handle of scheduled) {
+      originalClearTimeout(handle);
+    }
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("context engine aborts BeforeTurnKernel transport on local timeout", async () => {
+  class AbortableBeforeTurnClient extends FakeClient {
+    public beforeTurnSignal: AbortSignal | undefined;
+
+    async beforeTurnKernel(
+      params: Record<string, unknown>,
+      options?: { signal?: AbortSignal },
+    ) {
+      this.calls.push({ method: "beforeTurnKernel", params });
+      this.beforeTurnSignal = options?.signal;
+      return await new Promise<Record<string, unknown>>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("transport aborted")), { once: true });
+      });
+    }
+  }
+
+  const client = new AbortableBeforeTurnClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    beforeTurnTimeoutMs: 1,
+  });
+
+  await engine.assemble({
+    sessionId: "s1-before-turn-aborts-timeout",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "what do you remember?")],
+    prompt: "what do you remember?",
+    tokenBudget: 4000,
+  });
+
+  assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 1);
+  assert.equal(client.beforeTurnSignal?.aborted, true);
+  assert.equal(client.calls.filter((call) => call.method === "assembleContextInternal").length, 1);
+});
+
 function openClawMetadataEnvelope(userText: string): string {
   return [
     "Conversation info (untrusted metadata):",
