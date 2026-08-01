@@ -51,7 +51,7 @@ test("memory prompt section stays synchronous and does not perform rpc lookups",
 
   const memorySection = buildMemoryPromptSection(getRpc, cfg);
   const result = memorySection({
-    availableTools: new Set(["memory_search", "memory_get"]),
+    availableTools: new Set(["libravdb_memory_search", "libravdb_memory_get"]),
   });
 
   assert.doesNotThrow(() => [...result], "host spreads the returned section immediately");
@@ -60,23 +60,23 @@ test("memory prompt section stays synchronous and does not perform rpc lookups",
   assert.equal(rpc.calls.get("search_text") ?? 0, 0, "should not perform search_text calls");
 });
 
-test("memory prompt section guides memory tool use when memory_search is available", async () => {
+test("memory prompt section guides memory tool use when libravdb_memory_search is available", async () => {
   const rpc = new FakeRpc();
   const cfg: PluginConfig = { topK: 8, alpha: 0.7, beta: 0.2, gamma: 0.1 };
   const getRpc = async () => rpc as never;
 
   const memorySection = buildMemoryPromptSection(getRpc, cfg);
   const result = memorySection({
-    availableTools: new Set(["memory_search", "memory_get"]),
+    availableTools: new Set(["libravdb_memory_search", "libravdb_memory_get"]),
   });
 
   const resultText = result.join("\n");
   assert.ok(resultText.includes("LibraVDB Memory"), "should include memory header");
   assert.ok(resultText.includes("once per user question"), "should guide per-question memory retrieval");
-  assert.ok(resultText.includes("Call `memory_search`"), "should guide explicit recall through memory_search");
+  assert.ok(resultText.includes("Call `libravdb_memory_search`"), "should guide explicit recall through libravdb_memory_search");
   assert.ok(resultText.includes("perform a search every time"), "should prevent stale transcript reuse");
   assert.ok(resultText.includes("auto-ingested"), "should describe auto-ingestion behavior");
-  assert.ok(resultText.includes("call `memory_get`"), "should guide exact recall through memory_get");
+  assert.ok(resultText.includes("call `libravdb_memory_get`"), "should guide exact recall through libravdb_memory_get");
   assert.ok(resultText.includes("vector-backed"), "should describe memory as vector-backed");
   assert.ok(!resultText.includes("recalled_memories"), "should not inject recalled memories directly");
   assert.ok(!resultText.includes("user recall") && !resultText.includes("global recall"), "should not render recall items");
@@ -101,13 +101,13 @@ test("memory prompt section works with citationsMode", async () => {
 test("causal traversal guidance includes the available causal follow-up tools", () => {
   const memorySection = buildMemoryPromptSection(async () => new FakeRpc() as never, { topK: 8 });
 
-  const full = memorySection({ availableTools: new Set(["memory_search", "memory_get", "memory_expand", "get_user_card"]) }).join("\n");
-  assert.match(full, /`memory_search` for the people\/events/);
-  assert.match(full, /use `memory_get` for exact detail/);
+  const full = memorySection({ availableTools: new Set(["libravdb_memory_search", "libravdb_memory_get", "memory_expand", "get_user_card"]) }).join("\n");
+  assert.match(full, /`libravdb_memory_search` for the people\/events/);
+  assert.match(full, /use `libravdb_memory_get` for exact detail/);
   assert.match(full, /`get_user_card` to cross-reference/);
 
-  const noGet = memorySection({ availableTools: new Set(["memory_search", "memory_expand"]) }).join("\n");
+  const noGet = memorySection({ availableTools: new Set(["libravdb_memory_search", "memory_expand"]) }).join("\n");
   assert.match(noGet, /typed edge snippets/);
-  assert.doesNotMatch(noGet, /use `memory_get` for exact detail/);
+  assert.doesNotMatch(noGet, /use `libravdb_memory_get` for exact detail/);
   assert.doesNotMatch(noGet, /`get_user_card` to cross-reference/);
 });

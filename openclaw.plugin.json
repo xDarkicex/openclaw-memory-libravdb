@@ -11,8 +11,8 @@
     "memory": true,
     "contextEngine": true,
     "tools": [
-      "memory_search",
-      "memory_get",
+      "libravdb_memory_search",
+      "libravdb_memory_get",
       "memory_describe",
       "memory_expand",
       "memory_grep",
