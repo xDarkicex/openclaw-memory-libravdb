@@ -10,6 +10,13 @@
   Also wrapped fan-out in `try/finally` so the primary tenant key is restored
   even if iteration throws.
 
+- **Turn manifest storage integrity (#323).** Three fixes: (1) manifest directory
+  creation deferred to save time, honoring `OPENCLAW_STATE_DIR`; (2) collision-
+  resistant SHA-256 manifest filenames replace lossy sanitization, with session
+  ID validation on load; (3) ordered tail-prefix overlap matching replaces
+  content-hash map, preventing repeated-content messages from being silently
+  dropped. Fixes #309, #310, #311.
+
 ## v1.10.18 — 2026-08-01
 
 ### Fixed
