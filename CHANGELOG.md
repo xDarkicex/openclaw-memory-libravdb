@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.10.18 — 2026-08-01
+
+### Fixed
+
+- **Circuit breaker cooldown not reset on failure class change.** When the
+  BeforeTurnKernel failure class changed (e.g., timeout → unavailable), the
+  code reset `class` and `consecutive` but retained the old class's
+  `cooldownUntil`. The stale cooldown blocked calls even though the new failure
+  class hadn't reached its open threshold. Now cleared on class transition.
+
 ## v1.10.17 — 2026-08-01
 
 ### Fixed
