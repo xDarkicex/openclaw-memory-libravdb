@@ -1,0 +1,83 @@
+# ── LibraVDB Daemon Helm Values ──
+
+image:
+  repository: ghcr.io/xdarkicex/libravdbd
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# ── gRPC transport ──
+service:
+  type: ClusterIP
+  port: 50051
+  annotations: {}
+
+# ── gRPC over TLS / mTLS ──
+tls:
+  enabled: false
+  # cert: base64-encoded PEM certificate (server)
+  # key: base64-encoded PEM private key
+  # ca: base64-encoded PEM CA certificate (for client mTLS)
+  existingSecret: ""  # name of existing k8s TLS secret
+
+# ── Storage ──
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  dataSize: 20Gi
+  modelsSize: 5Gi
+
+# ── Embedding backend ──
+embedding:
+  backend: gguf          # gguf | onnx-local | remote
+  profile: nomic-embed-text-v1.5
+  fallbackProfile: bge-small-en-v1.5
+  normalize: true
+  dimensions: 768
+  # For ONNX/GGUF: mount model files via init container or hostPath
+  modelPath: ""
+  # For remote: HTTP endpoint URL
+  remoteEndpoint: ""
+  remoteModel: ""
+
+# ── Daemon config ──
+config:
+  dbPath: /var/lib/libravdbd/data/data.libravdb
+  grpcEndpoint: tcp:0.0.0.0:50051
+  gateThreshold: 0.35
+  maxTenants: 64
+  lifecycleJournalMaxEntries: 500
+  circuitMaxFailures: 3
+  circuitCooldown: 60s
+  embedTimeout: 5s
+  drainTimeout: 25s
+
+# ── Resources ──
+resources:
+  requests:
+    memory: 512Mi
+    cpu: 500m
+  limits:
+    memory: 2Gi
+    cpu: 2000m
+
+# ── Probes ──
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 30
+
+# ── Security ──
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# ── Affinity / Tolerations ──
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,12 +1,13 @@
-import * as fs from "fs";
-import * as path from "path";
-import * as crypto from "crypto";
-import * as os from "os";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as crypto from "node:crypto";
+import * as os from "node:os";
 
 export interface TurnEntry {
   index: number;
   role: string;
   contentHash: string;
+  idHash?: string;
   turnHash: string;
   ingestedAt: number;
 }
@@ -25,18 +26,27 @@ export interface KernelCompatibleMessage {
 }
 
 export class TurnManifestStore {
-  private manifestDir: string;
+  private readonly manifestDirOverride?: string;
 
-  constructor() {
-    this.manifestDir = path.join(os.homedir(), ".openclaw", "libravdb-manifests");
-    if (!fs.existsSync(this.manifestDir)) {
-      fs.mkdirSync(this.manifestDir, { recursive: true });
-    }
+  constructor(manifestDir?: string) {
+    this.manifestDirOverride = manifestDir;
   }
 
   private getManifestPath(sessionId: string): string {
-    const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, "_");
-    return path.join(this.manifestDir, `${safe}.manifest.json`);
+    const digest = this.hashString(sessionId);
+    return path.join(this.getManifestDir(), `${digest}.manifest.json`);
+  }
+
+  private getManifestDir(): string {
+    if (this.manifestDirOverride) {
+      return this.manifestDirOverride;
+    }
+    const stateRoot = process.env.OPENCLAW_STATE_DIR?.trim();
+    return path.join(stateRoot || path.join(os.homedir(), ".openclaw"), "libravdb-manifests");
+  }
+
+  private ensureManifestDir(): void {
+    fs.mkdirSync(this.getManifestDir(), { recursive: true });
   }
 
   public hashString(data: string): string {
@@ -63,6 +73,11 @@ export class TurnManifestStore {
       const raw = fs.readFileSync(filePath, "utf8");
       const manifest = JSON.parse(raw) as TurnManifest;
 
+      if (manifest.sessionId !== sessionId) {
+        logger?.warn?.(`[LibraVDB] Manifest session mismatch for ${sessionId}. Forcing re-sync.`);
+        return this.createEmpty(sessionId);
+      }
+
       if (!this.verifyChain(manifest)) {
         logger?.warn?.(`[LibraVDB] Manifest chain broken for session ${sessionId}. Forcing re-sync.`);
         return this.createEmpty(sessionId);
@@ -76,6 +91,7 @@ export class TurnManifestStore {
   }
 
   public save(manifest: TurnManifest): void {
+    this.ensureManifestDir();
     const filePath = this.getManifestPath(manifest.sessionId);
     const tempPath = `${filePath}.${process.pid}.tmp`;
 
@@ -110,22 +126,42 @@ export class TurnManifestStore {
       return 0;
     }
 
-    // Build a map of contentHash → index in our manifest
-    const known = new Map<string, number>();
-    for (const turn of manifest.turns) {
-      known.set(turn.contentHash, turn.index);
-    }
-
-    // Scan incoming messages from newest to oldest to find the last match
-    for (let i = incomingMessages.length - 1; i >= 0; i--) {
-      const contentHash = this.hashString(incomingMessages[i].content);
-      if (known.has(contentHash)) {
-        return i + 1; // everything at and after this index is new
+    const maxOverlap = Math.min(manifest.turns.length, incomingMessages.length);
+    for (let overlapLength = maxOverlap; overlapLength > 0; overlapLength--) {
+      if (this.matchesManifestTail(manifest.turns, incomingMessages, overlapLength)) {
+        return overlapLength;
       }
     }
 
     // No overlap found — OpenClaw trimmed too much or session diverged
     return 0;
+  }
+
+  private matchesManifestTail(
+    turns: TurnEntry[],
+    incomingMessages: KernelCompatibleMessage[],
+    overlapLength: number,
+  ): boolean {
+    const manifestStart = turns.length - overlapLength;
+    let hasMessageIdentity = false;
+
+    for (let i = 0; i < overlapLength; i++) {
+      const turn = turns[manifestStart + i];
+      const msg = incomingMessages[i];
+      if (!turn || !msg || turn.role !== msg.role || turn.contentHash !== this.hashString(msg.content)) {
+        return false;
+      }
+      const incomingIdHash = msg.id ? this.hashString(msg.id) : undefined;
+      if (turn.idHash || incomingIdHash) {
+        if (turn.idHash === incomingIdHash) {
+          hasMessageIdentity = true;
+        } else if (overlapLength === 1) {
+          return false;
+        }
+      }
+    }
+
+    return hasMessageIdentity || overlapLength > 1;
   }
 
   public appendACKedMessages(
@@ -140,6 +176,7 @@ export class TurnManifestStore {
       const msg = newMessages[i];
       const absoluteIndex = startingIndex + i;
       const contentHash = this.hashString(msg.content);
+      const idHash = msg.id ? this.hashString(msg.id) : undefined;
 
       currentHash = this.hashString(`${absoluteIndex}${msg.role}${contentHash}${currentHash}`);
 
@@ -147,6 +184,7 @@ export class TurnManifestStore {
         index: absoluteIndex,
         role: msg.role,
         contentHash,
+        ...(idHash ? { idHash } : {}),
         turnHash: currentHash,
         ingestedAt: Date.now(),
       });

@@ -190,7 +190,14 @@ export function resolveIdentity(params: {
  *   2. LIBRAVDB_AGENT_ID env var (container/CI override)
  *   3. Fall back to resolved userId (existing identity system)
  */
-export function resolveTenantKey(cfg: PluginConfig): string {
+export function resolveTenantKey(cfg: PluginConfig, agentId?: string): string {
+  // Per-agent override (highest priority).
+  if (agentId && cfg.tenantIdByAgent) {
+    const entry = cfg.tenantIdByAgent[agentId];
+    if (typeof entry === "string") return entry.trim();
+    if (entry && typeof entry === "object") return entry.primary.trim();
+  }
+
   const explicit = cfg.tenantId?.trim();
   if (explicit) return explicit;
 
@@ -201,4 +208,16 @@ export function resolveTenantKey(cfg: PluginConfig): string {
     configUserId: cfg.userId,
     identityPath: cfg.identityPath,
   }).userId;
+}
+
+// resolveReadTenants returns all tenant keys an agent can read from
+// (primary + readAccess). Empty if single-tenant. Used for search fan-out.
+export function resolveReadTenants(cfg: PluginConfig, agentId?: string): string[] | null {
+  if (!agentId || !cfg.tenantIdByAgent) return null;
+  const entry = cfg.tenantIdByAgent[agentId];
+  if (!entry || typeof entry === "string") return null; // string = primary only, no fan-out
+  if (entry.readAccess && entry.readAccess.length > 0) {
+    return [entry.primary.trim(), ...entry.readAccess.map((t) => t.trim())];
+  }
+  return null;
 }

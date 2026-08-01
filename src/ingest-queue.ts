@@ -123,21 +123,24 @@ export class IngestQueue {
       const resp = await this.ingestWithRetry(chunkParams);
       lastFeedback = resp.feedback;
 
-      if (
-        lastFeedback &&
-        lastFeedback.nodesAccepted === 0 &&
-        lastFeedback.tokenBurstLimit &&
-        lastFeedback.tokenBurstLimit > 0 &&
-        lastFeedback.tokenBurstLimit < currentLimit
-      ) {
-        currentLimit = lastFeedback.tokenBurstLimit;
-        continue;
-      }
-
-      if (lastFeedback && lastFeedback.nodesAccepted === 0) {
+      // The daemon ingests asynchronously: this RPC returns at queue-time,
+      // before the embed/commit runs, so nodesAccepted is normally 0 here even
+      // though the chunk was successfully queued (it commits moments later).
+      // Only nodesRejected > 0 signals an actual rejection. Previously this loop
+      // treated nodesAccepted === 0 as a permanent rejection, which fired on
+      // every async-queued chunk under load — flooding the logs with false
+      // "permanently rejected" warnings even though the content committed fine.
+      if (lastFeedback && lastFeedback.nodesRejected > 0) {
+        // A real rejection. If the daemon reported a lower per-chunk token
+        // limit, shrink and retry the same offset before giving up.
+        if (lastFeedback.tokenBurstLimit > 0 && lastFeedback.tokenBurstLimit < currentLimit) {
+          currentLimit = lastFeedback.tokenBurstLimit;
+          continue;
+        }
         this.logger.warn?.(
-          `[ingest-queue] Chunk permanently rejected for ${sourceDoc} ` +
+          `[ingest-queue] Chunk rejected for ${sourceDoc} ` +
           `at offset=${offset} length=${chunkText.length} ` +
+          `nodesRejected=${lastFeedback.nodesRejected} ` +
           `tokenBurstLimit=${lastFeedback.tokenBurstLimit ?? "unset"}`,
         );
       }

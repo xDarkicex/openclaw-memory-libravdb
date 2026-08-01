@@ -1,0 +1,485 @@
+{
+  "id": "libravdb-memory",
+  "name": "LibraVDB Memory",
+  "description": "Persistent vector memory with three-tier hybrid scoring",
+  "version": "1.8.10",
+  "kind": [
+    "memory",
+    "context-engine"
+  ],
+  "contracts": {
+    "memory": true,
+    "contextEngine": true,
+    "tools": [
+      "memory_search",
+      "memory_get",
+      "memory_describe",
+      "memory_expand",
+      "memory_grep"
+    ]
+  },
+  "activation": {
+    "onCommands": [
+      "memory"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "embeddingBackend": {
+              "const": "remote"
+            }
+          },
+          "required": [
+            "embeddingBackend"
+          ]
+        },
+        "then": {
+          "required": [
+            "embeddingEndpoint"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "embeddingBackend": {
+              "const": "onnx-local"
+            }
+          },
+          "required": [
+            "embeddingBackend"
+          ]
+        },
+        "then": {
+          "required": [
+            "embeddingRuntimePath",
+            "embeddingModelPath"
+          ]
+        }
+      }
+    ],
+    "properties": {
+      "dbPath": {
+        "type": "string"
+      },
+      "sidecarPath": {
+        "type": "string"
+      },
+      "tenantId": {
+        "type": "string",
+        "description": "Stable tenant identifier for multi-agent deployments. When set, the daemon routes this plugin instance to an isolated vector database. When unset, the plugin falls back to the auto-derived userId. Set different values per agent to isolate memory storage."
+      },
+      "userId": {
+        "type": "string",
+        "description": "Stable identity for cross-session durable memory. When set, sessions share memories under user:{userId}."
+      },
+      "identityPath": {
+        "type": "string",
+        "description": "Custom path for the auto-derived identity JSON file."
+      },
+      "crossSessionRecall": {
+        "type": "boolean",
+        "default": true,
+        "description": "When false, only session-scoped memories are retrieved; durable user recall is skipped."
+      },
+      "useSessionRecallProjection": {
+        "type": "boolean"
+      },
+      "grpcEndpoint": {
+        "type": "string",
+        "description": "Optional gRPC kernel endpoint for hosts using the daemon kernel transport."
+      },
+      "grpcEndpointTlsCa": {
+        "type": "string",
+        "description": "Path to a CA certificate PEM file for verifying the daemon's TLS certificate. Only needed for self-signed or private CA certificates. Not required when using a publicly trusted certificate (Let's Encrypt, cert-manager, etc)."
+      },
+      "grpcEndpointTlsClientCert": {
+        "type": "string",
+        "description": "Path to a PEM-encoded X.509 client certificate for mTLS. Required when the daemon requires a client certificate. Must be paired with grpcEndpointTlsClientKey."
+      },
+      "grpcEndpointTlsClientKey": {
+        "type": "string",
+        "description": "Path to the client private key PEM file. Required when grpcEndpointTlsClientCert is set. Accepts RSA, ECDSA (P-256/P-384/P-521), Ed25519 keys."
+      },
+      "grpcEndpointTlsMode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "tls",
+          "insecure"
+        ],
+        "description": "gRPC credential mode. auto (default): loopback and unix socket use plaintext, remote addresses use TLS. tls: always use TLS regardless of address. insecure: always use plaintext (use with service mesh or tunnel that handles TLS externally)."
+      },
+      "authoredHardBudgetFraction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "authoredSoftBudgetFraction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "elevatedGuidanceBudgetFraction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "useSessionSummarySearchExperiment": {
+        "type": "boolean"
+      },
+      "section7CoarseTopK": {
+        "type": "number"
+      },
+      "section7SecondPassTopK": {
+        "type": "number"
+      },
+      "section7Theta1": {
+        "type": "number"
+      },
+      "section7Kappa": {
+        "type": "number"
+      },
+      "section7HopEta": {
+        "type": "number"
+      },
+      "section7HopThreshold": {
+        "type": "number"
+      },
+      "section7AuthorityRecencyLambda": {
+        "type": "number"
+      },
+      "section7AuthorityRecencyWeight": {
+        "type": "number"
+      },
+      "section7AuthorityFrequencyWeight": {
+        "type": "number"
+      },
+      "section7AuthorityAuthoredWeight": {
+        "type": "number"
+      },
+      "section7AuthoritySalienceWeight": {
+        "type": "number"
+      },
+      "section7RecencyAccessLambda": {
+        "type": "number"
+      },
+      "section7AuthorityAccessWeight": {
+        "type": "number"
+      },
+      "subagentTokenBudget": {
+        "type": "number"
+      },
+      "beforeTurnEnabled": {
+        "type": "boolean"
+      },
+      "beforeTurnTimeoutMs": {
+        "type": "number"
+      },
+      "beforeTurnMaxMemories": {
+        "type": "number"
+      },
+      "embeddingRuntimePath": {
+        "type": "string",
+        "description": "Path to the ONNX Runtime library visible to the daemon, for example /opt/homebrew/opt/libravdbd/models/onnxruntime/lib/libonnxruntime.dylib or /home/node/.openclaw/libravdbd/models/onnxruntime/lib/libonnxruntime.so."
+      },
+      "onnxDevice": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "cpu",
+          "cuda",
+          "coreml",
+          "directml",
+          "openvino"
+        ],
+        "default": "cpu",
+        "description": "Optional ONNX execution provider override passed to libravdbd. Use cpu to bypass CoreML/MPS on Intel Macs."
+      },
+      "embeddingBackend": {
+        "type": "string",
+        "enum": [
+          "bundled",
+          "onnx-local",
+          "custom-local",
+          "remote"
+        ],
+        "description": "Embedder backend: bundled (built-in ONNX), onnx-local (local ONNX model), custom-local (custom ONNX), remote (HTTP API)"
+      },
+      "embeddingProfile": {
+        "type": "string",
+        "default": "nomic-embed-text-v1.5"
+      },
+      "fallbackProfile": {
+        "type": "string",
+        "default": "bge-small-en-v1.5"
+      },
+      "embeddingModelPath": {
+        "type": "string",
+        "description": "Directory visible to the daemon containing embedding.json, model.onnx, and tokenizer.json for the selected embeddingProfile."
+      },
+      "embeddingTokenizerPath": {
+        "type": "string"
+      },
+      "embeddingDimensions": {
+        "type": "number"
+      },
+      "embeddingNormalize": {
+        "type": "boolean"
+      },
+      "embeddingEndpoint": {
+        "type": "string",
+        "description": "HTTP endpoint URL for the remote embedder backend (required when embeddingBackend is 'remote')"
+      },
+      "embeddingRemoteModel": {
+        "type": "string",
+        "description": "Model identifier used when embeddingBackend is 'remote', e.g. 'nomic-embed-text-v1.5'"
+      },
+      "embeddingAPIKey": {
+        "type": "string",
+        "description": "API key for the remote embedder endpoint (when embeddingBackend is 'remote')"
+      },
+      "summarizerBackend": {
+        "type": "string",
+        "enum": [
+          "bundled",
+          "onnx-local",
+          "ollama-local",
+          "custom-local"
+        ]
+      },
+      "summarizerProfile": {
+        "type": "string"
+      },
+      "summarizerRuntimePath": {
+        "type": "string"
+      },
+      "summarizerModelPath": {
+        "type": "string"
+      },
+      "summarizerTokenizerPath": {
+        "type": "string"
+      },
+      "summarizerModel": {
+        "type": "string"
+      },
+      "summarizerEndpoint": {
+        "type": "string"
+      },
+      "sessionTTL": {
+        "type": "number"
+      },
+      "topK": {
+        "type": "number"
+      },
+      "alpha": {
+        "type": "number"
+      },
+      "beta": {
+        "type": "number"
+      },
+      "gamma": {
+        "type": "number"
+      },
+      "ingestionGateThreshold": {
+        "type": "number",
+        "default": 0.35
+      },
+      "markdownIngestionEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "markdownIngestionRoots": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "markdownIngestionObsidianEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "markdownIngestionObsidianRoots": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "markdownIngestionObsidianInclude": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "markdownIngestionObsidianExclude": {
+        "type": "array",
+        "default": [
+          "**/node_modules/**",
+          "**/.git/**",
+          "**/dist/**",
+          "**/build/**",
+          "**/coverage/**",
+          "**/.next/**",
+          "**/.nuxt/**",
+          "**/.svelte-kit/**",
+          "**/.turbo/**",
+          "**/.cache/**",
+          "**/.venv/**",
+          "**/venv/**",
+          "**/__pycache__/**"
+        ],
+        "items": {
+          "type": "string"
+        }
+      },
+      "markdownIngestionObsidianDebounceMs": {
+        "type": "number",
+        "default": 150
+      },
+      "markdownIngestionInclude": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "markdownIngestionExclude": {
+        "type": "array",
+        "default": [
+          "**/node_modules/**",
+          "**/.git/**",
+          "**/dist/**",
+          "**/build/**",
+          "**/coverage/**",
+          "**/.next/**",
+          "**/.nuxt/**",
+          "**/.svelte-kit/**",
+          "**/.turbo/**",
+          "**/.cache/**",
+          "**/.venv/**",
+          "**/venv/**",
+          "**/__pycache__/**"
+        ],
+        "items": {
+          "type": "string"
+        }
+      },
+      "markdownIngestionDebounceMs": {
+        "type": "number",
+        "default": 150
+      },
+      "markdownIngestionPriorityMode": {
+        "type": "string",
+        "enum": [
+          "mtime",
+          "ctime",
+          "size",
+          "fifo"
+        ],
+        "default": "mtime"
+      },
+      "markdownIngestionMaxTokensPerFile": {
+        "type": "number",
+        "default": 128000
+      },
+      "markdownIngestionSnapshotPath": {
+        "type": "string"
+      },
+      "markdownIngestionObsidianSnapshotPath": {
+        "type": "string"
+      },
+      "dreamPromotionEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "dreamPromotionDiaryPath": {
+        "type": "string"
+      },
+      "dreamPromotionUserId": {
+        "type": "string"
+      },
+      "dreamPromotionDebounceMs": {
+        "type": "number",
+        "default": 150
+      },
+      "lifecycleJournalMaxEntries": {
+        "type": "number",
+        "default": 500
+      },
+      "compactionQualityWeight": {
+        "type": "number",
+        "default": 0.5,
+        "description": "Controls how much summary confidence affects retrieval score. 0 ignores summary quality and 1 fully suppresses zero-confidence summaries."
+      },
+      "recencyLambdaSession": {
+        "type": "number"
+      },
+      "recencyLambdaUser": {
+        "type": "number"
+      },
+      "recencyLambdaGlobal": {
+        "type": "number"
+      },
+      "tokenBudgetFraction": {
+        "type": "number"
+      },
+      "compactThreshold": {
+        "type": "number"
+      },
+      "compactionThresholdFraction": {
+        "type": "number",
+        "default": 0.8,
+        "description": "Dynamic predictive compaction trigger ratio against the active token budget. Used when compactThreshold is not explicitly set."
+      },
+      "compactSessionTokenBudget": {
+        "type": "number",
+        "default": 2000,
+        "description": "Auto-trigger compaction when the session accumulates this many tokens since the last compaction. Set to 0 to disable auto-compaction."
+      },
+      "continuityMinTurns": {
+        "type": "number"
+      },
+      "continuityTailBudgetTokens": {
+        "type": "number"
+      },
+      "continuityPriorContextTokens": {
+        "type": "number"
+      },
+      "recoveryFloorScore": {
+        "type": "number"
+      },
+      "recoveryMinTopK": {
+        "type": "number"
+      },
+      "recoveryMinConfidenceMean": {
+        "type": "number"
+      },
+      "ollamaUrl": {
+        "type": "string"
+      },
+      "compactModel": {
+        "type": "string"
+      },
+      "rpcTimeoutMs": {
+        "type": "number",
+        "default": 120000,
+        "description": "gRPC timeout in milliseconds for daemon calls. Default: 120000 (2 min). Can also be set via LIBRAVDB_RPC_TIMEOUT_MS env var."
+      },
+      "maxRetries": {
+        "type": "number"
+      },
+      "logLevel": {
+        "type": "string"
+      },
+      "optimizationMemoCacheSize": {
+        "type": "number",
+        "default": 1000,
+        "description": "Maximum size for context engine string memoization caches. A higher value uses slightly more memory but avoids re-evaluating regexes on very long chat histories."
+      }
+    }
+  }
+}

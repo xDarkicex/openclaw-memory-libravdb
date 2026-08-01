@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "libravdbd.fullname" . }}
+  labels:
+    {{- include "libravdbd.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "libravdbd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "libravdbd.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: libravdbd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: LIBRAVDB_CONFIG
+              value: /etc/libravdbd/config.yaml
+            {{- if .Values.tls.enabled }}
+            - name: LIBRAVDB_GRPC_TLS_CERT
+              value: /etc/libravdbd/tls/tls.crt
+            - name: LIBRAVDB_GRPC_TLS_KEY
+              value: /etc/libravdbd/tls/tls.key
+            {{- if .Values.tls.ca }}
+            - name: LIBRAVDB_GRPC_TLS_CA
+              value: /etc/libravdbd/tls/ca.crt
+            {{- end }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/libravdbd
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/libravdbd/data
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /etc/libravdbd/tls
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["libravdbd", "health"]
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+          livenessProbe:
+            exec:
+              command: ["libravdbd", "health"]
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "libravdbd.fullname" . }}-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "libravdbd.fullname" . }}-data
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret | default (printf "%s-tls" (include "libravdbd.fullname" .)) }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

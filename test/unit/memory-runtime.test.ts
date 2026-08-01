@@ -206,6 +206,35 @@ test("memory runtime bridge falls back to metadata text when search result text 
   assert.equal(loaded.text, metadataText);
 });
 
+test("memory runtime bridge treats non-object metadata JSON as missing", async () => {
+  const rpc = new FakeRpc();
+  (rpc as { searchTextCollections: (params: Record<string, unknown>) => Promise<{ results: unknown[] }> }).searchTextCollections = async (params) => {
+    rpc.calls.push({ method: "searchTextCollections", params });
+    return {
+      results: [
+        {
+          id: "turn-1",
+          score: 0.88,
+          text: "remembered item survives non-object metadata",
+          metadataJson: new TextEncoder().encode("null"),
+        },
+      ],
+    };
+  };
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "remembered item", sessionId: "s1" }) as Array<{
+    path: string;
+    snippet: string;
+    source: string;
+  }>;
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.snippet, "remembered item survives non-object metadata");
+  assert.equal(result[0]?.source, "memory");
+});
+
 test("memory runtime bridge does not authorize hidden paths from legacy search results", async () => {
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});

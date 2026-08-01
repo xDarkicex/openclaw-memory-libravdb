@@ -1,30 +1,43 @@
+import { resolveIdentity, resolveTenantKey, resolveReadTenants } from "./identity.js";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { registerMemoryCli } from "./cli.js";
 import { registerMemoryCliMetadata } from "./cli-descriptors.js";
-import { buildContextEngineFactory, clearSessionTrigger, normalizeKernelMessage, setSessionTrigger } from "./context-engine.js";
+import { buildContextEngineFactory, clearSessionTrigger, extractSpeakers, normalizeKernelMessage, setSessionTrigger } from "./context-engine.js";
 import { createBeforeResetHook, createSessionEndHook } from "./lifecycle-hooks.js";
 import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
 import { buildMemoryPromptSection } from "./memory-provider.js";
-import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool } from "./tools/memory-recall.js";
+import { createMemoryDescribeTool, createMemoryExpandTool, createMemoryGrepTool, createUpdateUserCardTool, createGetUserCardTool, createListUserCardsTool, createSetPersonaTool, createGetPersonaTool } from "./tools/memory-recall.js";
+import { createSetRuleTool, createGetRuleTool, createListRulesTool, createDeleteRuleTool, initRuleStore, buildRulesContext, scanReply, setMaxRules } from "./rules.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import { createLibraVdbMemoryTools } from "./memory-tools.js";
 import { createPluginRuntime } from "./plugin-runtime.js";
 import type { PluginConfig } from "./types.js";
+import { levelFilteredLogger } from "./types.js";
 
 export const MEMORY_ID = "libravdb-memory";
 
 const LIGHTWEIGHT_MODES = new Set(["cli-metadata", "setup-only"]);
 const RUNTIME_CLEANUP_SHUTDOWN_REASONS = new Set(["delete"]);
 
-export function shouldShutdownRuntimeForLifecycleCleanup(reason: string): boolean {
-  return RUNTIME_CLEANUP_SHUTDOWN_REASONS.has(reason);
+export function shouldShutdownRuntimeForLifecycleCleanup(
+  reason: string,
+  sessionKey?: string,
+): boolean {
+  // `reason: "delete"` fires for per-session deletes (sessionKey set) as well as
+  // plugin-scoped teardown (no sessionKey). The vector-service runtime is a
+  // process-wide singleton shared by every session's context engine, memory tools,
+  // and compaction provider, so it must only be torn down on a plugin-scoped cleanup.
+  // Shutting it down on a single session delete leaves it permanently "shut down"
+  // and breaks memory ingestion for every other live session until a gateway restart.
+  return RUNTIME_CLEANUP_SHUTDOWN_REASONS.has(reason) && sessionKey === undefined;
 }
 
 export function register(api: OpenClawPluginApi) {
   const registrationMode = api.registrationMode;
-  const logger = api.logger ?? console;
+  const baseLogger = api.logger ?? console;
+  const logger = levelFilteredLogger(baseLogger, (api.pluginConfig as PluginConfig)?.logLevel);
 
   if (registrationMode === "cli-metadata") {
     registerMemoryCliMetadata(api);
@@ -82,13 +95,25 @@ export function register(api: OpenClawPluginApi) {
   const runtimeOrNull = isLightweight
     ? null
     : createPluginRuntime(cfg, logger);
+
+  // Rule store init — persists to plugin cache directory.
+  if (runtimeOrNull && !isLightweight) {
+    const cacheDir = ((api as unknown as Record<string, unknown>).cacheDir as string | undefined)
+      ?? process.env.OPENCLAW_CACHE_DIR
+      ?? (process.env.HOME || process.env.USERPROFILE || "") + "/.openclaw/cache";
+    if (cacheDir) {
+      initRuleStore(cacheDir + "/libravdb", logger);
+      if (cfg.maxRules !== undefined) setMaxRules(cfg.maxRules);
+    }
+  }
+
   registerMemoryCli(api, runtimeOrNull, cfg, logger);
 
   const ownsMemorySlot = memSlot === MEMORY_ID;
   if (runtimeOrNull && ownsMemorySlot) {
     const memoryTools = createLibraVdbMemoryTools(runtimeOrNull.getClient, cfg, logger);
-    api.registerTool?.((ctx) => memoryTools.createSearchTool(ctx), { names: ["memory_search"] });
-    api.registerTool?.((ctx) => memoryTools.createGetTool(ctx), { names: ["memory_get"] });
+    api.registerTool?.((ctx) => memoryTools.createSearchTool(ctx), { names: ["libravdb_memory_search"] });
+    api.registerTool?.((ctx) => memoryTools.createGetTool(ctx), { names: ["libravdb_memory_get"] });
   }
 
   // Recall tools: describe, expand, grep — available when the runtime exists.
@@ -109,6 +134,30 @@ export function register(api: OpenClawPluginApi) {
       const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
       return createMemoryGrepTool(getClient, getSessionId, logger);
     }, { names: ["memory_grep"] });
+    api.registerTool?.((ctx) => {
+      const getClient = runtimeOrNull.getClient;
+      return createUpdateUserCardTool(getClient, logger);
+    }, { names: ["update_user_card"] });
+    api.registerTool?.((ctx) => {
+      const getClient = runtimeOrNull.getClient;
+      return createGetUserCardTool(getClient, logger);
+    }, { names: ["get_user_card"] });
+    api.registerTool?.((ctx) => {
+      const getClient = runtimeOrNull.getClient;
+      return createListUserCardsTool(getClient, logger);
+    }, { names: ["list_user_cards"] });
+    api.registerTool?.(() => createSetRuleTool(logger), { names: ["set_rule"] });
+    api.registerTool?.(() => createGetRuleTool(logger), { names: ["get_rule"] });
+    api.registerTool?.(() => createListRulesTool(logger), { names: ["list_rules"] });
+    api.registerTool?.(() => createDeleteRuleTool(logger), { names: ["delete_rule"] });
+    api.registerTool?.(() => {
+      const getClient = runtimeOrNull.getClient;
+      return createSetPersonaTool(getClient, logger);
+    }, { names: ["set_persona"] });
+    api.registerTool?.(() => {
+      const getClient = runtimeOrNull.getClient;
+      return createGetPersonaTool(getClient, logger);
+    }, { names: ["get_persona"] });
   }
 
   if (isLightweight || isDiscovery) {
@@ -165,12 +214,12 @@ export function register(api: OpenClawPluginApi) {
           error: `LibraVDB embedding is managed by the vector service. Use config embeddingBackend="${entry.id}" to select this backend.`,
         };
       },
-    });
+    } as any);
   }
 
   api.registerContextEngine(
     MEMORY_ID,
-    () => buildContextEngineFactory(runtime, cfg, api.logger ?? console),
+    () => buildContextEngineFactory(runtime, cfg, logger),
   );
 
   // Register the daemon's extractive summarization as a pluggable
@@ -184,15 +233,15 @@ export function register(api: OpenClawPluginApi) {
     async summarize({ messages }) {
       const client = await runtime.getClient();
       const result = await client.summarizeMessages({
-        messages: messages.map((m) => normalizeKernelMessage(m as { role: string; content: unknown; id?: string })),
+        messages: messages.map((m) => normalizeKernelMessage(m as { role: string; content: unknown; id?: string })) as any,
         maxOutputTokens: 64,
-      });
+      } as any);
       return result.summaryText;
     },
   });
 
-  const markdownIngestion = createMarkdownIngestionHandle(cfg, runtime.getClient, api.logger ?? console);
-  const dreamPromotion = createDreamPromotionHandle(cfg, runtime.getClient, api.logger ?? console);
+  const markdownIngestion = createMarkdownIngestionHandle(cfg, runtime.getClient, logger);
+  const dreamPromotion = createDreamPromotionHandle(cfg, runtime.getClient, logger);
 
   api.registerService?.({
     id: "libravdb-markdown-ingestion",
@@ -200,7 +249,7 @@ export function register(api: OpenClawPluginApi) {
       try {
         await markdownIngestion.start();
       } catch (error) {
-        api.logger?.warn?.(`LibraVDB markdown ingestion failed to start: ${error instanceof Error ? error.message : String(error)}`);
+        logger.warn?.(`LibraVDB markdown ingestion failed to start: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
     async stop() {
@@ -214,7 +263,7 @@ export function register(api: OpenClawPluginApi) {
       try {
         await dreamPromotion.start();
       } catch (error) {
-        api.logger?.warn?.(`LibraVDB dream promotion failed to start: ${error instanceof Error ? error.message : String(error)}`);
+        logger.warn?.(`LibraVDB dream promotion failed to start: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
     async stop() {
@@ -226,7 +275,7 @@ export function register(api: OpenClawPluginApi) {
     id: "libravdb-shutdown",
     description: "Shut down the vector service runtime on terminal plugin cleanup",
     async cleanup(ctx) {
-      if (shouldShutdownRuntimeForLifecycleCleanup(ctx.reason)) {
+      if (shouldShutdownRuntimeForLifecycleCleanup(ctx.reason, ctx.sessionKey)) {
         logger.info?.(`LibraVDB ${ctx.reason} — shutting down runtime`);
         await runtime.shutdown();
       } else if (ctx.reason === "disable") {
@@ -241,9 +290,99 @@ export function register(api: OpenClawPluginApi) {
   // (heartbeat, cron, memory, overflow) skip semantic retrieval to save
   // an embedding call and RPC round trip on non-interactive turns.
   api.on("before_prompt_build", async (_event, ctx) => {
-    const sessionId = (ctx as Record<string, unknown> | undefined)?.sessionId as string | undefined;
-    const trigger = (ctx as Record<string, unknown> | undefined)?.trigger as string | undefined;
+    const c = ctx as Record<string, unknown> | undefined;
+    const sessionId = c?.sessionId as string | undefined;
+    const trigger = c?.trigger as string | undefined;
     if (sessionId) setSessionTrigger(sessionId, trigger);
+
+    // Resolve per-agent tenant routing.
+    if (runtimeOrNull) {
+      const agentId = c?.agentId as string | undefined;
+      const tenantKey = resolveTenantKey(cfg, agentId);
+      const readTenants = resolveReadTenants(cfg, agentId);
+      try {
+        const client = await runtimeOrNull.getClient();
+        client.setTenantKey(tenantKey);
+        client.setReadTenants(readTenants ?? []);
+      } catch { /* best-effort — client may not be ready yet */ }
+    }
+  });
+
+  // Phase 2 — inject speaker cards for non-main users in multi-speaker channels.
+  const MULTI_SPEAKER_PROVIDERS = new Set([
+    "discord", "telegram", "imessage", "slack",
+    "whatsapp", "signal", "matrix", "irc",
+  ]);
+
+  // @ts-expect-error: api.on types declare void return, but the runtime
+  // processes PluginHookBeforePromptBuildResult from before_prompt_build handlers.
+  api.on("before_prompt_build", async (event: unknown, ctx: unknown) => {
+    const c = ctx as Record<string, unknown>;
+    const provider = c.messageProvider as string | undefined;
+    if (!provider || !MULTI_SPEAKER_PROVIDERS.has(provider.toLowerCase())) return;
+
+    const e = event as Record<string, unknown>;
+    const messages = (e.messages ?? []) as Array<{ role: string; content: string | unknown[] }>;
+    const speakers = extractSpeakers(messages);
+    if (speakers.length === 0) return;
+
+    const mainIdentity = resolveIdentity({
+      configUserId: cfg.userId,
+      identityPath: cfg.identityPath,
+      sessionKey: c.sessionKey as string | undefined,
+      logger,
+      noAutoPersist: true,
+    });
+    const mainUserId = mainIdentity.userId.toLowerCase();
+    const otherSpeakers = speakers.filter(s => s.name !== mainUserId);
+    if (otherSpeakers.length === 0) return;
+
+    try {
+      const client = await runtime.getClient();
+      const results = await Promise.all(
+        otherSpeakers.map(async (speaker) => {
+          try {
+            const resp = await client.getUserCard({ userId: speaker.name });
+            if (!resp.cardJson) return null;
+            let card: string;
+            try { card = JSON.parse(resp.cardJson).card ?? resp.cardJson; }
+            catch { card = resp.cardJson; }
+            if (!card || !card.trim()) return null;
+            return `<speaker_context speaker="${speaker.displayName}">\nThe current speaker is ${speaker.displayName}:\n${card.trim()}\n</speaker_context>`;
+          } catch { return null; }
+        })
+      );
+      const validCards = results.filter((c): c is string => c !== null);
+      if (validCards.length === 0) return;
+      return { appendSystemContext: validCards.join("\n") };
+    } catch (error) {
+      logger.warn?.(
+        `LibraVDB speaker card injection failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  // Hard constraint rules — injected as prependSystemContext at the system
+  // prompt level (AGENTS.md equivalent) so the model treats them as hard rules.
+  // @ts-expect-error: api.on types declare void return, runtime processes hook results.
+  api.on("before_prompt_build", async () => {
+    const rulesText = buildRulesContext();
+    if (!rulesText) return;
+    return { prependSystemContext: rulesText };
+  });
+
+  // Rule enforcement — scan agent replies against rule keywords.
+  // If a keyword match is found, the reply is replaced with a refusal.
+  // @ts-expect-error: api.on types declare void return, runtime processes hook results.
+  api.on("before_agent_reply", async (event, _ctx) => {
+    const e = event as Record<string, unknown>;
+    const cleanedBody = typeof e.cleanedBody === "string" ? e.cleanedBody : "";
+    if (!cleanedBody) return;
+    const violated = scanReply(cleanedBody);
+    if (violated) {
+      logger.warn?.(`LibraVDB reply blocked by rule "${violated.rule}" (${violated.id})`);
+      return { handled: true, reply: { text: "I cannot answer that." }, reason: `blocked by rule: ${violated.rule}` };
+    }
   });
 
   api.on("session_end", async (_event, ctx) => {
@@ -251,8 +390,8 @@ export function register(api: OpenClawPluginApi) {
     if (sessionId) clearSessionTrigger(sessionId);
   });
 
-  api.on("before_reset", createBeforeResetHook(runtime, api.logger ?? console));
-  api.on("session_end", createSessionEndHook(runtime, api.logger ?? console));
+  api.on("before_reset", createBeforeResetHook(runtime, logger));
+  api.on("session_end", createSessionEndHook(runtime, logger));
   api.on("gateway_stop", async () => {
     await runtime.shutdown();
   });

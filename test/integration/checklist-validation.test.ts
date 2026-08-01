@@ -19,11 +19,20 @@ test("manifest and package metadata satisfy checklist structure", async () => {
   assert.deepEqual(manifest.activation, { onCommands: ["memory"] });
   assert.equal(manifest.version, pkg.version);
   assert.deepEqual(manifest.contracts.tools, [
-    "memory_search",
-    "memory_get",
+    "libravdb_memory_search",
+    "libravdb_memory_get",
     "memory_describe",
     "memory_expand",
     "memory_grep",
+    "update_user_card",
+    "get_user_card",
+    "list_user_cards",
+    "set_rule",
+    "get_rule",
+    "list_rules",
+    "delete_rule",
+    "set_persona",
+    "get_persona",
   ]);
 
   assert.equal(pkg.main, "./dist/index.js");
@@ -113,5 +122,5 @@ test("source checklist invariants are present in host code", async () => {
   assert.doesNotMatch(indexTs, /api\.on\("shutdown"/);
   assert.doesNotMatch(indexTs, /async register\s*\(/);
   assert.match(memoryProviderTs, /availableTools/);
-  assert.match(memoryProviderTs, /context-engine assembler/);
+  assert.match(memoryProviderTs, /auto-ingested/);
 });

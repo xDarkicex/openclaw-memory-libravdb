@@ -1,5 +1,48 @@
 # Dependency Rationale
 
+## npm audit and Connect transport dependencies
+
+The npm package depends on `@connectrpc/connect-node` for the gRPC transport used
+to reach the separately installed `libravdbd` service. The current Connect 1.x
+line resolves `@connectrpc/connect-node@1.7.0`, which depends on `undici@5.29.0`.
+
+Some npm consumers may therefore see `npm audit --omit=dev` report this path:
+
+```text
+@xdarkicex/openclaw-memory-libravdb
+└─┬ @connectrpc/connect-node@1.7.0
+  └── undici@5.29.0
+```
+
+This is not fixed by the `pnpm.overrides` entry in this repository. That override
+only affects this repo's own pnpm install; it does not force npm's dependency
+resolution in a consuming OpenClaw project.
+
+If an operator needs a temporary npm-side audit workaround while the plugin still
+targets Connect 1.x, use root-project `overrides` in the consuming project:
+
+```json
+{
+  "overrides": {
+    "undici": "6.24.0"
+  }
+}
+```
+
+Then reinstall and re-run the audit:
+
+```bash
+npm install
+npm audit --omit=dev
+```
+
+Treat this as a consumer workaround, not the upstream package fix. Moving the
+plugin itself to Connect 2.x is a source migration, not a one-line dependency
+bump: Connect 2 removes the current `createPromiseClient` API, protobuf 2 removes
+the current `PartialMessage` export used by this codebase, and transport options
+changed. The durable upstream fix needs the plugin and generated contracts to
+migrate across that API boundary together.
+
 ## LibraVDB over LanceDB
 
 LibraVDB was chosen as the vector store because the plugin needs more than a single-table embedding lookup.

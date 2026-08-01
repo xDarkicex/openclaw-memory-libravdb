@@ -404,3 +404,33 @@ test("loadSecretFromEnv warns and returns undefined for unreadable file", () => 
     delete process.env.LIBRAVDB_AUTH_SECRET_FILE;
   }
 });
+
+test("cross-tenant search keeps same record ids from different tenants", async () => {
+  const client = new LibravDBClient({ endpoint: "tcp:127.0.0.1:9" });
+  (client as any).client = {
+    searchTextCollections: async () => ({
+      results: [
+        {
+          id: "shared-id",
+          score: 0.9,
+          text: `hit from ${(client as any).tenantKey}`,
+        },
+      ],
+    }),
+  };
+
+  client.setTenantKey("primary");
+  client.setReadTenants(["tenant-a", "tenant-b"]);
+
+  const result = await client.searchTextCollections({
+    collections: ["global"],
+    text: "shared memory",
+    k: 5,
+  });
+
+  assert.deepEqual(
+    result.results.map((item) => item.text),
+    ["hit from tenant-a", "hit from tenant-b"],
+  );
+  assert.equal((client as any).tenantKey, "primary");
+});

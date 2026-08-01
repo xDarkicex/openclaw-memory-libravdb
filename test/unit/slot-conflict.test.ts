@@ -22,6 +22,32 @@ type InstrumentedApi = OpenClawPluginApi & {
   };
 };
 
+const RUNTIME_TOOL_NAMES = [
+  "memory_describe",
+  "memory_expand",
+  "memory_grep",
+  "update_user_card",
+  "get_user_card",
+  "list_user_cards",
+  "set_rule",
+  "get_rule",
+  "list_rules",
+  "delete_rule",
+  "set_persona",
+  "get_persona",
+];
+
+const ACTIVE_HOOK_NAMES = [
+  "before_prompt_build",
+  "before_prompt_build",
+  "before_prompt_build",
+  "before_agent_reply",
+  "session_end",
+  "before_reset",
+  "session_end",
+  "gateway_stop",
+];
+
 /** Builds a fake OpenClawPluginApi for register(). */
 function makeFakeApi(overrides: {
   registrationMode?: string;
@@ -98,17 +124,41 @@ test("slot check — ours: register succeeds", () => {
     "libravdb-bundled",
     "libravdb-onnx",
   ]);
-  assert.deepEqual(api.registrations.tools, ["memory_search", "memory_get"]);
+  assert.deepEqual(api.registrations.tools, [
+
+    "libravdb_memory_search",
+    "libravdb_memory_get",
+    "memory_describe",
+    "memory_expand",
+    "memory_grep",
+    "update_user_card",
+    "get_user_card",
+    "list_user_cards",
+    "set_rule",
+    "get_rule",
+    "list_rules",
+    "delete_rule",
+    "set_persona",
+    "get_persona",
+
+  ]);
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
     "libravdb-dream-promotion",
   ]);
   assert.deepEqual(api.registrations.runtimeLifecycles, ["libravdb-shutdown"]);
+
   assert.deepEqual(api.registrations.hooks, [
+    "before_prompt_build",
+    "before_prompt_build",
+    "before_prompt_build",
+    "before_agent_reply",
+    "session_end",
     "before_reset",
     "session_end",
     "gateway_stop",
   ]);
+
 });
 
 // slot: another plugin — should throw with slot name in message
@@ -137,17 +187,42 @@ test("slot check — unset: register succeeds with warning", () => {
     "libravdb-bundled",
     "libravdb-onnx",
   ]);
-  assert.deepEqual(api.registrations.tools, []);
+
+  // When the memory slot is unset, libravdb_memory_search / libravdb_memory_get are not
+  // registered (ownsMemorySlot is false), but the recall tools still
+  // register because they only require a runtime, not slot ownership.
+  assert.deepEqual(api.registrations.tools, [
+    "memory_describe",
+    "memory_expand",
+    "memory_grep",
+    "update_user_card",
+    "get_user_card",
+    "list_user_cards",
+    "set_rule",
+    "get_rule",
+    "list_rules",
+    "delete_rule",
+    "set_persona",
+    "get_persona",
+  ]);
+
   assert.deepEqual(api.registrations.services, [
     "libravdb-markdown-ingestion",
     "libravdb-dream-promotion",
   ]);
   assert.deepEqual(api.registrations.runtimeLifecycles, ["libravdb-shutdown"]);
+
   assert.deepEqual(api.registrations.hooks, [
+    "before_prompt_build",
+    "before_prompt_build",
+    "before_prompt_build",
+    "before_agent_reply",
+    "session_end",
     "before_reset",
     "session_end",
     "gateway_stop",
   ]);
+
 });
 
 // slot: "none" — memory disabled, should not throw or register hooks
@@ -201,5 +276,18 @@ test("runtime lifecycle cleanup preserves context-engine runtime on disable", ()
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("disable"), false);
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("reset"), false);
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("restart"), false);
+  // Plugin-scoped delete (no sessionKey) tears the singleton runtime down.
   assert.equal(shouldShutdownRuntimeForLifecycleCleanup("delete"), true);
+});
+
+test("runtime lifecycle cleanup preserves runtime on per-session delete", () => {
+  // A session delete fires reason "delete" WITH a sessionKey. The runtime is a
+  // process-wide singleton, so it must NOT be shut down — doing so breaks memory
+  // ingestion for every other live session until a gateway restart.
+  assert.equal(
+    shouldShutdownRuntimeForLifecycleCleanup("delete", "agent:main:session:abc"),
+    false,
+  );
+  // Plugin-scoped delete (sessionKey absent) still tears the singleton down.
+  assert.equal(shouldShutdownRuntimeForLifecycleCleanup("delete", undefined), true);
 });
