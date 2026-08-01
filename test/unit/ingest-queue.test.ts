@@ -76,6 +76,31 @@ test("chunked ingest replaces first chunk then appends remaining chunks", async 
   }
 });
 
+test("chunked ingest does not extend chunks past the configured budget at newline boundaries", async () => {
+  for (const text of [
+    `${"a".repeat(12)}\n${"b".repeat(10)}`,
+    `${"a".repeat(12)}\n\n${"b".repeat(10)}`,
+  ]) {
+    const calls: Array<{ mode?: IngestMode; text: string }> = [];
+    const queue = new IngestQueue(
+      async (params) => {
+        calls.push({ mode: params.mode, text: params.text });
+        return { ok: true };
+      },
+      async () => {},
+      { error() {}, warn() {} },
+      { chunkTokens: 3, maxRetries: 0 },
+    );
+
+    await queue.enqueueIngest("/vault/daily.md", text, baseParams());
+
+    assert.ok(calls.length > 1, "test input should split into multiple chunks");
+    for (const call of calls) {
+      assert.ok(call.text.length <= 12, `chunk exceeded maxChars: ${call.text.length}`);
+    }
+  }
+});
+
 test("ok=false ingest responses retry the same chunk before advancing", async () => {
   const calls: Array<{ mode?: IngestMode; text: string }> = [];
   let attempt = 0;

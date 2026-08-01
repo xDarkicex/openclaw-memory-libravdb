@@ -209,20 +209,23 @@ function splitIntoChunks(text: string, maxTokens: number): Array<{ text: string;
   while (offset < text.length) {
     let end = Math.min(offset + maxChars, text.length);
 
-    // Walk back up to 256 chars looking for a sentence boundary
+    // Walk back up to 256 chars looking for a sentence boundary.
+    // `end` is exclusive, so probes must stay inside [offset, end).
     const probeLimit = Math.min(256, end - offset);
     let hardCut = end;
     for (let i = 0; i < probeLimit; i++) {
-      const pos = end - i;
+      const pos = end - 1 - i;
+      if (pos <= offset) break;
       const ch = text.charAt(pos);
-      if (ch === "\n" && text.charAt(pos + 1) === "\n") {
+      if (ch === "\n" && pos + 1 < end && text.charAt(pos + 1) === "\n") {
         hardCut = pos + 2;
         break;
       }
     }
     if (hardCut === end) {
       for (let i = 0; i < probeLimit; i++) {
-        const pos = end - i;
+        const pos = end - 1 - i;
+        if (pos <= offset) break;
         if (text.charAt(pos) === "\n") {
           hardCut = pos + 1;
           break;
@@ -231,7 +234,8 @@ function splitIntoChunks(text: string, maxTokens: number): Array<{ text: string;
     }
     if (hardCut === end) {
       for (let i = 0; i < probeLimit; i++) {
-        const pos = end - i;
+        const pos = end - 1 - i;
+        if (pos <= offset) break;
         if (text.charAt(pos) === " ") {
           hardCut = pos;
           break;
