@@ -72,7 +72,7 @@ const MEMORY_DESCRIBE_SCHEMA = {
   properties: {
     summaryId: {
       type: "string",
-      description: "A summary ID (sum_xxx format) returned by memory_search. Inspect metadata without expanding.",
+      description: "A summary ID (sum_xxx format) returned by libravdb_memory_search. Inspect metadata without expanding.",
     },
     sessionId: {
       type: "string",
@@ -89,11 +89,11 @@ const MEMORY_EXPAND_SCHEMA = {
     summaryIds: {
       type: "array",
       items: { type: "string" },
-      description: "Summary IDs (sum_xxx format) to expand. Use results from memory_search or memory_describe.",
+      description: "Summary IDs (sum_xxx format) to expand. Use results from libravdb_memory_search or memory_describe.",
     },
     record_id: {
       type: "string",
-      description: "Record ID for causal graph traversal. Use exact IDs from memory_search or memory_get results.",
+      description: "Record ID for causal graph traversal. Use exact IDs from libravdb_memory_search or libravdb_memory_get results.",
     },
     maxDepth: {
       type: "number",
@@ -275,7 +275,7 @@ export function createMemoryExpandTool(
       "Expand compacted summaries OR walk causal graph edges from ANY record. " +
       "Summary mode (summaryIds): walk the summary tree up to maxDepth levels. " +
       "Graph mode (record_id): walk causal edges (why_ids/how_ids/hop_targets) " +
-      "from a record ID. Use exact IDs from memory_search or memory_get results — " +
+      "from a record ID. Use exact IDs from libravdb_memory_search or libravdb_memory_get results — " +
       "any ingested turn, memory, or summary has graph edges. " +
       "For large expansions, spawns a sub-agent. " +
       "Use memory_describe first to check if expansion is warranted.",
@@ -533,7 +533,7 @@ const RECALL_GUIDANCE = [
   "Active session recall and summary expansion tools are available:",
   "",
   "**Tool escalation (cheap → expensive):**",
-  "1. `memory_search` — semantic search across all memory/session collections.",
+  "1. `libravdb_memory_search` — semantic search across all memory/session collections.",
   "   Summary hits show `[Summary sum_xxx]: [cue with anchors, decisions, signals]`.",
   "   Use these cues to decide what's worth expanding.",
   "2. `memory_describe` — inspect a summary's metadata (cheap, no expansion).",
@@ -634,7 +634,7 @@ export function createGetUserCardTool(
       "about a person, pet, place, or named thing ('who/what is X', 'do I have X', " +
       "'tell me about X'). Returns the full prose identity card. " +
       "Do NOT answer from memory or training data. Call this tool FIRST. " +
-      "Only fall through to memory_search if the card is empty or missing.",
+      "Only fall through to libravdb_memory_search if the card is empty or missing.",
     parameters: GET_USER_CARD_SCHEMA,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<GetUserCardDetails>> => {
       try {

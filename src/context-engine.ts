@@ -2359,7 +2359,7 @@ export function buildContextEngineFactory(
         (r) => r.id === "__session_continuity__"
       );
       if (!continuityHit) {
-        return '<continuity_context>\nNo prior session context available. Use memory_search to recall previous conversations.\n</continuity_context>';
+        return '<continuity_context>\nNo prior session context available. Use libravdb_memory_search to recall previous conversations.\n</continuity_context>';
       }
 
       let meta: Record<string, unknown> = {};
@@ -2371,7 +2371,7 @@ export function buildContextEngineFactory(
       const summaryId = meta.summary_id as string | undefined;
       if (!summaryId) {
         const sid = (meta.session_id as string | undefined) ?? params.sessionId;
-        return '<continuity_context>\nThe previous session (' + sid + ') was not compacted. Use memory_search with queries about what was discussed to recall context.\n</continuity_context>';
+        return '<continuity_context>\nThe previous session (' + sid + ') was not compacted. Use libravdb_memory_search with queries about what was discussed to recall context.\n</continuity_context>';
       }
 
       const expanded = await params.client.expandSummary({
@@ -2379,7 +2379,7 @@ export function buildContextEngineFactory(
         summaryId,
         maxDepth: 2,
       });
-      if (!expanded.text) return '<continuity_context>\nFailed to expand prior session summary. Use memory_search to recall previous conversations.\n</continuity_context>';
+      if (!expanded.text) return '<continuity_context>\nFailed to expand prior session summary. Use libravdb_memory_search to recall previous conversations.\n</continuity_context>';
 
       return '<continuity_context>\nThe following is a summary of the previous session. Use it for context about what was discussed before the reset.\n' + expanded.text + '\n</continuity_context>';
     } catch {

@@ -99,8 +99,8 @@ test("slot check — ours: register succeeds", () => {
     "libravdb-onnx",
   ]);
   assert.deepEqual(api.registrations.tools, [
-    "memory_search",
-    "memory_get",
+    "libravdb_memory_search",
+    "libravdb_memory_get",
     "memory_describe",
     "memory_expand",
     "memory_grep",
@@ -157,7 +157,7 @@ test("slot check — unset: register succeeds with warning", () => {
     "libravdb-bundled",
     "libravdb-onnx",
   ]);
-  // When the memory slot is unset, memory_search / memory_get are not
+  // When the memory slot is unset, libravdb_memory_search / libravdb_memory_get are not
   // registered (ownsMemorySlot is false), but the recall tools still
   // register because they only require a runtime, not slot ownership.
   assert.deepEqual(api.registrations.tools, [
