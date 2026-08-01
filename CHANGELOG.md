@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.10.19 — 2026-08-01
+
+### Fixed
+
+- **Cross-tenant search drops same-ID hits from different tenants.** The fan-out
+  dedup used `id` alone, so if tenant-a and tenant-b both returned a record with
+  the same ID, the second was silently dropped. Now scoped to `tenant + id`.
+  Also wrapped fan-out in `try/finally` so the primary tenant key is restored
+  even if iteration throws.
+
 ## v1.10.18 — 2026-08-01
 
 ### Fixed
