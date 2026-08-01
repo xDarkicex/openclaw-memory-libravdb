@@ -739,6 +739,33 @@ function resolveEffectiveAssembleBudget(tokenBudget: number | undefined): number
   return Math.max(1, normalized - headroom);
 }
 
+// tokenBudgetMax — stage 1 (base cap). Daemon-side injection is sized as
+// tokenBudgetFraction × tokenBudget, so on a large-window model (e.g. 1M)
+// injection balloons proportionally. This caps the budget handed to the daemon
+// to min(window, tokenBudgetMax / fraction) so the daemon pre-trims its
+// sub-channels. Returns tokenBudget unchanged when tokenBudgetMax is unset.
+// NOTE: this only makes the daemon pre-trim — the post-assembly trim
+// (truncateSystemPromptAdditionToTokenBudget) is the actual ceiling enforcer,
+// because several injection paths size against the real window, not this budget.
+function resolveCappedAssembleBudget(
+  tokenBudget: number | undefined,
+  tokenBudgetMax: number | undefined,
+  tokenBudgetFraction: number | undefined,
+): number | undefined {
+  const normalized = normalizeTokenBudget(tokenBudget);
+  if (normalized == null) return tokenBudget;
+  if (typeof tokenBudgetMax !== "number" || !Number.isFinite(tokenBudgetMax) || tokenBudgetMax <= 0) {
+    return tokenBudget;
+  }
+  // The daemon's true default injection fraction is unknown; 0.2 is a safe
+  // fallback. It only affects how aggressively the daemon pre-trims.
+  const fraction = typeof tokenBudgetFraction === "number" && tokenBudgetFraction > 0
+    ? tokenBudgetFraction
+    : 0.2;
+  const cap = Math.max(1, Math.floor(tokenBudgetMax / fraction));
+  return Math.min(normalized, cap);
+}
+
 function normalizeThresholdFraction(fraction: number | undefined): number {
   if (typeof fraction !== "number" || !Number.isFinite(fraction)) {
     return DEFAULT_COMPACTION_THRESHOLD_FRACTION;
@@ -2874,6 +2901,13 @@ export function buildContextEngineFactory(
           }
 
           const assembleTimeout = cfg.assembleTimeoutMs ?? 30000;
+          // tokenBudgetMax stage 1: cap the budget the daemon sizes injection
+          // against (no-op when tokenBudgetMax is unset).
+          const cappedAssembleBudget = resolveCappedAssembleBudget(
+            args.tokenBudget,
+            cfg.tokenBudgetMax,
+            cfg.tokenBudgetFraction,
+          ) ?? args.tokenBudget;
           const resp = await Promise.race([
             client.assembleContextInternal({
               sessionId,
@@ -2881,8 +2915,8 @@ export function buildContextEngineFactory(
               userId,
               prompt: retrievalQuery,
               messages: messages as any,
-              tokenBudget: args.tokenBudget,
-              config: buildAssemblyConfig(args.tokenBudget),
+              tokenBudget: cappedAssembleBudget,
+              config: buildAssemblyConfig(cappedAssembleBudget),
               emitDebug: true,
             }),
             new Promise<never>((_, reject) =>
@@ -3012,6 +3046,31 @@ export function buildContextEngineFactory(
           });
         }
 
+        // tokenBudgetMax stage 2 (enforcer): truncate the combined injection to
+        // the configured ceiling after all paths (main assemble, continuity,
+        // exact-recall, predictive_context, beforeTurn) have landed. Applied to
+        // systemPromptAddition only — never to the conversation, which
+        // enforceAssembleBudget governs against the real window.
+        if (typeof cfg.tokenBudgetMax === "number" && Number.isFinite(cfg.tokenBudgetMax) && cfg.tokenBudgetMax > 0) {
+          const injectionBefore = approximateTokenCount(enforced.systemPromptAddition);
+          if (injectionBefore > cfg.tokenBudgetMax) {
+            const trimmed = truncateSystemPromptAdditionToTokenBudget(
+              enforced.systemPromptAddition,
+              cfg.tokenBudgetMax,
+            );
+            const injectionAfter = approximateTokenCount(trimmed);
+            enforced = {
+              ...enforced,
+              systemPromptAddition: trimmed,
+              estimatedTokens: Math.max(0, enforced.estimatedTokens - (injectionBefore - injectionAfter)),
+            };
+            logger.info?.(
+              `LibraVDB tokenBudgetMax trim sessionId=${sessionId} ` +
+              `injectionBefore=${injectionBefore} injectionAfter=${injectionAfter} ` +
+              `cap=${cfg.tokenBudgetMax}`,
+            );
+          }
+        }
         enforced = enforceAssembleBudget(
           enforced,
           args.tokenBudget,

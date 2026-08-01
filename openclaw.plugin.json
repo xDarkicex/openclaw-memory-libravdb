@@ -476,6 +476,11 @@
       "tokenBudgetFraction": {
         "type": "number"
       },
+      "tokenBudgetMax": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Absolute ceiling (in tokens) on memory injection per turn, independent of the model's context window. Without it, injection is sized as tokenBudgetFraction × window, so large-window models balloon injection. The daemon budget is pre-capped to min(window, tokenBudgetMax / tokenBudgetFraction), then the combined system prompt addition is truncated to tokenBudgetMax after all injection paths land. Only injection is bounded; the usable conversation window is untouched. Unset disables the cap."
+      },
       "compactThreshold": {
         "type": "number"
       },

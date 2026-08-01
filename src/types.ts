@@ -85,6 +85,15 @@ export interface PluginConfig {
   recencyLambdaUser?: number;
   recencyLambdaGlobal?: number;
   tokenBudgetFraction?: number;
+  /** Absolute ceiling (in tokens) on memory injection per turn, independent of
+   *  the model's context window. Without it, injection is sized as
+   *  tokenBudgetFraction × window, so a large-window model balloons injection.
+   *  Two stages: the daemon budget is pre-capped to min(window,
+   *  tokenBudgetMax / tokenBudgetFraction), then the combined systemPromptAddition
+   *  is truncated to tokenBudgetMax after all injection paths land. Only the
+   *  injection is bounded — the usable conversation window is untouched.
+   *  Unset disables the cap. */
+  tokenBudgetMax?: number;
   authoredHardBudgetFraction?: number;
   authoredSoftBudgetFraction?: number;
   elevatedGuidanceBudgetFraction?: number;
