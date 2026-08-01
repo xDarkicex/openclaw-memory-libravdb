@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.10.14 — 2026-08-01
+
+### Changed
+
+- **Tool name prefix: `memory_search` → `libravdb_memory_search`, `memory_get` → `libravdb_memory_get`.**
+  OpenClaw >=2026.5.x moved `memory_search` and `memory_get` into the core tool catalog,
+  colonizing generic names that were the de facto community contract. Prefixing avoids the
+  namespace collision while preserving the semantic contract. All other tool names are
+  unaffected. Prompt guidance and continuity context messages updated accordingly.
+
+### Added
+
+- **Per-agent memory opt-out (`excludeAgents`, `excludeSubagents`).** Multi-agent gateways
+  can now skip ALL LibraVDB memory/context work for specific agents or all subagents.
+  `excludeAgents: ["fastbot"]` skips injection, ingestion, compaction, and daemon RPCs for
+  a latency-critical voice agent. `excludeSubagents: true` makes every ephemeral subagent
+  run lean. Both default off — fully opt-in.
+
+- **Absolute injection ceiling (`tokenBudgetMax`).** Caps memory injection tokens per turn
+  independent of the model's context window. On large-window models (1M tokens), the
+  existing `tokenBudgetFraction` approach balloons injection to ~200k tokens, trashing the
+  prompt cache every turn. `tokenBudgetMax` adds a two-stage ceiling: the daemon budget is
+  pre-capped, then the combined system prompt addition is truncated after all injection
+  paths land. Only injection is bounded — the conversation window is untouched.
+
+### Fixed
+
+- **Ingest queue false rejection under WAL load.** The daemon's `ingest_markdown_document`
+  RPC returns at queue-time (before embed/commit), so `nodesAccepted: 0` is the normal
+  async response. The ingest loop was treating this as permanent rejection, spraying false
+  `Chunk permanently rejected` warnings on every chunk under load. Rejection is now gated
+  on `nodesRejected > 0` — the only signal of actual rejection.
+
 ## v1.10.13 — 2026-06-27
 
 ### Added — Bot Persona
