@@ -1848,6 +1848,63 @@ export function buildContextEngineFactory(
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
 
+  // --- Per-agent / per-subagent exclusion ---
+  // Sessions belonging to an excluded agent (or, when excludeSubagents is set,
+  // any subagent) skip ALL memory work: no injection, ingestion, compaction, or
+  // daemon RPCs. Subagents are tracked via the prepareSubagentSpawn lifecycle.
+  const excludedAgents = new Set(
+    (Array.isArray(cfg?.excludeAgents) ? cfg.excludeAgents : [])
+      .map((a) => String(a).trim())
+      .filter(Boolean),
+  );
+  const excludeSubagents = cfg?.excludeSubagents === true;
+  const excludedSubagentKeys = new Set<string>();
+  // Fallback exclusion marker for compact(). The host threads sessionKey through
+  // on every compaction path (timeout/overflow recovery and the manual /compact
+  // lane), so compact() resolves exclusion authoritatively from the agent id — but
+  // sessionKey is backfilled best-effort and can, rarely, be absent. This set lets
+  // compact() still short-circuit by sessionId in that case.
+  const excludedSessionIds = new Set<string>();
+  const EXCLUDED_SESSION_IDS_MAX = 1000;
+
+  // Record (or refresh) an excluded session's id so compact() can short-circuit by
+  // sessionId when the host omits sessionKey. Re-adding moves the id to the
+  // most-recently-used end (Set preserves insertion order), so the capped eviction
+  // below only ever discards the *least recently active* excluded session, never
+  // one that is still taking turns. Every per-turn hook that carries the
+  // authoritative sessionKey (assemble/ingest/afterTurn) refreshes the marker, so
+  // an id evicted while idle is re-established on the session's next turn.
+  function markExcludedSession(sessionId: string): void {
+    excludedSessionIds.delete(sessionId);
+    if (excludedSessionIds.size >= EXCLUDED_SESSION_IDS_MAX) {
+      const oldest = excludedSessionIds.values().next().value;
+      if (oldest !== undefined) excludedSessionIds.delete(oldest);
+    }
+    excludedSessionIds.add(sessionId);
+  }
+
+  function agentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
+    const m = /^agent:([^:]+):/.exec(sessionKey ?? "");
+    return m ? m[1] : undefined;
+  }
+  function isExcludedSession(sessionKey: string | undefined, sessionId?: string): boolean {
+    const key = sessionKey?.trim();
+    if (!key) {
+      // sessionKey is optional on these hooks; fall back to the sessionId
+      // recorded at bootstrap so an excluded session is still detected when the
+      // host omits sessionKey on a later hook.
+      return sessionId !== undefined && excludedSessionIds.has(sessionId);
+    }
+    if (excludedAgents.size) {
+      const agentId = agentIdFromSessionKey(key);
+      if (agentId && excludedAgents.has(agentId)) return true;
+    }
+    if (excludeSubagents && excludedSubagentKeys.has(subagentKey(key))) {
+      return true;
+    }
+    return false;
+  }
+
   function activateCompactedProjection(sessionId: string, source: "compact" | "assemble"): void {
     const wasActive = compactedProjectionSessions.has(sessionId);
     compactedProjectionSessions.add(sessionId);
@@ -1869,6 +1926,7 @@ export function buildContextEngineFactory(
     return compactionProjectionActive
       ? enforceCompactedProjectionBudgetInvariant(result, tokenBudget)
       : enforceTokenBudgetInvariant(result, tokenBudget);
+
   }
 
   function resolveUserId(args?: {
@@ -2511,6 +2569,13 @@ export function buildContextEngineFactory(
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        return { ok: true };
+      }
+      // Not excluded: clear any stale marker so a reused sessionId can't keep
+      // making compact() return "agent excluded".
+      excludedSessionIds.delete(sessionId);
       predictiveContextCache.delete(sessionId);
       postToolRecallCache.delete(sessionId);
       turnCache.invalidateSession(sessionId);
@@ -2532,6 +2597,10 @@ export function buildContextEngineFactory(
     },
     async ingest(args: { sessionId: string; sessionKey?: string; userId?: string; message: { role: string; content: unknown; id?: string }; isHeartbeat?: boolean }) {
       const sessionId = requireSessionId(args.sessionId, "ingest");
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        return { ok: true };
+      }
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2570,7 +2639,23 @@ export function buildContextEngineFactory(
       currentTokenCount?: number;
     }): Promise<OpenClawCompatibleAssembleResult> {
       const sessionId = requireSessionId(args.sessionId, "assemble");
+      // Excluded agents/subagents: a TRUE no-op. Return the host's messages
+      // untouched (byte-identical, no budget-fitting — budget-fitting can drop
+      // messages mid-tool-protocol, which strict providers reject) with zero
+      // injection. Context budget stays the host's responsibility.
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        const passthrough = Array.isArray(args.messages) ? args.messages : [];
+        return {
+          messages: passthrough,
+          estimatedTokens: approximateMessagesTokens(passthrough),
+          systemPromptAddition: "",
+          promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+        };
+      }
+
       let compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2950,6 +3035,7 @@ export function buildContextEngineFactory(
     },
     async compact(args: {
       sessionId: string;
+      sessionKey?: string;
       force?: boolean;
       targetSize?: number;
       tokenBudget?: number;
@@ -2958,6 +3044,14 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
       abortSignal?: AbortSignal;
     }) {
+      // Resolve exclusion authoritatively from sessionKey (the host threads it
+      // through on every compaction path, including the manual /compact lane), so
+      // an excluded session stays inert even if its id was evicted from the bounded
+      // side table. The sessionId set is only the fallback for the rare case where
+      // the host could not backfill a sessionKey.
+      if (isExcludedSession(args.sessionKey, args.sessionId)) {
+        return { ok: true, compacted: false, reason: "agent excluded" };
+      }
       const tokenBudget =
         normalizeTokenBudget(args.tokenBudget) ??
         normalizeTokenBudget(readRuntimeNumber(args.runtimeContext, "tokenBudget"));
@@ -3007,6 +3101,10 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
     }) {
       const sessionId = requireSessionId(args.sessionId, "afterTurn");
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        return { ok: true, skipped: true, reason: "agent excluded" };
+      }
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -3202,6 +3300,22 @@ export function buildContextEngineFactory(
       childSessionFile?: string;
       ttlMs?: number;
     }) {
+      // When subagents are excluded, mark this child session so all of its
+      // kernel calls (bootstrap/ingest/assemble/afterTurn/compact) no-op. No
+      // expansion budget is granted because the subagent has no memory to expand.
+      if (excludeSubagents) {
+        const ek = subagentKey(params.childSessionKey);
+        excludedSubagentKeys.add(ek);
+        logger.info?.(
+          `LibraVDB subagent memory disabled (excludeSubagents) ` +
+          `sessionKey=${params.childSessionKey}`,
+        );
+        return {
+          rollback: () => {
+            excludedSubagentKeys.delete(ek);
+          },
+        };
+      }
       // Grant the subagent a token budget for memory expansion.
       // Default 8000 tokens — enough for a focused expansion,
       // small enough to prevent context window destruction.
@@ -3227,6 +3341,7 @@ export function buildContextEngineFactory(
     },
     async onSubagentEnded(params: { childSessionKey: string; reason: string }) {
       const key = subagentKey(params.childSessionKey);
+      excludedSubagentKeys.delete(key);
       const budget = subagentBudgets.get(key);
       if (budget) {
         logger.info?.(
@@ -3263,6 +3378,8 @@ export function buildContextEngineFactory(
       postToolRecallCache.clear();
       asyncIngestionQueues.clear();
       triggerCache.clear();
+      excludedSubagentKeys.clear();
+      excludedSessionIds.clear();
     },
   };
 }
