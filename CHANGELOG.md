@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.10.21 — 2026-08-01
+
+### Fixed
+
+- **Ingest chunk boundary probes read past the configured budget (#354).**
+  `splitIntoChunks` probed boundaries starting from the exclusive `end` index,
+  reading bytes from the next chunk. Fixed to stay inside `[offset, end)` so
+  chunk boundaries don't extend past the configured `chunkTokens` character
+  budget.
+
+## v1.10.20 — 2026-08-01
+
+### Fixed
+
+- **BeforeTurnKernel RPC abort on timeout (#325).** When BeforeTurnKernel timed
+  out, only the local `Promise.race` rejected — the RPC kept running on the
+  daemon consuming resources. Now passes an `AbortSignal` via Connect
+  `CallOptions` and aborts the underlying RPC on timeout, cleaning up daemon-
+  side work.
+
 ## v1.10.19 — 2026-08-01
 
 ### Fixed
