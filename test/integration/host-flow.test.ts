@@ -253,9 +253,11 @@ test("assemble passes correct configuration mapping and returns expected payload
   assert.ok(assembled.estimatedTokens >= 150);
   assert.equal(
     assembled.systemPromptAddition,
+
     "<recalled_memories>static memory data</recalled_memories>",
   );
   assert.doesNotMatch(assembled.systemPromptAddition, /Mocked recalled context/);
+
   assert.equal(assembled.messages.length, 1);
   assert.equal(assembled.messages[0]?.role, "user");
   assert.equal(assembled.messages[0]?.content, "what do you remember?");
@@ -356,6 +358,7 @@ test("assemble triggers force compaction at dynamic 80% threshold before daemon 
 
   const assembleParams = rpc.getLastCall("assemble_context_internal");
   assert.ok(assembleParams, "Expected assemble_context_internal to be called after compaction");
+
   assert.match(
     assembled.systemPromptAddition,
     /<compacted_session_context>/,
@@ -363,6 +366,7 @@ test("assemble triggers force compaction at dynamic 80% threshold before daemon 
   assert.equal(assembled.promptAuthority, "assembled");
   assert.ok(assembled.messages.length < sourceMessages.length);
   assert.doesNotMatch(JSON.stringify(assembled.messages), /"content":"ok"/);
+
   assert.equal(logger.warns.length, 0);
   assert.ok(logger.infos.some((message) => /predictive compaction trigger phase=assemble/.test(message)));
   assert.ok(logger.infos.some((message) => /predictive compaction completed phase=assemble/.test(message)));
@@ -454,7 +458,9 @@ test("assemble blocks assembly when server declines over-budget compaction", asy
   const assembleCalls = rpc.calls.filter((call) => call.method === "assemble_context_internal");
   assert.equal(assembleCalls.length, 0, "assemble_context_internal must be blocked when compaction declines over budget");
   assert.ok(assembled.estimatedTokens <= effectiveAssembleBudget(3000));
+
   assert.ok(logger.infos.some((message) => /did not compact.*phase=assemble/.test(message)));
+
 });
 
 test("assemble blocks daemon assembly when predictive compaction fails", async () => {

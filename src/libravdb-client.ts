@@ -451,19 +451,23 @@ export class LibravDBClient {
     const savedKey = this.tenantKey;
     const allResults: SearchTextResponse["results"] = [];
     const seen = new Set<string>();
-    for (const t of this.readTenants) {
-      this.tenantKey = t;
-      try {
-        const resp = await this.client.searchTextCollections(req);
-        for (const r of resp.results ?? []) {
-          if (!seen.has(r.id)) {
-            seen.add(r.id);
-            allResults.push(r);
+    try {
+      for (const t of this.readTenants) {
+        this.tenantKey = t;
+        try {
+          const resp = await this.client.searchTextCollections(req);
+          for (const r of resp.results ?? []) {
+            const dedupeKey = `${t}\0${r.id}`;
+            if (!seen.has(dedupeKey)) {
+              seen.add(dedupeKey);
+              allResults.push(r);
+            }
           }
-        }
-      } catch { /* skip failed tenant reads */ }
+        } catch { /* skip failed tenant reads */ }
+      }
+    } finally {
+      this.tenantKey = savedKey;
     }
-    this.tenantKey = savedKey;
     return { results: allResults } as SearchTextResponse;
   }
 
