@@ -6,7 +6,6 @@ import path from "node:path";
 
 import { createMarkdownIngestionHandle, type FsDirentLike } from "../../src/markdown-ingest.js";
 
-
 class FakeRpcClient {
   calls: Array<{ method: string; params: unknown }> = [];
   documents = new Map<string, { text: string; tokenizerId: string; coreDoc: boolean; sourceMeta: Record<string, unknown> }>();
@@ -740,6 +739,45 @@ test("markdown ingestion startup defers files exceeding per-file max token cap",
     assert.equal(ingested.includes(smallPath), true);
     assert.equal(ingested.includes(mediumPath), false);
     assert.equal(ingested.includes(oversizedPath), false);
+  } finally {
+    await handle.stop();
+  }
+});
+
+test("markdown ingestion retracts a cached document when it becomes oversized", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-oversized-retract-"));
+  const filePath = path.join(tempRoot, "notes.md");
+
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  await fsApi.writeFile(filePath, "# Notes\n\nsmall enough");
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+      markdownIngestionMaxTokensPerFile: 64,
+    },
+    async () => rpc as never,
+    { error() {}, warn() {}, info() {} },
+    fsApi as never,
+  );
+
+  try {
+    await handle.start();
+    assert.equal(rpc.documents.has(filePath), true, "first scan should ingest the small file");
+
+    await fsApi.writeFile(filePath, "# Notes\n\n" + "x".repeat(2000));
+    fsApi.callbacks.get(tempRoot)?.[0]?.("change", path.basename(filePath));
+    await delay(25);
+
+    assert.equal(rpc.documents.has(filePath), false, "oversized update should retract stale authored content");
+    assert.equal(
+      rpc.calls.some((call) => call.method === "delete_authored_document" && (call.params as { sourceDoc: string }).sourceDoc === filePath),
+      true,
+      "oversized cached file should issue a delete for its sourceDoc",
+    );
   } finally {
     await handle.stop();
   }
