@@ -1397,6 +1397,43 @@ test("context engine assemble preserves ordinary JSON with name fields in memory
   assert.doesNotMatch(assembled.systemPromptAddition, /"arguments":\{"query":"old"\}/u);
 });
 
+test("context engine assemble strips multiline tool-call JSON without consuming nearby ordinary JSON", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [makeMessage("user", "current request", "current-user")],
+    estimatedTokens: 64,
+    systemPromptAddition: [
+      "<retrieved_memory>",
+      '<memory_item>{"name":"ordinary-before","note":"keep before"}</memory_item>',
+      "<memory_item>{",
+      '  "name": "web_search",',
+      '  "arguments": {',
+      '    "query": "old",',
+      '    "filters": { "language": "en" }',
+      "  },",
+      '  "toolCallId": "call-old"',
+      "}</memory_item>",
+      '<memory_item>{"name":"ordinary-after","note":"keep after"}</memory_item>',
+      "</retrieved_memory>",
+    ].join("\n"),
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-system-addition-multiline-tool-json",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "current request", "current-user")],
+    prompt: "current request",
+    tokenBudget: 4000,
+  });
+
+  assert.match(assembled.systemPromptAddition, /"name":"ordinary-before"/u);
+  assert.match(assembled.systemPromptAddition, /keep before/u);
+  assert.match(assembled.systemPromptAddition, /"name":"ordinary-after"/u);
+  assert.match(assembled.systemPromptAddition, /keep after/u);
+  assert.doesNotMatch(assembled.systemPromptAddition, /web_search|call-old|"query": "old"/u);
+});
+
 
 
 test("context engine assemble preserves ordinary assistant planning language", async () => {
