@@ -26,9 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: main
           token: ${{ secrets.RELEASE_TOKEN }}
-          allow-unsafe-pr-checkout: true
 
       - uses: actions/setup-node@v4
         with:
