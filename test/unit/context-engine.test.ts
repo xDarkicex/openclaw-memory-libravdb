@@ -91,6 +91,18 @@ function fakeRuntime(client: FakeClient): PluginRuntime {
   };
 }
 
+function installBeforeTurnKernel(
+  client: FakeClient,
+  handler: (params: Record<string, unknown>) => Promise<Record<string, unknown>>,
+): void {
+  (client as unknown as {
+    beforeTurnKernel: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  }).beforeTurnKernel = async (params) => {
+    client.calls.push({ method: "beforeTurnKernel", params });
+    return handler(params);
+  };
+}
+
 test("context engine bootstraps session via client", async () => {
   const client = new FakeClient();
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
@@ -550,6 +562,59 @@ test("context engine afterTurn repairs a daemon cursor gap in the same task", as
     (afterTurnCalls[2]!.params.messages as Array<{ role: string; content: string }>).map(({ role, content }) => ({ role, content })),
     history,
   );
+});
+
+test("context engine beforeTurn attempts only once for the same session turn after failure", async () => {
+  const client = new FakeClient();
+  let beforeTurnCalls = 0;
+  installBeforeTurnKernel(client, async () => {
+    beforeTurnCalls += 1;
+    throw new Error("simulated beforeTurn failure");
+  });
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const assembleArgs = {
+    sessionId: "s1-before-turn-attempt-guard",
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "find my last deployment note")],
+    prompt: "find my last deployment note",
+    tokenBudget: 4000,
+  };
+
+  await engine.assemble(assembleArgs);
+  await engine.assemble(assembleArgs);
+
+  assert.equal(beforeTurnCalls, 1);
+  assert.equal(client.calls.filter((c) => c.method === "beforeTurnKernel").length, 1);
+  assert.equal(client.calls.filter((c) => c.method === "assembleContextInternal").length, 2);
+});
+
+test("context engine beforeTurn attempt guard is scoped per session", async () => {
+  const client = new FakeClient();
+  installBeforeTurnKernel(client, async () => ({ predictions: [] }));
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const messages = [makeMessage("user", "same question text")];
+
+  await engine.assemble({
+    sessionId: "s1-before-turn-session-a",
+    sessionKey: "sk-a",
+    messages,
+    prompt: "same question text",
+    tokenBudget: 4000,
+  });
+  await engine.assemble({
+    sessionId: "s1-before-turn-session-b",
+    sessionKey: "sk-b",
+    messages,
+    prompt: "same question text",
+    tokenBudget: 4000,
+  });
+
+  const beforeTurnCalls = client.calls.filter((c) => c.method === "beforeTurnKernel");
+  assert.equal(beforeTurnCalls.length, 2);
+  assert.deepEqual(beforeTurnCalls.map((c) => c.params.sessionId), [
+    "s1-before-turn-session-a",
+    "s1-before-turn-session-b",
+  ]);
 });
 
 test("context engine afterTurn strips OpenClaw untrusted metadata envelope before ingest", async () => {

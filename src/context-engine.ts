@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -1325,6 +1325,27 @@ export function normalizeKernelMessages(
     .filter((message) => message.role === "user" || message.content.trim().length > 0);
 }
 
+function buildBeforeTurnSignature(messages: OpenClawCompatibleMessage[]): string | null {
+  const normalizedMessages = messages
+    .map((message) => ({
+      role: message.role,
+      content: normalizeKernelContent(message.content, { retainOpenClawContext: false }),
+      id: typeof message.id === "string" ? message.id : undefined,
+    }))
+    .filter((message) => message.role === "user" || message.content.trim().length > 0);
+  const lastUserIndex = findLastUserMessageIndex(normalizedMessages);
+  if (lastUserIndex < 0) {
+    return null;
+  }
+
+  return createHash("sha256")
+    .update(JSON.stringify({
+      lastUserIndex,
+      messages: normalizedMessages.slice(0, lastUserIndex + 1),
+    }))
+    .digest("hex");
+}
+
 /**
  * Extracts tokens for exact recall matching from text.
  */
@@ -1966,8 +1987,9 @@ export function buildContextEngineFactory(
   // BeforeTurnKernel state
   const turnCache = new TurnMemoryCache(100);
   const circuitBreakers = new Map<string, FailureState>();
+  const beforeTurnAttempts = new Map<string, string>();
   const CIRCUIT_STATE_MAX_SIZE = 200;
-  let lastUserMessageHash: string | null = null;
+  const BEFORE_TURN_ATTEMPT_MAX_SIZE = 200;
 
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
@@ -2200,6 +2222,18 @@ export function buildContextEngineFactory(
 
   function clearBeforeTurnCircuit(sessionId: string): void {
     circuitBreakers.delete(sessionId);
+  }
+
+  function hasAttemptedBeforeTurn(sessionId: string, signature: string): boolean {
+    return beforeTurnAttempts.get(sessionId) === signature;
+  }
+
+  function markBeforeTurnAttempt(sessionId: string, signature: string): void {
+    if (!beforeTurnAttempts.has(sessionId) && beforeTurnAttempts.size >= BEFORE_TURN_ATTEMPT_MAX_SIZE) {
+      const oldest = beforeTurnAttempts.keys().next().value;
+      if (oldest !== undefined) beforeTurnAttempts.delete(oldest);
+    }
+    beforeTurnAttempts.set(sessionId, signature);
   }
 
   function escapeXml(s: string): string {
@@ -2885,6 +2919,7 @@ export function buildContextEngineFactory(
         : (_msg: string) => {};
       let beforeTurnPredictions: BeforeTurnKernelResponse["predictions"] | null = null;
       let beforeTurnQueryHint: string | null = null;
+      let beforeTurnSignature: string | null = null;
       if (cfg.beforeTurnEnabled === false) {
         btLog(`BeforeTurnKernel disabled by config sessionId=${sessionId}`);
       } else if (!isInteractiveTrigger(sessionId)) {
@@ -2914,10 +2949,17 @@ export function buildContextEngineFactory(
             beforeTurnQueryHint = null;
           }
         }
+        if (beforeTurnQueryHint) {
+          beforeTurnSignature = buildBeforeTurnSignature(args.messages);
+          if (!beforeTurnSignature || hasAttemptedBeforeTurn(sessionId, beforeTurnSignature)) {
+            beforeTurnQueryHint = null;
+          }
+        }
       }
 
       try {
         const client = await runtime.getClient();
+
 
         let enforced: OpenClawCompatibleAssembleResult;
         let cachedSystemPrompt: string | undefined;
@@ -2927,6 +2969,7 @@ export function buildContextEngineFactory(
           if (cached && cached.lastUserIndex === lastUserIndex) {
             cachedSystemPrompt = cached.systemPromptAddition;
             logger.info?.(`LibraVDB skipping assemble context search for post-tool continuation sessionId=${sessionId}`);
+
           }
         }
 
@@ -2967,6 +3010,9 @@ export function buildContextEngineFactory(
 
           // BeforeTurnKernel RPC call (reuses the same client)
           if (beforeTurnQueryHint) {
+            if (beforeTurnSignature) {
+              markBeforeTurnAttempt(sessionId, beforeTurnSignature);
+            }
             try {
               const beforeTurnTimeout = cfg.beforeTurnTimeoutMs ?? 5000;
               const btResult = await Promise.race([
