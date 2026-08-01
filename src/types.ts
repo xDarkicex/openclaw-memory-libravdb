@@ -107,6 +107,17 @@ export interface PluginConfig {
    *  Prevents a subagent from blowing its context window via repeated
    *  expansions. Set to 0 to disable the cap entirely. */
   subagentTokenBudget?: number;
+  /** Agent ids whose sessions skip ALL LibraVDB memory/context work — no
+   *  injection, ingestion, compaction, or daemon RPCs. The agent id is parsed
+   *  from the session key (`agent:<agentId>:...`). Useful for latency-critical
+   *  agents (e.g. a voice agent) where injected tokens and embed round-trips
+   *  are pure overhead. Opt-in; empty by default. */
+  excludeAgents?: string[];
+  /** When true, every subagent session skips ALL LibraVDB memory/context work.
+   *  Subagents are identified via the prepareSubagentSpawn lifecycle. Useful
+   *  when ephemeral subagent tasks should run lean without inheriting the
+   *  parent's memory injection. Opt-in; defaults to false. */
+  excludeSubagents?: boolean;
   section7CoarseTopK?: number;
   section7SecondPassTopK?: number;
   section7Theta1?: number;

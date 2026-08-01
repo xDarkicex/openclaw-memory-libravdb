@@ -38,7 +38,7 @@ type OpenClawCompatibleMessage = {
   [key: string]: unknown;
 };
 
-type OpenClawCompatiblePromptAuthority = "preassembly_may_overflow";
+type OpenClawCompatiblePromptAuthority = "assembled" | "preassembly_may_overflow";
 
 type OpenClawCompatibleAssembleResult = {
   messages: OpenClawCompatibleMessage[];
@@ -119,7 +119,6 @@ type OpenClawCompatibleCompactResult = {
   reason?: string;
   result?: {
     summary?: string;
-    summaryText?: string;
     firstKeptEntryId?: string;
     tokensBefore: number;
     tokensAfter?: number;
@@ -154,6 +153,15 @@ function normalizeCompactResult(
   const totalTurns = typeof response?.totalTurns === "bigint" ? response.totalTurns : undefined;
   const skippedNoNewTurns =
     typeof response?.skippedNoNewTurns === "boolean" ? response.skippedNoNewTurns : undefined;
+  // The daemon deliberately reports didCompact=false when the session has
+  // already been compacted and no new turns have arrived. That is still a
+  // successful compaction handoff for OpenClaw: the daemon-owned projection
+  // remains valid and must be activated so the host retries against it.
+  const alreadyCompacted =
+    skippedNoNewTurns === true &&
+    lastCompactedTurn != null &&
+    lastCompactedTurn > 0n;
+  const effectiveCompacted = didCompact || alreadyCompacted;
 
   if (
     lastCompactedTurn != null ||
@@ -188,22 +196,21 @@ function normalizeCompactResult(
   // instead of accepting a bloated session.
   const threshold = options.threshold;
   const overBudget = threshold != null && tokensBefore >= threshold;
-  const engineRefused = !didCompact && overBudget;
+  const engineRefused = !effectiveCompacted && overBudget;
 
   const tokensAfter =
-    didCompact && typeof response?.tokensAfter === "number" && response.tokensAfter > 0
+    didCompact && typeof response?.tokensAfter === "number" && response.tokensAfter >= 0
       ? response.tokensAfter
       : undefined;
 
   return {
     ok: !engineRefused,
-    compacted: didCompact,
-    ...(didCompact ? {} : { reason: engineRefused ? "overbudget_not_compacted" : "not_compacted" }),
+    compacted: effectiveCompacted,
+    ...(effectiveCompacted ? {} : { reason: engineRefused ? "overbudget_not_compacted" : "not_compacted" }),
     result: {
       tokensBefore,
       ...(tokensAfter != null ? { tokensAfter } : {}),
-      ...(details.summaryMethod ? { summary: details.summaryMethod } : {}),
-      ...(details.summaryText ? { summaryText: details.summaryText } : {}),
+      ...(details.summaryText ? { summary: details.summaryText } : {}),
       details: { ...details, ...(threshold != null ? { threshold } : {}) },
     },
   };
@@ -314,6 +321,33 @@ function findLastUserMessageIndex(messages: OpenClawCompatibleMessage[]): number
     if (messages[index]?.role === "user") return index;
   }
   return -1;
+}
+
+/**
+ * Selects one exact contiguous suffix from the OpenClaw transcript.
+ *
+ * The cut is moved backward to a user-message boundary so an assistant tool
+ * call and its tool results can never be separated by tail windowing. Message
+ * objects are returned untouched; daemon-normalized messages are never mapped
+ * back onto the provider transcript.
+ */
+function selectTurnAlignedSourceSuffix(
+  messages: OpenClawCompatibleMessage[],
+  maxMessages: number,
+): OpenClawCompatibleMessage[] {
+  if (messages.length === 0) return [];
+
+  let start = Math.max(0, messages.length - Math.max(1, Math.floor(maxMessages)));
+  while (start > 0 && messages[start]?.role !== "user") {
+    start -= 1;
+  }
+
+  if (messages[start]?.role !== "user") {
+    const firstUserIndex = messages.findIndex((message) => message.role === "user");
+    start = firstUserIndex >= 0 ? firstUserIndex : 0;
+  }
+
+  return messages.slice(start);
 }
 
 type KernelContentNormalizationOptions = {
@@ -907,6 +941,47 @@ function trimMessagesToBudget(
 }
 
 /**
+ * Trims a compacted source projection only at user-turn boundaries.
+ *
+ * The newest user turn is mandatory, even if it alone exceeds the budget:
+ * dropping part of an in-flight tool-call/result sequence is more dangerous
+ * than surfacing a truthful overflow. Older turns are kept only as a
+ * contiguous suffix and only when their complete bundle fits.
+ */
+function trimTurnAlignedSourceSuffixToBudget(
+  messages: OpenClawCompatibleMessage[],
+  tokenBudget: number,
+): OpenClawCompatibleMessage[] {
+  if (messages.length === 0) return [];
+
+  const userStarts: number[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index]?.role === "user") userStarts.push(index);
+  }
+  if (userStarts.length === 0) {
+    return messages;
+  }
+
+  const keptBundles: OpenClawCompatibleMessage[][] = [];
+  let used = 0;
+  let bundleEnd = messages.length;
+  for (let index = userStarts.length - 1; index >= 0; index -= 1) {
+    const bundleStart = userStarts[index]!;
+    const bundle = messages.slice(bundleStart, bundleEnd);
+    const bundleCost = approximateMessagesTokens(bundle);
+    if (keptBundles.length > 0 && used + bundleCost > tokenBudget) {
+      break;
+    }
+    keptBundles.unshift(bundle);
+    used += bundleCost;
+    bundleEnd = bundleStart;
+    if (used >= tokenBudget) break;
+  }
+
+  return keptBundles.flat();
+}
+
+/**
  * Bounds after-turn messages for ingest, trimming if over max tokens.
  */
 function boundAfterTurnMessagesForIngest(
@@ -969,20 +1044,106 @@ function enforceTokenBudgetInvariant(
   };
 }
 
+/**
+ * Enforces the model budget for a daemon-compacted projection without ever
+ * splitting the newest user/tool turn. The compacted system context and older
+ * complete turns yield budget before the live turn does.
+ */
+function enforceCompactedProjectionBudgetInvariant(
+  result: OpenClawCompatibleAssembleResult,
+  tokenBudget: number | undefined,
+): OpenClawCompatibleAssembleResult {
+  if (typeof tokenBudget !== "number" || !Number.isFinite(tokenBudget) || tokenBudget <= 0) {
+    return result;
+  }
+
+  const effectiveBudget = resolveEffectiveAssembleBudget(Math.max(1, Math.floor(tokenBudget)));
+  const approximateTotal =
+    approximateTokenCount(result.systemPromptAddition) +
+    approximateMessagesTokens(result.messages);
+  if (result.estimatedTokens <= effectiveBudget && approximateTotal <= effectiveBudget) {
+    return result;
+  }
+
+  const lastUserIndex = findLastUserMessageIndex(result.messages);
+  const mandatoryMessages = lastUserIndex >= 0
+    ? result.messages.slice(lastUserIndex)
+    : result.messages;
+  const mandatoryTokens = approximateMessagesTokens(mandatoryMessages);
+  const systemPromptBudget = Math.max(0, effectiveBudget - mandatoryTokens);
+  const systemPromptAddition = truncateSystemPromptAdditionToTokenBudget(
+    result.systemPromptAddition,
+    systemPromptBudget,
+  );
+  const systemPromptTokens = approximateTokenCount(systemPromptAddition);
+  const messageBudget = Math.max(mandatoryTokens, effectiveBudget - systemPromptTokens);
+  const messages = trimTurnAlignedSourceSuffixToBudget(result.messages, messageBudget);
+  const estimatedTokens = systemPromptTokens + approximateMessagesTokens(messages);
+
+  return {
+    ...result,
+    messages,
+    systemPromptAddition,
+    estimatedTokens,
+  };
+}
+
 function buildBudgetFallbackContext(
   messages: OpenClawCompatibleMessage[],
   tokenBudget: number | undefined,
 ): OpenClawCompatibleAssembleResult {
   const effectiveBudget = resolveEffectiveAssembleBudget(tokenBudget);
-  const fallbackMessages = trimMessagesToBudget(
-    messages.map((message) => ({ ...message })),
-    effectiveBudget,
-  );
-  return {
-    messages: fallbackMessages,
-    estimatedTokens: approximateMessagesTokens(fallbackMessages),
+  const sourceTokens = approximateMessagesTokens(messages);
+  if (sourceTokens <= effectiveBudget) {
+    return {
+      messages,
+      estimatedTokens: sourceTokens,
+      systemPromptAddition: "",
+      promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+    };
+  }
+
+  // This is a pressure-relief projection, not an attempt to replay the
+  // daemon's normalized messages. It retains exact OpenClaw source objects
+  // and keeps the newest user/tool bundle intact. Because it is strictly
+  // smaller than the preassembly transcript, OpenClaw must precheck this
+  // projection itself; otherwise it discards the trim and retries the full
+  // overflowing session forever when daemon compaction is temporarily unable
+  // to make semantic progress (for example a singleton source turn).
+  const projection = enforceCompactedProjectionBudgetInvariant({
+    messages,
+    estimatedTokens: sourceTokens,
     systemPromptAddition: "",
-    promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+    promptAuthority: "assembled",
+  }, tokenBudget);
+  if (projection.estimatedTokens <= effectiveBudget) {
+    return projection;
+  }
+
+  // A single newest user message can itself exceed the entire safe prompt
+  // budget. There is no tool-protocol-safe suffix to select in that case, so
+  // preserve the latest replay-safe user request and truncate only its text.
+  // This is the terminal local safety valve; it is preferable to repeatedly
+  // re-sending the unbounded transcript and permanently wedging the session.
+  const latestUser = findLastReplaySafeUserMessage(messages);
+  if (latestUser) {
+    const content = truncateContentToTokenBudget(latestUser.content, Math.max(1, effectiveBudget - 8));
+    if (content) {
+      const truncatedUser = { ...latestUser, content };
+      return {
+        ...projection,
+        messages: [truncatedUser],
+        estimatedTokens: Math.min(effectiveBudget, approximateMessageTokens(truncatedUser)),
+      };
+    }
+  }
+
+  // Non-conversational/system-only transcripts have no user turn to protect.
+  // Drop them rather than claiming an under-budget projection that is not one.
+  return {
+    ...projection,
+    messages: [],
+    estimatedTokens: 0,
   };
 }
 
@@ -991,8 +1152,13 @@ const DAEMON_AUTHORED_CONTEXT_GUIDANCE_RE =
   /^\s*Treat the authored entries below as active project rules and identity context\.?\s*$/i;
 const COMPACTED_SESSION_CONTEXT_RE =
   /<compacted_session_context\b([^>]*)>([\s\S]*?)<\/compacted_session_context>/gi;
+const HAS_COMPACTED_SESSION_CONTEXT_RE = /<compacted_session_context\b/i;
 const COMPACTED_SESSION_RENDER_LEDGER_RE =
   /(?:^|\n)(?:Artifacts:|Constraints:|Open Next Steps:|Extracted context anchors:)(?:\n|$)/;
+
+function hasCompactedSessionContext(text: string): boolean {
+  return HAS_COMPACTED_SESSION_CONTEXT_RE.test(text);
+}
 
 function sanitizeDaemonSystemPromptAddition(text: string): string {
   return demoteDaemonAuthoredContextBlocks(
@@ -1558,12 +1724,13 @@ export function normalizeAssembleResult(
     systemPromptAddition?: string;
     debug?: AssembleContextInternalResponse["debug"];
   },
-  sourceMessages?: OpenClawCompatibleMessage[]
+  sourceMessages?: OpenClawCompatibleMessage[],
+  promptAuthority: OpenClawCompatiblePromptAuthority = PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
 ): OpenClawCompatibleAssembleResult {
-  // The daemon's visibleMsgs is a filtered echo of args.Messages (toolResult
-  // stripped). Use sourceMessages directly — they carry the full transcript
-  // with tool protocol intact. The daemon contributes memory context via
-  // systemPromptAddition, not message manipulation.
+  // The daemon's visibleMsgs is a normalized projection that cannot preserve
+  // provider tool protocol. Use only an exact source transcript projection.
+  // The caller decides whether that is the full pre-compaction transcript or
+  // the user-turn-aligned suffix owned by daemon compaction.
   const systemPromptAddition = typeof result.systemPromptAddition === "string"
     ? sanitizeDaemonSystemPromptAddition(result.systemPromptAddition)
     : "";
@@ -1572,7 +1739,7 @@ export function normalizeAssembleResult(
     messages: sourceMessages ?? [],
     estimatedTokens: typeof result.estimatedTokens === "number" ? result.estimatedTokens : 0,
     systemPromptAddition,
-    promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+    promptAuthority,
     ...(result.debug != null ? { debug: result.debug } : {}),
   };
 }
@@ -1697,6 +1864,7 @@ export function buildContextEngineFactory(
   }
 
   const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
+  const compactedProjectionSessions = new Set<string>();
   const PREDICTIVE_CACHE_MAX_SIZE = 100;
   // BeforeTurnKernel state
   const turnCache = new TurnMemoryCache(100);
@@ -1706,6 +1874,87 @@ export function buildContextEngineFactory(
 
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
+
+  // --- Per-agent / per-subagent exclusion ---
+  // Sessions belonging to an excluded agent (or, when excludeSubagents is set,
+  // any subagent) skip ALL memory work: no injection, ingestion, compaction, or
+  // daemon RPCs. Subagents are tracked via the prepareSubagentSpawn lifecycle.
+  const excludedAgents = new Set(
+    (Array.isArray(cfg?.excludeAgents) ? cfg.excludeAgents : [])
+      .map((a) => String(a).trim())
+      .filter(Boolean),
+  );
+  const excludeSubagents = cfg?.excludeSubagents === true;
+  const excludedSubagentKeys = new Set<string>();
+  // Fallback exclusion marker for compact(). The host threads sessionKey through
+  // on every compaction path (timeout/overflow recovery and the manual /compact
+  // lane), so compact() resolves exclusion authoritatively from the agent id — but
+  // sessionKey is backfilled best-effort and can, rarely, be absent. This set lets
+  // compact() still short-circuit by sessionId in that case.
+  const excludedSessionIds = new Set<string>();
+  const EXCLUDED_SESSION_IDS_MAX = 1000;
+
+  // Record (or refresh) an excluded session's id so compact() can short-circuit by
+  // sessionId when the host omits sessionKey. Re-adding moves the id to the
+  // most-recently-used end (Set preserves insertion order), so the capped eviction
+  // below only ever discards the *least recently active* excluded session, never
+  // one that is still taking turns. Every per-turn hook that carries the
+  // authoritative sessionKey (assemble/ingest/afterTurn) refreshes the marker, so
+  // an id evicted while idle is re-established on the session's next turn.
+  function markExcludedSession(sessionId: string): void {
+    excludedSessionIds.delete(sessionId);
+    if (excludedSessionIds.size >= EXCLUDED_SESSION_IDS_MAX) {
+      const oldest = excludedSessionIds.values().next().value;
+      if (oldest !== undefined) excludedSessionIds.delete(oldest);
+    }
+    excludedSessionIds.add(sessionId);
+  }
+
+  function agentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
+    const m = /^agent:([^:]+):/.exec(sessionKey ?? "");
+    return m ? m[1] : undefined;
+  }
+  function isExcludedSession(sessionKey: string | undefined, sessionId?: string): boolean {
+    const key = sessionKey?.trim();
+    if (!key) {
+      // sessionKey is optional on these hooks; fall back to the sessionId
+      // recorded at bootstrap so an excluded session is still detected when the
+      // host omits sessionKey on a later hook.
+      return sessionId !== undefined && excludedSessionIds.has(sessionId);
+    }
+    if (excludedAgents.size) {
+      const agentId = agentIdFromSessionKey(key);
+      if (agentId && excludedAgents.has(agentId)) return true;
+    }
+    if (excludeSubagents && excludedSubagentKeys.has(subagentKey(key))) {
+      return true;
+    }
+    return false;
+  }
+
+  function activateCompactedProjection(sessionId: string, source: "compact" | "assemble"): void {
+    const wasActive = compactedProjectionSessions.has(sessionId);
+    compactedProjectionSessions.add(sessionId);
+    predictiveContextCache.delete(sessionId);
+    postToolRecallCache.delete(sessionId);
+    turnCache.invalidateSession(sessionId);
+    if (!wasActive) {
+      logger.info?.(
+        `LibraVDB activated daemon-owned compacted projection sessionId=${sessionId} source=${source}`,
+      );
+    }
+  }
+
+  function enforceAssembleBudget(
+    result: OpenClawCompatibleAssembleResult,
+    tokenBudget: number | undefined,
+    compactionProjectionActive: boolean,
+  ): OpenClawCompatibleAssembleResult {
+    return compactionProjectionActive
+      ? enforceCompactedProjectionBudgetInvariant(result, tokenBudget)
+      : enforceTokenBudgetInvariant(result, tokenBudget);
+
+  }
 
   function resolveUserId(args?: {
     userIdOverride?: string;
@@ -2273,11 +2522,15 @@ export function buildContextEngineFactory(
     try {
       const client = await runtime.getClient();
       const threshold = getDynamicCompactThreshold(args.tokenBudget);
-      return normalizeCompactResult(await client.compactSession(request), {
+      const result = normalizeCompactResult(await client.compactSession(request), {
         tokensBefore: args.currentTokenCount,
         logger,
         ...(threshold != null ? { threshold } : {}),
       });
+      if (result.ok && result.compacted) {
+        activateCompactedProjection(args.sessionId, "compact");
+      }
+      return result;
     } catch (error) {
       return {
         ok: false,
@@ -2343,8 +2596,16 @@ export function buildContextEngineFactory(
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        return { ok: true };
+      }
+      // Not excluded: clear any stale marker so a reused sessionId can't keep
+      // making compact() return "agent excluded".
+      excludedSessionIds.delete(sessionId);
       predictiveContextCache.delete(sessionId);
       postToolRecallCache.delete(sessionId);
+      turnCache.invalidateSession(sessionId);
       asyncIngestionQueues.delete(sessionId);
       const userId = resolveUserId({
         userIdOverride: args.userId,
@@ -2363,6 +2624,10 @@ export function buildContextEngineFactory(
     },
     async ingest(args: { sessionId: string; sessionKey?: string; userId?: string; message: { role: string; content: unknown; id?: string }; isHeartbeat?: boolean }) {
       const sessionId = requireSessionId(args.sessionId, "ingest");
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        return { ok: true };
+      }
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2401,6 +2666,23 @@ export function buildContextEngineFactory(
       currentTokenCount?: number;
     }): Promise<OpenClawCompatibleAssembleResult> {
       const sessionId = requireSessionId(args.sessionId, "assemble");
+      // Excluded agents/subagents: a TRUE no-op. Return the host's messages
+      // untouched (byte-identical, no budget-fitting — budget-fitting can drop
+      // messages mid-tool-protocol, which strict providers reject) with zero
+      // injection. Context budget stays the host's responsibility.
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        const passthrough = Array.isArray(args.messages) ? args.messages : [];
+        return {
+          messages: passthrough,
+          estimatedTokens: approximateMessagesTokens(passthrough),
+          systemPromptAddition: "",
+          promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+        };
+      }
+
+      let compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2410,10 +2692,22 @@ export function buildContextEngineFactory(
       // Processing the full history on every turn is O(N²) and the
       // primary source of growing turn latency.
       const normalizeWindow = 50;
-      const recentMessages = args.messages.length > normalizeWindow
-        ? args.messages.slice(-normalizeWindow)
-        : args.messages;
+      const recentMessages = selectTurnAlignedSourceSuffix(args.messages, normalizeWindow);
       const messages = normalizeKernelMessages(recentMessages);
+      const projectedSourceMessages = () => compactionProjectionActive
+        ? recentMessages
+        : args.messages;
+      const buildAssembleFallback = (): OpenClawCompatibleAssembleResult => {
+        if (!compactionProjectionActive) {
+          return buildBudgetFallbackContext(args.messages, args.tokenBudget);
+        }
+        return enforceCompactedProjectionBudgetInvariant({
+          messages: projectedSourceMessages(),
+          estimatedTokens: approximateMessagesTokens(projectedSourceMessages()),
+          systemPromptAddition: "",
+          promptAuthority: "assembled",
+        }, args.tokenBudget);
+      };
       const strippedPrompt = args.prompt
         ? normalizeKernelContent(args.prompt, { retainOpenClawContext: false })
         : "";
@@ -2464,16 +2758,23 @@ export function buildContextEngineFactory(
           compacted: compactionResult.compacted,
           reason: compactionResult.reason,
         });
-        if (!compactionResult.ok) {
+        compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+        if (!compactionResult.ok && !compactionProjectionActive) {
           logger.info?.(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
             `(threshold=${dynamicCompactThreshold}): ${compactionResult.reason ?? "compaction failed"}`,
           );
           return ensureReplaySafeUserTurn(
-            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            buildAssembleFallback(),
             args.messages,
             logger,
             args.tokenBudget,
+          );
+        }
+        if (!compactionResult.ok) {
+          logger.info?.(
+            `LibraVDB predictive compaction made no additional progress at ${currentContextTokens} tokens; ` +
+            "continuing with the existing daemon-owned compacted projection.",
           );
         }
       }
@@ -2532,10 +2833,20 @@ export function buildContextEngineFactory(
         }
 
         if (cachedSystemPrompt !== undefined) {
-          const mockResp = { messages: args.messages, systemPromptAddition: cachedSystemPrompt };
-          enforced = enforceTokenBudgetInvariant(
-            normalizeAssembleResult(mockResp, args.messages),
-            args.tokenBudget
+          if (hasCompactedSessionContext(cachedSystemPrompt)) {
+            activateCompactedProjection(sessionId, "assemble");
+            compactionProjectionActive = true;
+          }
+          const sourceProjection = projectedSourceMessages();
+          const mockResp = { messages: sourceProjection, systemPromptAddition: cachedSystemPrompt };
+          enforced = enforceAssembleBudget(
+            normalizeAssembleResult(
+              mockResp,
+              sourceProjection,
+              compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+            ),
+            args.tokenBudget,
+            compactionProjectionActive,
           );
         } else {
           // Drain pending async ingestion for this session so the daemon's
@@ -2612,7 +2923,19 @@ export function buildContextEngineFactory(
               setTimeout(() => reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`)), assembleTimeout)
             ),
           ]);
-          const assembled = normalizeAssembleResult(resp, args.messages);
+          if (
+            typeof resp.systemPromptAddition === "string" &&
+            hasCompactedSessionContext(resp.systemPromptAddition)
+          ) {
+            activateCompactedProjection(sessionId, "assemble");
+            compactionProjectionActive = true;
+          }
+          const sourceProjection = projectedSourceMessages();
+          const assembled = normalizeAssembleResult(
+            resp,
+            sourceProjection,
+            compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+          );
           const continuityContext = await injectContinuityContext({
             client,
             userId,
@@ -2644,7 +2967,7 @@ export function buildContextEngineFactory(
               withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, rulesContext) };
             }
           }
-          enforced = enforceTokenBudgetInvariant(
+          enforced = enforceAssembleBudget(
             await augmentWithExactRecall(withContext, {
               queryText: retrievalQuery,
               userId,
@@ -2653,6 +2976,7 @@ export function buildContextEngineFactory(
               reservedTokens: reservedCurrentTurnTokens,
             }),
             args.tokenBudget,
+            compactionProjectionActive,
           );
           const predictions = predictiveContextCache.get(sessionId) || [];
           predictiveContextCache.delete(sessionId);
@@ -2726,7 +3050,7 @@ export function buildContextEngineFactory(
         // the configured ceiling after all paths (main assemble, continuity,
         // exact-recall, predictive_context, beforeTurn) have landed. Applied to
         // systemPromptAddition only — never to the conversation, which
-        // enforceTokenBudgetInvariant governs against the real window.
+        // enforceAssembleBudget governs against the real window.
         if (typeof cfg.tokenBudgetMax === "number" && Number.isFinite(cfg.tokenBudgetMax) && cfg.tokenBudgetMax > 0) {
           const injectionBefore = approximateTokenCount(enforced.systemPromptAddition);
           if (injectionBefore > cfg.tokenBudgetMax) {
@@ -2747,19 +3071,21 @@ export function buildContextEngineFactory(
             );
           }
         }
-        enforced = enforceTokenBudgetInvariant(
+        enforced = enforceAssembleBudget(
           enforced,
           args.tokenBudget,
+          compactionProjectionActive,
         );
-        // normalizeAssembleResult uses sourceMessages directly — full transcript
-        // with tool protocol intact. No message re-classification needed.
+        // The returned transcript is always an untouched source projection.
+        // Once daemon compaction owns history, OpenClaw must precheck this
+        // assembled suffix rather than the unwindowed session transcript.
         return ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
         return ensureReplaySafeUserTurn(
-          buildBudgetFallbackContext(args.messages, args.tokenBudget),
+          buildAssembleFallback(),
           args.messages,
           logger,
           args.tokenBudget,
@@ -2768,6 +3094,7 @@ export function buildContextEngineFactory(
     },
     async compact(args: {
       sessionId: string;
+      sessionKey?: string;
       force?: boolean;
       targetSize?: number;
       tokenBudget?: number;
@@ -2776,6 +3103,14 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
       abortSignal?: AbortSignal;
     }) {
+      // Resolve exclusion authoritatively from sessionKey (the host threads it
+      // through on every compaction path, including the manual /compact lane), so
+      // an excluded session stays inert even if its id was evicted from the bounded
+      // side table. The sessionId set is only the fallback for the rare case where
+      // the host could not backfill a sessionKey.
+      if (isExcludedSession(args.sessionKey, args.sessionId)) {
+        return { ok: true, compacted: false, reason: "agent excluded" };
+      }
       const tokenBudget =
         normalizeTokenBudget(args.tokenBudget) ??
         normalizeTokenBudget(readRuntimeNumber(args.runtimeContext, "tokenBudget"));
@@ -2825,6 +3160,10 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
     }) {
       const sessionId = requireSessionId(args.sessionId, "afterTurn");
+      if (isExcludedSession(args.sessionKey, sessionId)) {
+        markExcludedSession(sessionId);
+        return { ok: true, skipped: true, reason: "agent excluded" };
+      }
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2865,12 +3204,24 @@ export function buildContextEngineFactory(
 
           // Apply token budget cap only to new messages
           const ingestMessages = boundAfterTurnMessagesForIngest(newMessages, logger, sessionId);
-          const startIndex = manifestStore.deriveStartingIndex(manifest, args.prePromptMessageCount);
-          const cursor = {
-            lastProcessedIndex: startIndex > 0 ? startIndex - 1 : 0,
-            sessionVersion: manifest.version,
-            manifestTailHash: manifest.tailHash,
-          };
+          // A manifest with no acknowledged turns is an initial/recovery
+          // ingest, not an OpenClaw transcript offset. Sending the host's
+          // pre-prompt count here makes the daemon reject the batch as a gap
+          // (its durable tail is -1 while the plugin claims hundreds of
+          // prior turns), leaving it with one or zero turns forever.
+          // Omit the cursor for this seed batch so the daemon accepts the
+          // bounded source tail starting at index zero.
+          const isSeedIngest = manifest.turns.length === 0;
+          const startIndex = isSeedIngest
+            ? 0
+            : manifestStore.deriveStartingIndex(manifest, args.prePromptMessageCount);
+          const cursor = isSeedIngest
+            ? undefined
+            : {
+              lastProcessedIndex: startIndex > 0 ? startIndex - 1 : 0,
+              sessionVersion: manifest.version,
+              manifestTailHash: manifest.tailHash,
+            };
 
           const client = await runtime.getClient();
           const currentTokenCount = normalizeCurrentTokenCount(
@@ -2879,13 +3230,13 @@ export function buildContextEngineFactory(
               : undefined,
           );
 
-          const result = await client.afterTurnKernel({
+          let result = await client.afterTurnKernel({
             sessionId,
             sessionKey: args.sessionKey,
             userId,
             messages: ingestMessages,
             isHeartbeat: args.isHeartbeat,
-            cursor,
+            ...(cursor ? { cursor } : {}),
           } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
 
           updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
@@ -2894,7 +3245,8 @@ export function buildContextEngineFactory(
           // The daemon returns a cursor even when it ingests zero messages
           // (e.g. gap detected, all messages deduped). Trust its
           // lastProcessedIndex over our optimistic startIndex math.
-          const daemonCursor = extractCursorFromResult(result);
+          let daemonCursor = extractCursorFromResult(result);
+          let repairedCursorGap = false;
 
           if (daemonCursor) {
             if (!daemonCursor.manifestTailHash) {
@@ -2905,7 +3257,35 @@ export function buildContextEngineFactory(
                 `[LibraVDB] Daemon reported cursor gap for session ${sessionId}. ` +
                 `Resetting manifest for full re-sync next turn.`,
               );
-              manifestStore.save(manifestStore.createEmpty(sessionId));
+              const seedMessages = boundAfterTurnMessagesForIngest(
+                normalizeKernelMessages(args.messages, { retainOpenClawContext: true }),
+                logger,
+                sessionId,
+              );
+              const emptyManifest = manifestStore.createEmpty(sessionId);
+              if (seedMessages.length > 0) {
+                // Recover in the same serialized task. The retry deliberately
+                // omits a cursor: the daemon just proved its durable history
+                // is behind ours, so claiming the old index again would cause
+                // another gap and strand compaction on a singleton turn.
+                result = await client.afterTurnKernel({
+                  sessionId,
+                  sessionKey: args.sessionKey,
+                  userId,
+                  messages: seedMessages,
+                  isHeartbeat: args.isHeartbeat,
+                } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+                manifestStore.save(
+                  manifestStore.appendACKedMessages(emptyManifest, seedMessages, 0),
+                );
+                repairedCursorGap = true;
+                daemonCursor = extractCursorFromResult(result);
+                logger.info?.(
+                  `[LibraVDB] Re-seeded daemon session ${sessionId} with ${seedMessages.length} source messages after cursor gap.`,
+                );
+              } else {
+                manifestStore.save(emptyManifest);
+              }
             } else if (ingestMessages.length > 0) {
               // Normal path: reconcile to what the daemon actually confirmed.
               const confirmedIndex = daemonCursor.lastProcessedIndex;
@@ -2920,7 +3300,7 @@ export function buildContextEngineFactory(
                 manifestStore.save(updatedManifest);
               }
             }
-          } else if (ingestMessages.length > 0) {
+          } else if (!repairedCursorGap && ingestMessages.length > 0) {
             // Legacy daemon (no cursor in response): optimistic ACK.
             const updatedManifest = manifestStore.appendACKedMessages(
               manifest,
@@ -2979,6 +3359,22 @@ export function buildContextEngineFactory(
       childSessionFile?: string;
       ttlMs?: number;
     }) {
+      // When subagents are excluded, mark this child session so all of its
+      // kernel calls (bootstrap/ingest/assemble/afterTurn/compact) no-op. No
+      // expansion budget is granted because the subagent has no memory to expand.
+      if (excludeSubagents) {
+        const ek = subagentKey(params.childSessionKey);
+        excludedSubagentKeys.add(ek);
+        logger.info?.(
+          `LibraVDB subagent memory disabled (excludeSubagents) ` +
+          `sessionKey=${params.childSessionKey}`,
+        );
+        return {
+          rollback: () => {
+            excludedSubagentKeys.delete(ek);
+          },
+        };
+      }
       // Grant the subagent a token budget for memory expansion.
       // Default 8000 tokens — enough for a focused expansion,
       // small enough to prevent context window destruction.
@@ -3004,6 +3400,7 @@ export function buildContextEngineFactory(
     },
     async onSubagentEnded(params: { childSessionKey: string; reason: string }) {
       const key = subagentKey(params.childSessionKey);
+      excludedSubagentKeys.delete(key);
       const budget = subagentBudgets.get(key);
       if (budget) {
         logger.info?.(
@@ -3036,9 +3433,12 @@ export function buildContextEngineFactory(
         }
       }
       predictiveContextCache.clear();
+      compactedProjectionSessions.clear();
       postToolRecallCache.clear();
       asyncIngestionQueues.clear();
       triggerCache.clear();
+      excludedSubagentKeys.clear();
+      excludedSessionIds.clear();
     },
   };
 }

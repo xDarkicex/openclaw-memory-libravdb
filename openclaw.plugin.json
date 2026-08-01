@@ -2,7 +2,7 @@
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
   "description": "Cognitive memory engine — causal graph reasoning, predictive context, identity tracking, and hybrid vector recall with back-door adjustment scoring",
-  "version": "1.10.13",
+  "version": "1.10.14-beta.4",
   "kind": [
     "memory",
     "context-engine"
@@ -206,6 +206,15 @@
       },
       "subagentTokenBudget": {
         "type": "number"
+      },
+      "excludeAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Agent ids whose sessions skip ALL LibraVDB memory/context work (no injection, ingestion, compaction, or daemon RPCs). The agent id is parsed from the session key (agent:<agentId>:...). Opt-in; empty by default."
+      },
+      "excludeSubagents": {
+        "type": "boolean",
+        "description": "When true, every subagent session skips ALL LibraVDB memory/context work. Subagents are identified via the prepareSubagentSpawn lifecycle. Opt-in; defaults to false."
       },
       "beforeTurnEnabled": {
         "type": "boolean"
