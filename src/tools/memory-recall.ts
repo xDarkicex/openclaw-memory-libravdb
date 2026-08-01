@@ -21,13 +21,20 @@ type MemoryDescribeDetails = {
 };
 
 type MemoryExpandDetails = {
-  summaryId: string;
-  depth: number;
-  text: string;
-  truncated: boolean;
-  exceededBudget: boolean;
-  parentCount: number;
-  error?: string;
+	summaryId: string;
+	depth: number;
+	text: string;
+	truncated: boolean;
+	exceededBudget: boolean;
+	parentCount: number;
+	connected?: Array<{
+		recordId: string;
+		text: string;
+		depth: number;
+		edgeType: string;
+		edgeWeight: number;
+	}>;
+	error?: string;
 };
 
 type MemoryGrepDetails = {
@@ -65,7 +72,7 @@ const MEMORY_DESCRIBE_SCHEMA = {
   properties: {
     summaryId: {
       type: "string",
-      description: "A summary ID (sum_xxx format) returned by memory_search. Inspect metadata without expanding.",
+      description: "A summary ID (sum_xxx format) returned by libravdb_memory_search. Inspect metadata without expanding.",
     },
     sessionId: {
       type: "string",
@@ -82,13 +89,17 @@ const MEMORY_EXPAND_SCHEMA = {
     summaryIds: {
       type: "array",
       items: { type: "string" },
-      description: "Summary IDs (sum_xxx format) to expand. Use results from memory_search or memory_describe.",
+      description: "Summary IDs (sum_xxx format) to expand. Use results from libravdb_memory_search or memory_describe.",
+    },
+    record_id: {
+      type: "string",
+      description: "Record ID for causal graph traversal. Use exact IDs from libravdb_memory_search or libravdb_memory_get results.",
     },
     maxDepth: {
       type: "number",
       minimum: 0,
       maximum: 5,
-      description: "Max tree traversal depth per summary (default: 1). 0 returns only the cue/metadata.",
+      description: "Max tree/graph traversal depth (default: 1). 0 returns only edge metadata.",
     },
     maxTokens: {
       type: "number",
@@ -98,10 +109,9 @@ const MEMORY_EXPAND_SCHEMA = {
     },
     sessionId: {
       type: "string",
-      description: "Session ID the summary belongs to. If omitted, uses the current session.",
+      description: "Session ID. If omitted, uses the current session.",
     },
   },
-  required: ["summaryIds"],
 } as const;
 
 const MEMORY_GREP_SCHEMA = {
@@ -262,20 +272,56 @@ export function createMemoryExpandTool(
     name: "memory_expand",
     label: "Memory Expand",
     description:
-      "Expand compacted summaries to recover full detail. Walks the summary tree " +
-      "up to maxDepth levels. For large expansions (>2500 tokens), spawns a " +
-      "sub-agent to protect context. Use memory_describe first to check if expansion " +
-      "is warranted — many questions can be answered from the eviction cue alone.",
+      "Expand compacted summaries OR walk causal graph edges from ANY record. " +
+      "Summary mode (summaryIds): walk the summary tree up to maxDepth levels. " +
+      "Graph mode (record_id): walk causal edges (why_ids/how_ids/hop_targets) " +
+      "from a record ID. Use exact IDs from libravdb_memory_search or libravdb_memory_get results — " +
+      "any ingested turn, memory, or summary has graph edges. " +
+      "For large expansions, spawns a sub-agent. " +
+      "Use memory_describe first to check if expansion is warranted.",
     parameters: MEMORY_EXPAND_SCHEMA,
     execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<MemoryExpandDetails>> => {
       const params = asParams(rawParams);
+      const recordId = readStr(params, "record_id");
       const rawIds = params.summaryIds;
       const summaryIds: string[] = Array.isArray(rawIds) ? rawIds.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : [];
-      if (summaryIds.length === 0) throw new Error("memory_expand requires at least one summaryId");
 
       const maxDepth = readNum(params, "maxDepth", { integer: true, min: 0 }) ?? 1;
       let maxTokens = readNum(params, "maxTokens", { integer: true }) ?? MAX_EXPAND_TOKENS;
       const sessionId = readStr(params, "sessionId") ?? getSessionId() ?? "";
+
+      // Graph mode: walk causal edges from a record ID.
+      if (recordId) {
+        try {
+          const client = await getClient();
+          const resp = await client.expandSummary({ recordId, maxDepth });
+          let text = resp.text ?? "";
+          const connected = (resp.connected ?? []).map((c) => ({
+            recordId: c.recordId,
+            text: c.text ?? "",
+            depth: c.depth,
+            edgeType: c.edgeType || "unknown",
+            edgeWeight: c.edgeWeight ?? 0,
+          }));
+          if (connected.length > 0) {
+            text = connected.map((c) =>
+              `[depth=${c.depth} edge=${c.edgeType} weight=${c.edgeWeight}] ${c.recordId}: ${c.text}`
+            ).join("\n\n");
+          }
+          if (!text && resp.whyIds?.length) {
+            text = `why_ids: ${resp.whyIds.join(", ")}\nhow_ids: ${resp.howIds?.join(", ") ?? "none"}\nhop_targets: ${resp.hopTargets?.join(", ") ?? "none"}`;
+          }
+          return {
+            content: [{ type: "text", text: text || "(no graph edges found)" }],
+            details: { summaryId: recordId, depth: maxDepth, text: text || "", truncated: false, exceededBudget: false, parentCount: connected.length, connected },
+          };
+        } catch (error) {
+          logger.warn?.(`memory_expand graph mode failed: ${formatError(error)}`);
+          return { content: [{ type: "text", text: `Graph expansion failed: ${formatError(error)}` }], details: { summaryId: recordId, depth: maxDepth, text: "", truncated: false, exceededBudget: false, parentCount: 0 } };
+        }
+      }
+
+      if (summaryIds.length === 0) throw new Error("memory_expand requires at least one summaryId or record_id");
 
       // Subagent budget gate: if this is a subagent, check remaining expansion budget.
       const sessionKey = getSessionKey();
@@ -487,7 +533,7 @@ const RECALL_GUIDANCE = [
   "Active session recall and summary expansion tools are available:",
   "",
   "**Tool escalation (cheap → expensive):**",
-  "1. `memory_search` — semantic search across all memory/session collections.",
+  "1. `libravdb_memory_search` — semantic search across all memory/session collections.",
   "   Summary hits show `[Summary sum_xxx]: [cue with anchors, decisions, signals]`.",
   "   Use these cues to decide what's worth expanding.",
   "2. `memory_describe` — inspect a summary's metadata (cheap, no expansion).",
@@ -504,4 +550,239 @@ const RECALL_GUIDANCE = [
 
 export function memoryRecallPromptSection(): string[] {
   return [...RECALL_GUIDANCE];
+}
+
+// ── User Card tool schemas ──
+
+const UPDATE_USER_CARD_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    user_id: {
+      type: "string",
+      description: "The user ID to update the card for.",
+    },
+    card: {
+      type: "string",
+      description: "Prose description of what you've learned about this person. Write like describing a friend. Include identity, values, history, communication style, triggers, and what matters to them. Merge with previous understanding — don't replace entirely unless the user explicitly contradicts the record. Max ~1200 characters.",
+    },
+  },
+  required: ["user_id", "card"],
+} as const;
+
+const GET_USER_CARD_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    user_id: {
+      type: "string",
+      description: "The user ID to retrieve the card for.",
+    },
+  },
+  required: ["user_id"],
+} as const;
+
+type UpdateUserCardDetails = { ok: boolean; error?: string };
+type GetUserCardDetails = { card?: string | null; updatedAt?: number; version?: number; error?: string };
+
+// ── User Card tool factories ──
+
+export function createUpdateUserCardTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "update_user_card",
+    label: "Update User Card",
+    description:
+      "Write what you've learned about a speaker. Prose format — write like you're describing a friend. " +
+      "Include identity, values, history, communication style, triggers, and what matters to them. " +
+      "This is the canonical record of who they are. If something changes, update it. " +
+      "Merge with previous understanding, don't replace entirely unless the user explicitly contradicts the record.",
+    parameters: UPDATE_USER_CARD_SCHEMA,
+    execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<UpdateUserCardDetails>> => {
+      try {
+        const params = asParams(rawParams);
+        const userId = readStr(params, "user_id");
+        const card = readStr(params, "card");
+        if (!userId) return jsonResult({ ok: false, error: "update_user_card requires user_id" });
+        if (!card) return jsonResult({ ok: false, error: "update_user_card requires card" });
+
+        const client = await getClient();
+        const resp = await client.upsertUserCard({
+          userId,
+          cardJson: JSON.stringify({ card, updatedAt: Date.now() }),
+        });
+        return jsonResult({ ok: resp.ok });
+      } catch (error) {
+        logger.warn?.(`update_user_card failed: ${formatError(error)}`);
+        return jsonResult({ error: formatError(error), ok: false });
+      }
+    },
+  };
+}
+
+export function createGetUserCardTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "get_user_card",
+    label: "Get User Card",
+    description:
+      "MANDATORY identity/entity lookup. Call this BEFORE answering any question " +
+      "about a person, pet, place, or named thing ('who/what is X', 'do I have X', " +
+      "'tell me about X'). Returns the full prose identity card. " +
+      "Do NOT answer from memory or training data. Call this tool FIRST. " +
+      "Only fall through to libravdb_memory_search if the card is empty or missing.",
+    parameters: GET_USER_CARD_SCHEMA,
+    execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<GetUserCardDetails>> => {
+      try {
+        const params = asParams(rawParams);
+        const userId = readStr(params, "user_id");
+        if (!userId) return jsonResult({ card: null, error: "get_user_card requires user_id" });
+
+        const client = await getClient();
+        const resp = await client.getUserCard({ userId });
+        return jsonResult({
+          card: resp.cardJson || null,
+          updatedAt: resp.updatedAt ? Number(resp.updatedAt) : undefined,
+          version: resp.version || undefined,
+        });
+      } catch (error) {
+        logger.warn?.(`get_user_card failed: ${formatError(error)}`);
+        return jsonResult({ error: formatError(error) });
+      }
+    },
+  };
+}
+
+// ── list_user_cards ─────────────────────────────────────────────────
+
+type ListUserCardsDetails = {
+  users: Array<{
+    user_id: string;
+    preview: string;
+    updated_at?: number;
+    version?: number;
+  }>;
+  total: number;
+  error?: string;
+};
+
+export function createListUserCardsTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "list_user_cards",
+    label: "List User Cards",
+    description:
+      "MANDATORY roster lookup. Call this BEFORE answering 'who do you know?', " +
+      "'do I have X?', or any question where you're unsure if a card exists. " +
+      "Returns all user IDs with previews. Then call get_user_card on relevant IDs. " +
+      "Do NOT answer from memory — call this tool first.",
+    parameters: { type: "object", additionalProperties: false, properties: {} } as const,
+    execute: async (_toolCallId: string, _rawParams: unknown): Promise<ToolResult<ListUserCardsDetails>> => {
+      try {
+        const client = await getClient();
+        const resp = await client.listByMeta({
+          collection: "",
+          key: "type",
+          value: "user_card",
+        });
+        const users: ListUserCardsDetails["users"] = [];
+        for (const result of resp.results) {
+          let userId = "";
+          let preview = "";
+          let updatedAt: number | undefined;
+          let version: number | undefined;
+          if (result.metadataJson && result.metadataJson.length > 0) {
+            try {
+              const decoder = new TextDecoder();
+              const meta = JSON.parse(decoder.decode(result.metadataJson)) as Record<string, unknown>;
+              userId = typeof meta._user_id === "string" ? meta._user_id : "";
+              const cardJson = typeof meta.card_json === "string" ? meta.card_json : null;
+              if (cardJson) {
+                try { preview = JSON.parse(cardJson).card ?? cardJson; }
+                catch { preview = cardJson; }
+                preview = preview.slice(0, 200);
+              }
+              updatedAt = typeof meta.updated_at === "number" ? meta.updated_at : undefined;
+              version = typeof meta.version === "number" ? meta.version : undefined;
+            } catch { /* best-effort metadata parse */ }
+          }
+          if (!userId) continue;
+          users.push({ user_id: userId, preview, updated_at: updatedAt, version });
+        }
+        return jsonResult({ users, total: users.length });
+      } catch (error) {
+        logger.warn?.(`list_user_cards failed: ${formatError(error)}`);
+        return jsonResult({ users: [], total: 0, error: formatError(error) });
+      }
+    },
+  };
+}
+
+// ── Persona tools — identity of the bot itself ──
+
+export function createSetPersonaTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "set_persona",
+    label: "Set Persona",
+    description:
+      "Define who YOU are — your personality, tone, boundaries, and behavior. " +
+      "Write in prose like you're describing yourself. This is injected as " +
+      "<bot_persona> at the start of every session. Update it when your persona " +
+      "changes. The LLM will embody this persona in all interactions.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        persona: { type: "string", description: "Prose description of how you should behave." },
+      },
+      required: ["persona"],
+    } as const,
+    execute: async (_toolCallId: string, rawParams: unknown): Promise<ToolResult<{ ok: boolean; error?: string }>> => {
+      const params = rawParams as Record<string, unknown> | undefined;
+      const persona = typeof params?.persona === "string" ? params.persona.trim() : "";
+      if (!persona) return jsonResult({ ok: false, error: "set_persona requires a persona string" });
+      try {
+        const client = await getClient();
+        const resp = await client.upsertUserCard({
+          userId: "__bot_persona__",
+          cardJson: JSON.stringify({ card: persona, updatedAt: Date.now() }),
+        });
+        return jsonResult({ ok: resp.ok });
+      } catch (error) {
+        logger.warn?.(`set_persona failed: ${formatError(error)}`);
+        return jsonResult({ ok: false, error: formatError(error) });
+      }
+    },
+  };
+}
+
+export function createGetPersonaTool(
+  getClient: ClientGetter,
+  logger: LoggerLike = console,
+) {
+  return {
+    name: "get_persona",
+    label: "Get Persona",
+    description: "Read your current persona. Returns the full prose description of how you should behave.",
+    parameters: { type: "object", additionalProperties: false, properties: {} } as const,
+    execute: async (): Promise<ToolResult<{ persona?: string | null; error?: string }>> => {
+      try {
+        const client = await getClient();
+        const resp = await client.getUserCard({ userId: "__bot_persona__" });
+        return jsonResult({ persona: resp.cardJson || null });
+      } catch (error) {
+        logger.warn?.(`get_persona failed: ${formatError(error)}`);
+        return jsonResult({ error: formatError(error) });
+      }
+    },
+  };
 }

@@ -1,0 +1,19 @@
+apiVersion: v2
+name: libravdbd
+description: LibraVDB memory kernel — vector search, causal graph reasoning, cognitive identity tracking
+type: application
+version: 1.9.3
+appVersion: "1.9.3"
+keywords:
+  - vector-database
+  - memory
+  - embedding
+  - cognitive
+  - causal-graph
+  - llm
+home: https://github.com/xDarkicex/openclaw-memory-libravdb
+sources:
+  - https://github.com/xDarkicex/openclaw-memory-libravdb
+maintainers:
+  - name: xDarkicex
+    email: ackbit@tuta.io

@@ -37,6 +37,8 @@ import type {
   IngestMarkdownDocumentResponse,
   IngestMessageKernelRequest,
   IngestMessageKernelResponse,
+  ListByMetaRequest,
+  ListByMetaResponse,
   ListCollectionRequest,
   ListCollectionResponse,
   ListLifecycleJournalRequest,
@@ -61,6 +63,10 @@ import type {
   SummarizeMessagesResponse,
   ExpandSummaryRequest,
   ExpandSummaryResponse,
+  UpsertUserCardRequest,
+  UpsertUserCardResponse,
+  GetUserCardRequest,
+  GetUserCardResponse,
 } from "@xdarkicex/libravdb-contracts";
 
 export interface LibravDBClientOptions {
@@ -244,6 +250,8 @@ export class LibravDBClient {
   private readonly legacyProbeTimeoutMs: number;
   private nonceHex: string | undefined;
   private closed = false;
+  private tenantKey: string | undefined;
+  private readTenants: string[] = [];
 
   constructor(options: LibravDBClientOptions = {}) {
     this.secret = options.secret ?? loadSecretFromEnv();
@@ -282,14 +290,15 @@ export class LibravDBClient {
       rpcMutex,
     });
 
+    this.tenantKey = options.tenantKey;
+
     const interceptors: Interceptor[] = [];
-    if (options.tenantKey) {
-      const tenantKey = options.tenantKey;
-      interceptors.push((next) => async (req) => {
-        req.header.set("libravdb-tenant-key", tenantKey);
-        return next(req);
-      });
-    }
+    interceptors.push((next) => async (req) => {
+      if (self.tenantKey) {
+        req.header.set("libravdb-tenant-key", self.tenantKey);
+      }
+      return next(req);
+    });
     interceptors.push(authInterceptor);
 
     const transport = createGrpcTransport({
@@ -341,6 +350,18 @@ export class LibravDBClient {
     if (this.closed) {
       throw new Error("LibravDB client is closed");
     }
+  }
+
+  /** Update the tenant key for subsequent gRPC calls. Thread-safe —
+   *  the interceptor reads this.tenantKey on every request. */
+  setTenantKey(key: string): void {
+    this.tenantKey = key;
+  }
+
+  /** Set additional tenants to search across. Only used by searchTextCollections.
+   *  Empty by default — zero overhead for single-tenant setups. */
+  setReadTenants(tenants: string[]): void {
+    this.readTenants = tenants;
   }
 
   // ── Session lifecycle ────────────────────────────────────────────
@@ -422,7 +443,28 @@ export class LibravDBClient {
     req: PartialMessage<SearchTextCollectionsRequest>,
   ): Promise<SearchTextResponse> {
     this.guardOpen();
-    return this.client.searchTextCollections(req);
+    if (this.readTenants.length === 0) {
+      return this.client.searchTextCollections(req);
+    }
+    // Multi-tenant fan-out: search across all read tenants, merge results.
+    // Temporarily swap tenantKey per call, restore after.
+    const savedKey = this.tenantKey;
+    const allResults: SearchTextResponse["results"] = [];
+    const seen = new Set<string>();
+    for (const t of this.readTenants) {
+      this.tenantKey = t;
+      try {
+        const resp = await this.client.searchTextCollections(req);
+        for (const r of resp.results ?? []) {
+          if (!seen.has(r.id)) {
+            seen.add(r.id);
+            allResults.push(r);
+          }
+        }
+      } catch { /* skip failed tenant reads */ }
+    }
+    this.tenantKey = savedKey;
+    return { results: allResults } as SearchTextResponse;
   }
 
   async listCollection(req: PartialMessage<ListCollectionRequest>): Promise<ListCollectionResponse> {
@@ -515,6 +557,29 @@ export class LibravDBClient {
   ): Promise<RankCandidatesResponse> {
     this.guardOpen();
     return this.client.rankCandidates(req);
+  }
+
+  // ── User Card ────────────────────────────────────────────────────
+
+  async upsertUserCard(
+    req: PartialMessage<UpsertUserCardRequest>,
+  ): Promise<UpsertUserCardResponse> {
+    this.guardOpen();
+    return this.client.upsertUserCard(req);
+  }
+
+  async getUserCard(
+    req: PartialMessage<GetUserCardRequest>,
+  ): Promise<GetUserCardResponse> {
+    this.guardOpen();
+    return this.client.getUserCard(req);
+  }
+
+  async listByMeta(
+    req: PartialMessage<ListByMetaRequest>,
+  ): Promise<ListByMetaResponse> {
+    this.guardOpen();
+    return this.client.listByMeta(req);
   }
 
   close(): void {

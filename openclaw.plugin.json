@@ -1,8 +1,8 @@
 {
   "id": "libravdb-memory",
   "name": "LibraVDB Memory",
-  "description": "Persistent vector memory with three-tier hybrid scoring",
-  "version": "1.8.10",
+  "description": "Cognitive memory engine — causal graph reasoning, predictive context, identity tracking, and hybrid vector recall with back-door adjustment scoring",
+  "version": "1.10.15",
   "kind": [
     "memory",
     "context-engine"
@@ -11,11 +11,20 @@
     "memory": true,
     "contextEngine": true,
     "tools": [
-      "memory_search",
-      "memory_get",
+      "libravdb_memory_search",
+      "libravdb_memory_get",
       "memory_describe",
       "memory_expand",
-      "memory_grep"
+      "memory_grep",
+      "update_user_card",
+      "get_user_card",
+      "list_user_cards",
+      "set_rule",
+      "get_rule",
+      "list_rules",
+      "delete_rule",
+      "set_persona",
+      "get_persona"
     ]
   },
   "activation": {
@@ -73,6 +82,40 @@
       "tenantId": {
         "type": "string",
         "description": "Stable tenant identifier for multi-agent deployments. When set, the daemon routes this plugin instance to an isolated vector database. When unset, the plugin falls back to the auto-derived userId. Set different values per agent to isolate memory storage."
+      },
+      "tenantIdByAgent": {
+        "type": "object",
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "primary": {
+                  "type": "string"
+                },
+                "readAccess": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "primary"
+              ]
+            }
+          ]
+        },
+        "description": "Per-agent tenant overrides. String = primary only. Object = { primary, readAccess?: [] } for cross-tenant search. Unlisted agents fall through to tenantId -> userId."
+      },
+      "maxRules": {
+        "type": "number",
+        "default": 20,
+        "minimum": 0,
+        "description": "Maximum hard constraint rules. 0 disables rules. Default 20."
       },
       "userId": {
         "type": "string",
@@ -175,11 +218,30 @@
       "subagentTokenBudget": {
         "type": "number"
       },
+      "excludeAgents": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Agent ids whose sessions skip ALL LibraVDB memory/context work (no injection, ingestion, compaction, or daemon RPCs). The agent id is parsed from the session key (agent:<agentId>:...). Opt-in; empty by default."
+      },
+      "excludeSubagents": {
+        "type": "boolean",
+        "description": "When true, every subagent session skips ALL LibraVDB memory/context work. Subagents are identified via the prepareSubagentSpawn lifecycle. Opt-in; defaults to false."
+      },
       "beforeTurnEnabled": {
         "type": "boolean"
       },
+      "beforeTurnDebug": {
+        "type": "boolean",
+        "description": "Enable verbose BeforeTurnKernel diagnostic logging. Default: false"
+      },
       "beforeTurnTimeoutMs": {
         "type": "number"
+      },
+      "assembleTimeoutMs": {
+        "type": "number",
+        "description": "Timeout in milliseconds for the AssembleContextInternal gRPC call. Default: 30000"
       },
       "beforeTurnMaxMemories": {
         "type": "number"
@@ -427,6 +489,11 @@
       "tokenBudgetFraction": {
         "type": "number"
       },
+      "tokenBudgetMax": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Absolute ceiling (in tokens) on memory injection per turn, independent of the model's context window. Without it, injection is sized as tokenBudgetFraction × window, so large-window models balloon injection. The daemon budget is pre-capped to min(window, tokenBudgetMax / tokenBudgetFraction), then the combined system prompt addition is truncated to tokenBudgetMax after all injection paths land. Only injection is bounded; the usable conversation window is untouched. Unset disables the cap."
+      },
       "compactThreshold": {
         "type": "number"
       },
@@ -474,6 +541,11 @@
       },
       "logLevel": {
         "type": "string"
+      },
+      "optimizationMemoCacheSize": {
+        "type": "number",
+        "default": 1000,
+        "description": "Maximum size for context engine string memoization caches. A higher value uses slightly more memory but avoids re-evaluating regexes on very long chat histories."
       }
     }
   }

@@ -282,7 +282,10 @@ function normalizeSearchCorpus(value: unknown): "all" | "memory" | "sessions" {
 function parseMetadataJson(item: { metadataJson?: Uint8Array }): Record<string, unknown> {
   if (item.metadataJson && item.metadataJson.length > 0) {
     try {
-      return JSON.parse(new TextDecoder().decode(item.metadataJson));
+      const parsed = JSON.parse(new TextDecoder().decode(item.metadataJson)) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
     } catch (e) {
       // ignore
     }
