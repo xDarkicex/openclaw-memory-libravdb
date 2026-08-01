@@ -17,6 +17,13 @@
   content-hash map, preventing repeated-content messages from being silently
   dropped. Fixes #309, #310, #311.
 
+- **BeforeTurnKernel duplicate attempt guard (#324).** The per-turn guard
+  (`lastUserMessageHash`) was dead code — `isNewUserTurn` only checks that
+  the latest role is `user`. Repeated `assemble` calls after timeout/failure
+  would fire duplicate BeforeTurnKernel RPCs for the same turn. Replaced with
+  a per-session SHA-256 turn-signature map. Each session now tracks its last
+  attempt signature and skips duplicates. Fixes #312.
+
 ## v1.10.18 — 2026-08-01
 
 ### Fixed
