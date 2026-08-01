@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.10.16 — 2026-08-01
+
+### Fixed
+
+- **Markdown oversized file retraction.** When an ingested markdown file grows
+  beyond `markdownIngestionMaxTokensPerFile`, previously-ingested chunks were
+  left in the vector DB as stale authored content. The scan loop now retracts
+  cached documents that become oversized via `delete_authored_document`, both in
+  the pre-read estimate path and the streamed `too_large` path. Previously
+  skipped — now actively cleaned up.
+
 ## v1.10.15 — 2026-08-01
 
 ### Fixed
