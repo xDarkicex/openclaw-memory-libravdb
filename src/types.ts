@@ -8,6 +8,12 @@ export interface PluginConfig {
    *  the plugin falls back to the auto-derived userId. Set different values per
    *  agent to isolate memory storage. */
   tenantId?: string;
+  /** Per-agent tenant overrides. Maps agentId → tenantId (string) or
+   *  { primary: string, readAccess?: string[] } (object). Agents not listed
+   *  fall through to tenantId → userId. Opt-in. */
+  tenantIdByAgent?: Record<string, string | { primary: string; readAccess?: string[] }>;
+  /** Maximum number of hard constraint rules. Default 20. */
+  maxRules?: number;
   /** Stable identity for cross-session durable memory. When set, all sessions
    *  share memories under user:{userId}. When unset, the plugin auto-derives
    *  identity from the OS and persists it to the identity file. */
@@ -79,6 +85,15 @@ export interface PluginConfig {
   recencyLambdaUser?: number;
   recencyLambdaGlobal?: number;
   tokenBudgetFraction?: number;
+  /** Absolute ceiling (in tokens) on memory injection per turn, independent of
+   *  the model's context window. Without it, injection is sized as
+   *  tokenBudgetFraction × window, so a large-window model balloons injection.
+   *  Two stages: the daemon budget is pre-capped to min(window,
+   *  tokenBudgetMax / tokenBudgetFraction), then the combined systemPromptAddition
+   *  is truncated to tokenBudgetMax after all injection paths land. Only the
+   *  injection is bounded — the usable conversation window is untouched.
+   *  Unset disables the cap. */
+  tokenBudgetMax?: number;
   authoredHardBudgetFraction?: number;
   authoredSoftBudgetFraction?: number;
   elevatedGuidanceBudgetFraction?: number;
@@ -92,6 +107,17 @@ export interface PluginConfig {
    *  Prevents a subagent from blowing its context window via repeated
    *  expansions. Set to 0 to disable the cap entirely. */
   subagentTokenBudget?: number;
+  /** Agent ids whose sessions skip ALL LibraVDB memory/context work — no
+   *  injection, ingestion, compaction, or daemon RPCs. The agent id is parsed
+   *  from the session key (`agent:<agentId>:...`). Useful for latency-critical
+   *  agents (e.g. a voice agent) where injected tokens and embed round-trips
+   *  are pure overhead. Opt-in; empty by default. */
+  excludeAgents?: string[];
+  /** When true, every subagent session skips ALL LibraVDB memory/context work.
+   *  Subagents are identified via the prepareSubagentSpawn lifecycle. Useful
+   *  when ephemeral subagent tasks should run lean without inheriting the
+   *  parent's memory injection. Opt-in; defaults to false. */
+  excludeSubagents?: boolean;
   section7CoarseTopK?: number;
   section7SecondPassTopK?: number;
   section7Theta1?: number;
@@ -132,12 +158,18 @@ export interface PluginConfig {
   grpcEndpointTlsMode?: "auto" | "tls" | "insecure";
   /** Whether BeforeTurnKernel retrieval is enabled. Default: true */
   beforeTurnEnabled?: boolean;
+  /** Enable verbose BeforeTurnKernel diagnostic logging. Default: false */
+  beforeTurnDebug?: boolean;
   /** Timeout in milliseconds for the BeforeTurnKernel gRPC call. Default: 5000 */
   beforeTurnTimeoutMs?: number;
+  /** Timeout in milliseconds for the AssembleContextInternal gRPC call. Default: 30000 */
+  assembleTimeoutMs?: number;
   /** Maximum number of retrieved memories to inject per turn. Default: 5 */
   beforeTurnMaxMemories?: number;
   /** Minimum similarity score (0.0–1.0) for semantic search hits. Default: 0.4 */
   beforeTurnMinScore?: number;
+  /** Maximum size for context engine string memoization caches. Default: 1000 */
+  optimizationMemoCacheSize?: number;
 }
 
 export interface SearchResult {
@@ -187,4 +219,21 @@ export interface PredictedContext {
   id: string;
   text: string;
   reason: string;
+}
+
+const LOG_LEVEL_RANK: Record<string, number> = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  debug: 3,
+};
+
+/** Wraps a LoggerLike with logLevel filtering. Levels below configured min are dropped. */
+export function levelFilteredLogger(base: LoggerLike, logLevel: PluginConfig["logLevel"]): LoggerLike {
+  const minRank = LOG_LEVEL_RANK[logLevel ?? "warn"];
+  return {
+    error: (msg) => base.error(msg),
+    warn: (msg) => { if (LOG_LEVEL_RANK.warn <= minRank) base.warn?.(msg); },
+    info: (msg) => { if (LOG_LEVEL_RANK.info <= minRank) base.info?.(msg); },
+  };
 }

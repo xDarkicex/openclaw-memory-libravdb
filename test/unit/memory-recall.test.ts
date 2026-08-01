@@ -125,6 +125,48 @@ test("memory_expand explicit session id takes precedence over active session id"
   });
 });
 
+test("memory_expand graph mode preserves typed causal and hop edges", async () => {
+  class GraphRecallClient extends FakeRecallClient {
+    override async expandSummary(params: Record<string, unknown>) {
+      this.calls.push({ method: "expandSummary", params });
+      return {
+        text: "",
+		metadataJson: new Uint8Array(),
+        whyIds: ["premise-1"],
+        howIds: ["outcome-1"],
+        hopTargets: ["person-1"],
+        connected: [
+          { recordId: "premise-1", text: "canary rollout limits blast radius", depth: 1, edgeType: "why_ids", edgeWeight: 1 },
+          { recordId: "person-1", text: "release owner", depth: 1, edgeType: "hop_targets", edgeWeight: 0.5 },
+        ],
+      };
+    }
+  }
+
+  const client = new GraphRecallClient();
+  const tool = createMemoryExpandTool(
+    async () => client as unknown as LibravDBClient,
+    () => undefined,
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-graph", { record_id: "policy-1", maxDepth: 2 });
+  const details = result.details as {
+    connected: Array<{ recordId: string; edgeType: string; edgeWeight: number }>;
+  };
+
+  assert.deepEqual(client.calls[0], {
+    method: "expandSummary",
+    params: { recordId: "policy-1", maxDepth: 2 },
+  });
+  assert.deepEqual(details.connected, [
+    { recordId: "premise-1", text: "canary rollout limits blast radius", depth: 1, edgeType: "why_ids", edgeWeight: 1 },
+    { recordId: "person-1", text: "release owner", depth: 1, edgeType: "hop_targets", edgeWeight: 0.5 },
+  ]);
+  assert.match(result.content[0]?.text ?? "", /edge=why_ids/);
+  assert.match(result.content[0]?.text ?? "", /edge=hop_targets/);
+});
+
 test("memory_expand uses remaining subagent budget instead of dropping the first oversized request", async () => {
   const client = new FakeRecallClient();
   const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "u1", subagentTokenBudget: 1000 }, silentLogger);

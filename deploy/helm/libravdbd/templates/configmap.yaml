@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "libravdbd.fullname" . }}-config
+  labels:
+    {{- include "libravdbd.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    db_path: {{ .Values.config.dbPath | quote }}
+    grpc_endpoint: {{ .Values.config.grpcEndpoint | quote }}
+    embedding_backend: {{ .Values.embedding.backend | quote }}
+    embedding_profile: {{ .Values.embedding.profile | quote }}
+    fallback_profile: {{ .Values.embedding.fallbackProfile | quote }}
+    embedding_normalize: {{ .Values.embedding.normalize }}
+    embedding_dimensions: {{ .Values.embedding.dimensions }}
+    {{- if .Values.embedding.modelPath }}
+    embedding_model_path: {{ .Values.embedding.modelPath | quote }}
+    {{- end }}
+    {{- if .Values.embedding.remoteEndpoint }}
+    embedding_endpoint: {{ .Values.embedding.remoteEndpoint | quote }}
+    embedding_remote_model: {{ .Values.embedding.remoteModel | quote }}
+    {{- end }}
+    gating_threshold: {{ .Values.config.gateThreshold }}
+    lifecycle_journal_max_entries: {{ .Values.config.lifecycleJournalMaxEntries }}
+    circuit_max_failures: {{ .Values.config.circuitMaxFailures }}
+    circuit_cooldown: {{ .Values.config.circuitCooldown }}
+    embed_timeout: {{ .Values.config.embedTimeout }}
+    drain_timeout: {{ .Values.config.drainTimeout }}

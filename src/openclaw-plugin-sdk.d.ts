@@ -138,7 +138,11 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     registerRuntimeLifecycle?(registration: {
       id: string;
       description?: string;
-      cleanup(ctx: { reason: "disable" | "reset" | "delete" | "restart" }): void | Promise<void>;
+      cleanup(ctx: {
+        reason: "disable" | "reset" | "delete" | "restart";
+        sessionKey?: string;
+        runId?: string;
+      }): void | Promise<void>;
     }): void;
     on(event: string, handler: (...args: unknown[]) => void | Promise<void>, opts?: { priority?: number }): void;
   }
