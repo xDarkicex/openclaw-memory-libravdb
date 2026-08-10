@@ -95,6 +95,16 @@ delete during uninstall.
 
 ## 5. Post-Uninstall Check
 
-After cleanup, `openclaw libravdb status` should no longer show this plugin as the
-active memory provider, and the vector service endpoint should no longer be reachable
-unless you intentionally kept it running for another workflow.
+Do **not** verify with `openclaw libravdb status`. The plugin only registers its CLI when it
+owns the memory slot, so after a successful uninstall that command is simply unknown — an
+"unknown command" error is the expected result, not a status report. (Before the CLI root was
+renamed this check was worse: `openclaw memory status` fell through to OpenClaw's own `memory`
+command and appeared to succeed, falsely confirming an uninstall that had not happened.)
+
+Check two things instead:
+
+1. **The slot is released.** `plugins.slots.memory` in `~/.openclaw/openclaw.json` should no
+   longer be `libravdb-memory`, and `openclaw plugins list` should no longer show the plugin as
+   enabled.
+2. **The vector service is gone.** Probe the endpoint from your config directly — it should refuse
+   the connection, unless you intentionally kept the daemon running for another workflow.

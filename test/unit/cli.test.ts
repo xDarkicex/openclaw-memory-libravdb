@@ -103,6 +103,12 @@ function buildMemoryCommand(runtime: PluginRuntime, cfg: PluginConfig = {}): Fak
 
   const memory = program.commands.find((command) => command.name() === "libravdb");
   assert.ok(memory);
+  // The point of the rename: this plugin must not claim the root that OpenClaw core owns.
+  assert.equal(
+    program.commands.find((command) => command.name() === "memory"),
+    undefined,
+    "plugin must not register a root named 'memory' — core owns it",
+  );
   return memory;
 }
 
