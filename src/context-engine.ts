@@ -25,6 +25,10 @@ import { resolveUserCollection } from "./memory-scopes.js";
 import { manifestStore } from "./manifest.js";
 import { TurnMemoryCache, extractQueryHint, isNewUserTurn } from "./turn-cache.js";
 
+/** Host advancement keys already committed, so an exact host retry answers "duplicate". */
+const committedAdvancementKeys = new Set<string>();
+const COMMITTED_ADVANCEMENT_KEY_LIMIT = 4096;
+
 type KernelCompatibleMessage = {
   role: string;
   content: string;
@@ -2724,7 +2728,17 @@ export function buildContextEngineFactory(
   }
 
   return {
-    info: { id: "libravdb-memory", name: "LibraVDB Memory", ownsCompaction: true },
+    info: {
+      id: "libravdb-memory",
+      name: "LibraVDB Memory",
+      ownsCompaction: true,
+      // OpenClaw >= 2026.8.1 requires these before it will run a plugin context engine
+      // for a durable logical turn. See openclaw/openclaw#119325.
+      transcriptSemantics: {
+        currentTurnFence: "before-current-turn-entry-v1",
+        turnAdvancementIdempotency: "atomic-idempotent-v1",
+      },
+    },
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
@@ -3306,6 +3320,47 @@ export function buildContextEngineFactory(
       };
       return await runCompaction(runArgs);
     },
+    /**
+     * OpenClaw >= 2026.8.1 durable turn advancement.
+     *
+     * The host requires one atomic, idempotent commit per accepted turn, keyed by
+     * `advancementKey`, and may retry the same key after a process or plugin failure.
+     * `afterTurn` is already idempotent: it reloads the per-session manifest inside the
+     * serialized ingestion queue and slices off `findOverlapIndex`, so a replayed turn
+     * contributes no new messages. The key set below only short-circuits an exact host
+     * retry so the host is told "duplicate" rather than doing the overlap work again.
+     */
+    async commitTurn(args: {
+      advancementKey: string;
+      sessionId: string;
+      sessionKey?: string;
+      messages: OpenClawCompatibleMessage[];
+      prePromptMessageCount?: number;
+      isHeartbeat?: boolean;
+      runtimeContext?: Record<string, unknown>;
+    }): Promise<{ status: "committed" | "duplicate" }> {
+      const key = args.advancementKey;
+      if (key && committedAdvancementKeys.has(key)) {
+        return { status: "duplicate" };
+      }
+      const result = await this.afterTurn({
+        sessionId: args.sessionId,
+        sessionKey: args.sessionKey,
+        messages: args.messages,
+        prePromptMessageCount: args.prePromptMessageCount,
+        isHeartbeat: args.isHeartbeat,
+        runtimeContext: args.runtimeContext,
+      });
+      if (key) {
+        committedAdvancementKeys.add(key);
+        if (committedAdvancementKeys.size > COMMITTED_ADVANCEMENT_KEY_LIMIT) {
+          const oldest = committedAdvancementKeys.values().next().value;
+          if (oldest !== undefined) committedAdvancementKeys.delete(oldest);
+        }
+      }
+      return { status: result && (result as { skipped?: boolean }).skipped ? "duplicate" : "committed" };
+    },
+
     async afterTurn(args: {
       sessionId: string;
       sessionKey?: string;
