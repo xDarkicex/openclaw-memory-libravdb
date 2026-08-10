@@ -95,6 +95,6 @@ delete during uninstall.
 
 ## 5. Post-Uninstall Check
 
-After cleanup, `openclaw memory status` should no longer show this plugin as the
+After cleanup, `openclaw libravdb status` should no longer show this plugin as the
 active memory provider, and the vector service endpoint should no longer be reachable
 unless you intentionally kept it running for another workflow.

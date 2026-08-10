@@ -238,7 +238,7 @@ vector service supervision as separate lifecycle decisions.
 After the plugin and vector service are both in place, run:
 
 ```bash
-openclaw memory status
+openclaw libravdb status
 ```
 
 Healthy output should show that:

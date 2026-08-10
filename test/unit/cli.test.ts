@@ -101,7 +101,7 @@ function buildMemoryCommand(runtime: PluginRuntime, cfg: PluginConfig = {}): Fak
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   assert.ok(memory);
   return memory;
 }
@@ -120,7 +120,7 @@ test("CLI metadata registers the memory descriptor only when LibraVDB owns the m
   assert.equal(registered.length, 1);
   assert.deepEqual(registered[0]?.opts?.descriptors, [
     {
-      name: "memory",
+      name: "libravdb",
       description: "Manage LibraVDB memory",
       hasSubcommands: true,
     },
@@ -152,7 +152,7 @@ test("full CLI registration exposes standard memory commands and LibraVDB operat
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   assert.ok(memory);
   assert.deepEqual(
     memory.commands.map((command) => command.name()),
@@ -297,7 +297,7 @@ test("status command shuts the plugin runtime down after printing status", async
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   assert.ok(memory);
   const status = memory.commands.find((command) => command.name() === "status");
   assert.ok(status?.handler);
@@ -351,7 +351,7 @@ test("status --index requires --force before rebuilding", async () => {
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   const status = memory?.commands.find((command) => command.name() === "status");
   assert.ok(status?.handler);
 
@@ -423,7 +423,7 @@ test("status --index --force rebuilds before printing status", async () => {
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   const status = memory?.commands.find((command) => command.name() === "status");
   assert.ok(status?.handler);
 
@@ -501,7 +501,7 @@ test("search command applies the status gate threshold by default", async () => 
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   const search = memory?.commands.find((command) => command.name() === "search");
   assert.ok(search?.handler);
 
@@ -567,7 +567,7 @@ test("search command honors an explicit min-score below the default threshold", 
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   const search = memory?.commands.find((command) => command.name() === "search");
   assert.ok(search?.handler);
 
@@ -625,7 +625,7 @@ test("status --deep probes authored collection search health", async () => {
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   const status = memory?.commands.find((command) => command.name() === "status");
   assert.ok(status?.handler);
 
@@ -691,7 +691,7 @@ test("status --deep reports invalid user collection without probing it", async (
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   const status = memory?.commands.find((command) => command.name() === "status");
   assert.ok(status?.handler);
 
@@ -760,7 +760,7 @@ test("status --deep includes authored probe rows in table output", async () => {
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   const status = memory?.commands.find((command) => command.name() === "status");
   assert.ok(status?.handler);
 
@@ -831,7 +831,7 @@ test("index command uses an extended timeout for rebuild_index", async () => {
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   const index = memory?.commands.find((command) => command.name() === "index");
   assert.ok(index?.handler);
 
@@ -864,7 +864,7 @@ test("non-full CLI registration exposes command structure without action handler
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   assert.ok(memory);
   assert.deepEqual(
     memory.commands.map((command) => command.name()),
@@ -913,7 +913,7 @@ test("discovery registration exposes runtime-backed memory commands for lazy CLI
   const program = new FakeCommand("openclaw");
   cli.builder({ program });
 
-  const memory = program.commands.find((command) => command.name() === "memory");
+  const memory = program.commands.find((command) => command.name() === "libravdb");
   assert.ok(memory);
 
   const status = memory.commands.find((command) => command.name() === "status");

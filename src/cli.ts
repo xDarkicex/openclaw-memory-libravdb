@@ -109,11 +109,11 @@ export function registerMemoryCli(
 
   api.registerCli(
     ({ program }) => {
-      const root = ensureCommand(program, "memory")
+      const root = ensureCommand(program, "libravdb")
         .description("Manage LibraVDB memory");
 
       if (!isFullMode) {
-        // Non-full modes register structure only so `openclaw memory --help` works.
+        // Non-full modes register structure only so `openclaw libravdb --help` works.
         // No runtime available — do not attach action handlers.
         ensureCommand(root, "status").description("Show sidecar health, record counts, and active thresholds");
         ensureCommand(root, "index").description("Rebuild LibraVDB memory vector index (requires --force)");

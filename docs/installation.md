@@ -73,7 +73,7 @@ Assign `libravdb-memory` to the OpenClaw memory and context-engine slots:
 }
 ```
 
-The memory slot owns `openclaw memory ...` and memory-runtime calls. The
+The memory slot owns `openclaw libravdb ...` and memory-runtime calls. The
 context-engine slot enables automatic bootstrap, ingest, after-turn, and recall
 hooks during sessions.
 
@@ -178,7 +178,7 @@ database aside first, then let the vector service create a fresh ONNX-backed sto
 Run:
 
 ```bash
-openclaw memory status
+openclaw libravdb status
 ```
 
 Expected output shape:
@@ -219,7 +219,7 @@ Common causes:
 Check the vector service first:
 
 ```bash
-openclaw memory status
+openclaw libravdb status
 brew services restart libravdbd
 ```
 

@@ -105,7 +105,7 @@ Automatic diary watching:
 Manual run:
 
 ```bash
-openclaw memory dream-promote --user-id <userId> --dream-file ~/DREAMS.md
+openclaw libravdb dream-promote --user-id <userId> --dream-file ~/DREAMS.md
 ```
 
 Dream diary files must live under the operator's home directory or the configured
@@ -114,20 +114,20 @@ promotion RPC, so admission gates and provenance metadata are identical.
 
 ## Memory CLI
 
-The plugin registers `openclaw memory` commands when the host exposes the plugin
+The plugin registers `openclaw libravdb` commands when the host exposes the plugin
 CLI API.
 
 | Command | Purpose |
 |---|---|
-| `openclaw memory status` | Show vector service health, counts, active thresholds, and model readiness. Use `--deep` to probe authored collection search health. |
-| `openclaw memory index --force` | Refresh delegated vector service index state for OpenClaw memory CLI compatibility. |
-| `openclaw memory search "query"` | Search LibraVDB memory through the active memory runtime bridge. |
-| `openclaw memory export --user-id <userId>` | Stream stored memories as newline-delimited JSON for one durable namespace. |
-| `openclaw memory export --session-key <sessionKey>` | Export a namespace derived from a session key. |
-| `openclaw memory flush --user-id <userId>` | Delete one durable user namespace after confirmation. |
-| `openclaw memory flush --session-key <sessionKey>` | Delete a namespace derived from a session key after confirmation. |
-| `openclaw memory journal --limit 50` | Inspect bounded lifecycle hints recorded by the vector service. |
-| `openclaw memory dream-promote --user-id <userId> --dream-file <path>` | Promote vetted dream diary bullets from a file under the operator home directory or `OPENCLAW_STATE_DIR`. |
+| `openclaw libravdb status` | Show vector service health, counts, active thresholds, and model readiness. Use `--deep` to probe authored collection search health. |
+| `openclaw libravdb index --force` | Refresh delegated vector service index state for OpenClaw memory CLI compatibility. |
+| `openclaw libravdb search "query"` | Search LibraVDB memory through the active memory runtime bridge. |
+| `openclaw libravdb export --user-id <userId>` | Stream stored memories as newline-delimited JSON for one durable namespace. |
+| `openclaw libravdb export --session-key <sessionKey>` | Export a namespace derived from a session key. |
+| `openclaw libravdb flush --user-id <userId>` | Delete one durable user namespace after confirmation. |
+| `openclaw libravdb flush --session-key <sessionKey>` | Delete a namespace derived from a session key after confirmation. |
+| `openclaw libravdb journal --limit 50` | Inspect bounded lifecycle hints recorded by the vector service. |
+| `openclaw libravdb dream-promote --user-id <userId> --dream-file <path>` | Promote vetted dream diary bullets from a file under the operator home directory or `OPENCLAW_STATE_DIR`. |
 
 Use `--yes` with `flush` only when you intentionally want to skip the
 confirmation prompt.
