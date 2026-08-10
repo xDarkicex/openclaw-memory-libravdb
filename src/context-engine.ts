@@ -2764,7 +2764,10 @@ export function buildContextEngineFactory(
     });
   }
 
-  return {
+  // Named so commitTurn can call afterTurn through the closure rather than `this`:
+  // a host that stores or wraps the hook as a bare function would otherwise
+  // leave `this` undefined and break the durable-turn path.
+  const engine = {
     info: {
       id: "libravdb-memory",
       name: "LibraVDB Memory",
@@ -3397,7 +3400,7 @@ export function buildContextEngineFactory(
         // afterTurn short-circuited (excluded agent, no new messages), where
         // there is nothing to wait for and nothing that can fail.
         let ingestion: Promise<void> | undefined;
-        const result = await this.afterTurn({
+        const result = await engine.afterTurn({
           sessionId: args.sessionId,
           sessionKey: args.sessionKey,
           messages: args.messages,
@@ -3756,4 +3759,6 @@ export function buildContextEngineFactory(
       excludedSessionIds.clear();
     },
   };
+
+  return engine;
 }

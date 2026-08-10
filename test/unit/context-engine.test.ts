@@ -3345,6 +3345,29 @@ type CommitTurnEngine = {
   }) => Promise<{ status: "committed" | "duplicate" }>;
 };
 
+test("commitTurn works when the host holds it as a bare, unbound function", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+    // A host may store the hook rather than call it as a method. OpenClaw binds it today
+    // (`params.engine.commitTurn?.bind(params.engine)`), but nothing in the contract
+    // requires that, and an unbound call must not throw on `this`.
+    const detached = (engine as unknown as CommitTurnEngine).commitTurn;
+
+    const result = await detached({
+      advancementKey: "adv-unbound-1",
+      sessionId: "s1-commit-unbound",
+      sessionKey: "sk-commit-unbound",
+      messages: [makeMessage("user", "unbound"), makeMessage("assistant", "call")],
+      prePromptMessageCount: 0,
+    });
+    await flushIngestion(engine);
+
+    assert.equal(result.status, "committed");
+  });
+});
+
 test("commitTurn serializes concurrent calls with the same advancementKey", async () => {
   await withTempStateDir(async () => {
     const client = new FakeClient();
