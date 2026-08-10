@@ -25,9 +25,28 @@ import { resolveUserCollection } from "./memory-scopes.js";
 import { manifestStore } from "./manifest.js";
 import { TurnMemoryCache, extractQueryHint, isNewUserTurn } from "./turn-cache.js";
 
-/** Host advancement keys already committed, so an exact host retry answers "duplicate". */
+/** Host advancement keys whose turn is durably ingested, so an exact retry answers "duplicate". */
 const committedAdvancementKeys = new Set<string>();
 const COMMITTED_ADVANCEMENT_KEY_LIMIT = 4096;
+
+/**
+ * Commits in flight, keyed by advancementKey. Concurrent calls carrying the
+ * same key join the first call's promise instead of starting a second ingest,
+ * which is what makes the commit atomic per key rather than a racy
+ * check-then-act. Entries are removed once settled, so a failed commit leaves
+ * nothing behind and a host retry starts clean.
+ */
+const inFlightAdvancements = new Map<string, Promise<"committed" | "duplicate">>();
+
+/** Records a durably committed key, evicting oldest-first to stay bounded. */
+function rememberCommittedAdvancementKey(key: string): void {
+  committedAdvancementKeys.add(key);
+  while (committedAdvancementKeys.size > COMMITTED_ADVANCEMENT_KEY_LIMIT) {
+    const oldest = committedAdvancementKeys.values().next().value;
+    if (oldest === undefined) break;
+    committedAdvancementKeys.delete(oldest);
+  }
+}
 
 type KernelCompatibleMessage = {
   role: string;
@@ -290,14 +309,21 @@ interface PostToolContextCache {
 const POST_TOOL_CACHE_MAX_SIZE = 100;
 const postToolRecallCache = new Map<string, PostToolContextCache>();
 
-function enqueueAsyncIngestion(sessionId: string, task: () => Promise<void>): void {
+/**
+ * Appends `task` to the per-session serialized ingestion queue.
+ *
+ * Returns a handle that settles with the task's real outcome, so a caller that
+ * needs to know whether the work actually succeeded (commitTurn) can await it.
+ * The queue chain itself never rejects: one failed task must not poison the
+ * queue for the tasks behind it, and the `.catch` that guarantees that also
+ * marks the returned handle as handled, so ignoring it cannot raise an
+ * unhandled rejection.
+ */
+function enqueueAsyncIngestion(sessionId: string, task: () => Promise<void>): Promise<void> {
   const previous = asyncIngestionQueues.get(sessionId) ?? Promise.resolve();
-  // The task body wraps all work in try/catch with logger.warn, so any
-  // rejection is already logged. This outer catch handles the edge case of
-  // a synchronously-thrown error during task invocation (not promise
-  // rejection) and prevents an unhandled rejection from surfacing.
-  const next = previous.then(task).catch(() => {
-    // Errors are already caught and logged inside the task.
+  const run = previous.then(task);
+  const next = run.catch(() => {
+    // Swallowed for the chain only; `run` still carries the real outcome.
   }).finally(() => {
     // Clean up settled entries to prevent unbounded map growth across sessions.
     if (asyncIngestionQueues.get(sessionId) === next) {
@@ -305,6 +331,7 @@ function enqueueAsyncIngestion(sessionId: string, task: () => Promise<void>): vo
     }
   });
   asyncIngestionQueues.set(sessionId, next);
+  return run;
 }
 
 
@@ -432,6 +459,16 @@ function capRetrievalQuery(text: string): string {
  * code must explicitly import the symbol to call the hook.
  */
 export const FLUSH_ASYNC_INGESTION = Symbol("flushAsyncIngestion");
+
+/**
+ * Internal, symbol-keyed afterTurn argument. When present, afterTurn hands back
+ * the queued ingestion's real outcome so commitTurn can await durability.
+ *
+ * Passed in rather than returned so afterTurn's return value stays exactly what
+ * the host already sees, and symbol-keyed so it cannot collide with any
+ * host-supplied argument.
+ */
+const CAPTURE_INGESTION = Symbol("libravdbCaptureIngestion");
 
 let maxOptimizationMemoCacheSize = 50000;
 const metadataEnvelopeCache = new Map<string, string>();
@@ -3325,10 +3362,20 @@ export function buildContextEngineFactory(
      *
      * The host requires one atomic, idempotent commit per accepted turn, keyed by
      * `advancementKey`, and may retry the same key after a process or plugin failure.
-     * `afterTurn` is already idempotent: it reloads the per-session manifest inside the
-     * serialized ingestion queue and slices off `findOverlapIndex`, so a replayed turn
-     * contributes no new messages. The key set below only short-circuits an exact host
-     * retry so the host is told "duplicate" rather than doing the overlap work again.
+     *
+     * A key is recorded only after the ingestion it names has actually succeeded —
+     * the daemon acknowledged the messages and the manifest was persisted — not when
+     * the work was merely queued. If ingestion fails, nothing is recorded, the error
+     * propagates, and a host retry with the same key runs the work again.
+     *
+     * Concurrent calls carrying the same key are serialized on one in-flight promise,
+     * so exactly one of them performs the ingest. The others resolve to "duplicate"
+     * once it succeeds, or reject with the same error if it fails.
+     *
+     * `afterTurn` remains idempotent underneath this: it reloads the per-session
+     * manifest inside the serialized ingestion queue and slices off `findOverlapIndex`,
+     * so a replayed turn contributes no new messages even across a process restart,
+     * where the in-memory key set is empty.
      */
     async commitTurn(args: {
       advancementKey: string;
@@ -3340,25 +3387,58 @@ export function buildContextEngineFactory(
       runtimeContext?: Record<string, unknown>;
     }): Promise<{ status: "committed" | "duplicate" }> {
       const key = args.advancementKey;
-      if (key && committedAdvancementKeys.has(key)) {
+
+      // Run the turn and wait for the durable part of the ingest to finish.
+      // Errors propagate: a caller that is told nothing must be free to retry.
+      const ingestTurn = async (): Promise<"committed" | "duplicate"> => {
+        // afterTurn returns as soon as the work is queued, so capture the handle
+        // and wait on it: it settles once the daemon has acknowledged the
+        // messages and the manifest has been written. It stays undefined when
+        // afterTurn short-circuited (excluded agent, no new messages), where
+        // there is nothing to wait for and nothing that can fail.
+        let ingestion: Promise<void> | undefined;
+        const result = await this.afterTurn({
+          sessionId: args.sessionId,
+          sessionKey: args.sessionKey,
+          messages: args.messages,
+          prePromptMessageCount: args.prePromptMessageCount,
+          isHeartbeat: args.isHeartbeat,
+          runtimeContext: args.runtimeContext,
+          [CAPTURE_INGESTION]: (handle) => { ingestion = handle; },
+        });
+        if (ingestion) await ingestion;
+        return (result as { skipped?: boolean } | undefined)?.skipped ? "duplicate" : "committed";
+      };
+
+      // Without a key there is nothing to deduplicate against.
+      if (!key) return { status: await ingestTurn() };
+
+      if (committedAdvancementKeys.has(key)) return { status: "duplicate" };
+
+      // Join an identical commit already running rather than starting a second
+      // ingest. If it succeeds this call contributed nothing, so it is a
+      // duplicate; if it fails, both callers see the failure and may retry.
+      const existing = inFlightAdvancements.get(key);
+      if (existing) {
+        await existing;
         return { status: "duplicate" };
       }
-      const result = await this.afterTurn({
-        sessionId: args.sessionId,
-        sessionKey: args.sessionKey,
-        messages: args.messages,
-        prePromptMessageCount: args.prePromptMessageCount,
-        isHeartbeat: args.isHeartbeat,
-        runtimeContext: args.runtimeContext,
-      });
-      if (key) {
-        committedAdvancementKeys.add(key);
-        if (committedAdvancementKeys.size > COMMITTED_ADVANCEMENT_KEY_LIMIT) {
-          const oldest = committedAdvancementKeys.values().next().value;
-          if (oldest !== undefined) committedAdvancementKeys.delete(oldest);
-        }
+
+      const run = ingestTurn();
+      inFlightAdvancements.set(key, run);
+      try {
+        const status = await run;
+        // Recorded only now, with the work durably done. No await separates
+        // this from the delete below, so no racing caller can observe a window
+        // where the key is neither in flight nor committed.
+        rememberCommittedAdvancementKey(key);
+        inFlightAdvancements.delete(key);
+        return { status };
+      } catch (error) {
+        // Leave no trace of a failed commit: the next retry must do real work.
+        inFlightAdvancements.delete(key);
+        throw error;
       }
-      return { status: result && (result as { skipped?: boolean }).skipped ? "duplicate" : "committed" };
     },
 
     async afterTurn(args: {
@@ -3370,6 +3450,7 @@ export function buildContextEngineFactory(
       isHeartbeat?: boolean;
       tokenBudget?: number;
       runtimeContext?: Record<string, unknown>;
+      [CAPTURE_INGESTION]?: (ingestion: Promise<void>) => void;
     }) {
       const sessionId = requireSessionId(args.sessionId, "afterTurn");
       if (isExcludedSession(args.sessionKey, sessionId)) {
@@ -3402,7 +3483,7 @@ export function buildContextEngineFactory(
         return { ok: true, skipped: true, reason: "no-new-messages" };
       }
 
-      enqueueAsyncIngestion(sessionId, async () => {
+      const ingestion = enqueueAsyncIngestion(sessionId, async () => {
         try {
           // Reload manifest inside the serialized queue so state is fresh
           // after any preceding queued tasks have completed.
@@ -3522,39 +3603,61 @@ export function buildContextEngineFactory(
             manifestStore.save(updatedManifest);
           }
 
-          await performAfterTurnPredictiveCompaction({
-            sessionId,
-            messages,
-            tokenBudget: args.tokenBudget,
-            currentTokenCount,
-          });
-          const predictions = result.predictions;
-          if (Array.isArray(predictions) && predictions.length > 0) {
-            if (predictiveContextCache.size >= PREDICTIVE_CACHE_MAX_SIZE) {
-              const oldest = predictiveContextCache.keys().next().value;
-              if (oldest !== undefined) predictiveContextCache.delete(oldest);
+          // Everything above is the durable part of the turn: the daemon has
+          // acknowledged the messages and the manifest has been persisted.
+          // Everything below is best effort. A failure there must not fail the
+          // commit, because asking the host to retry an already-durable turn
+          // is worse than losing a prediction or a warm cache entry.
+          try {
+            await performAfterTurnPredictiveCompaction({
+              sessionId,
+              messages,
+              tokenBudget: args.tokenBudget,
+              currentTokenCount,
+            });
+            const predictions = result.predictions;
+            if (Array.isArray(predictions) && predictions.length > 0) {
+              if (predictiveContextCache.size >= PREDICTIVE_CACHE_MAX_SIZE) {
+                const oldest = predictiveContextCache.keys().next().value;
+                if (oldest !== undefined) predictiveContextCache.delete(oldest);
+              }
+              predictiveContextCache.set(sessionId, predictions);
+              logger.info?.(
+                `LibraVDB predictive graph returned predictions sessionId=${sessionId} ` +
+                `count=${predictions.length}`,
+              );
+            } else {
+              logger.info?.(
+                `LibraVDB predictive graph returned no predictions sessionId=${sessionId}`,
+              );
             }
-            predictiveContextCache.set(sessionId, predictions);
-            logger.info?.(
-              `LibraVDB predictive graph returned predictions sessionId=${sessionId} ` +
-              `count=${predictions.length}`,
-            );
-          } else {
-            logger.info?.(
-              `LibraVDB predictive graph returned no predictions sessionId=${sessionId}`,
+            // Pre-warm embedding cache: the assistant's reply is the strongest
+            // predictor of what the user asks next. Embedding it now means the
+            // daemon's mmap cache is warm when the next BeforeTurnKernel fires.
+            prewarmEmbeddingCache(messages, userId, client);
+          } catch (error) {
+            logger.warn?.(
+              `LibraVDB afterTurn post-ingest step failed sessionId=${sessionId}: ` +
+              `${error instanceof Error ? error.message : String(error)}`,
             );
           }
-          // Pre-warm embedding cache: the assistant's reply is the strongest
-          // predictor of what the user asks next. Embedding it now means the
-          // daemon's mmap cache is warm when the next BeforeTurnKernel fires.
-          prewarmEmbeddingCache(messages, userId, client);
         } catch (error) {
           logger.warn?.(
             `LibraVDB afterTurn failed sessionId=${sessionId}: ` +
             `${error instanceof Error ? error.message : String(error)}`,
           );
+          // Rethrow so commitTurn can distinguish a durable failure from a
+          // success. afterTurn itself stays fire-and-forget via the no-op
+          // handler attached below, so this never surfaces as unhandled.
+          throw error;
         }
       });
+
+      // afterTurn's own contract is fire-and-forget and the task already
+      // logged. commitTurn awaits the handle instead, so it sees real failures.
+      ingestion.catch(() => {});
+
+      args[CAPTURE_INGESTION]?.(ingestion);
 
       return { ok: true, queued: true };
     },

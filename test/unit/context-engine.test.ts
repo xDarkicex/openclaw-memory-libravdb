@@ -3290,3 +3290,164 @@ test("excludeSubagents off by default: a subagent is granted a normal expansion 
   );
 
 });
+
+// ---------------------------------------------------------------------------
+// commitTurn: atomic per-key idempotency (OpenClaw >= 2026.8.1 durable turn)
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs `fn` against a throwaway state dir.
+ *
+ * These tests assert on whether the daemon was called, which depends on the
+ * per-session manifest being empty. The default manifest dir is the user's real
+ * ~/.openclaw/libravdb-manifests, so a manifest left by an earlier run makes
+ * afterTurn short-circuit with "no-new-messages" and the assertions flip. Point
+ * the store at a fresh temp dir so each run starts from nothing and nothing is
+ * written outside the test.
+ */
+async function withTempStateDir(fn: () => Promise<void>): Promise<void> {
+  const previous = process.env.OPENCLAW_STATE_DIR;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "libravdb-commitTurn-"));
+  process.env.OPENCLAW_STATE_DIR = dir;
+  try {
+    await fn();
+  } finally {
+    if (previous === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Makes afterTurnKernel fail the next `times` calls, then succeed. */
+function failAfterTurnKernel(client: FakeClient, times: number): { calls: () => number } {
+  let seen = 0;
+  const original = client.afterTurnKernel.bind(client);
+  (client as unknown as {
+    afterTurnKernel: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  }).afterTurnKernel = async (params) => {
+    seen += 1;
+    if (seen <= times) {
+      client.calls.push({ method: "afterTurnKernel", params });
+      throw new Error("daemon unavailable");
+    }
+    return original(params);
+  };
+  return { calls: () => seen };
+}
+
+type CommitTurnEngine = {
+  commitTurn: (args: {
+    advancementKey: string;
+    sessionId: string;
+    sessionKey?: string;
+    messages: ReturnType<typeof makeMessage>[];
+    prePromptMessageCount?: number;
+  }) => Promise<{ status: "committed" | "duplicate" }>;
+};
+
+test("commitTurn serializes concurrent calls with the same advancementKey", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const messages = [makeMessage("user", "concurrent"), makeMessage("assistant", "same key")];
+
+    const call = () => (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-concurrent-1",
+      sessionId: "s1-commit-concurrent",
+      sessionKey: "sk-commit-concurrent",
+      messages,
+      prePromptMessageCount: 0,
+    });
+
+    const [a, b, c] = await Promise.all([call(), call(), call()]);
+    await flushIngestion(engine);
+
+    // Exactly one call performs the ingest; the others join it and report duplicate.
+    const statuses = [a.status, b.status, c.status].sort();
+    assert.deepEqual(
+      statuses,
+      ["committed", "duplicate", "duplicate"],
+      `expected one committed and two duplicates, got ${JSON.stringify(statuses)}`,
+    );
+
+    const ingests = client.calls.filter((x) => x.method === "afterTurnKernel");
+    assert.equal(
+      ingests.length,
+      1,
+      `the same advancementKey must ingest once, saw ${ingests.length} afterTurnKernel calls`,
+    );
+
+    // A later retry of the same key short-circuits without touching the daemon.
+    const retry = await call();
+    assert.equal(retry.status, "duplicate");
+    assert.equal(client.calls.filter((x) => x.method === "afterTurnKernel").length, 1);
+  });
+});
+
+test("commitTurn does not record the key when ingestion fails, and a retry succeeds", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    const probe = failAfterTurnKernel(client, 1);
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const messages = [makeMessage("user", "retry me"), makeMessage("assistant", "after failure")];
+
+    const call = () => (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-retry-1",
+      sessionId: "s1-commit-retry",
+      sessionKey: "sk-commit-retry",
+      messages,
+      prePromptMessageCount: 0,
+    });
+
+    // The durable write failed, so the failure must propagate rather than be
+    // swallowed — the host cannot retry a turn it was told succeeded.
+    await assert.rejects(
+      call(),
+      /daemon unavailable/,
+      "a failed ingestion must reject rather than report committed",
+    );
+
+    // The key was not recorded, so the retry does real work instead of being
+    // told duplicate and losing the turn forever.
+    const retry = await call();
+    assert.equal(
+      retry.status,
+      "committed",
+      "retry after a failed ingestion must re-run, not report duplicate",
+    );
+    await flushIngestion(engine);
+
+    assert.equal(probe.calls(), 2, "the daemon should have been called once per attempt");
+
+    // Now that it has succeeded, the key is recorded and a further retry is a duplicate.
+    const third = await call();
+    assert.equal(third.status, "duplicate");
+    assert.equal(probe.calls(), 2, "a duplicate must not reach the daemon");
+  });
+});
+
+test("commitTurn concurrent callers all see the failure when the shared ingest fails", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    failAfterTurnKernel(client, 1);
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const messages = [makeMessage("user", "shared failure"), makeMessage("assistant", "propagate")];
+
+    const call = () => (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-shared-failure",
+      sessionId: "s1-commit-shared-failure",
+      sessionKey: "sk-commit-shared-failure",
+      messages,
+      prePromptMessageCount: 0,
+    });
+
+    const settled = await Promise.allSettled([call(), call()]);
+    assert.equal(settled[0]?.status, "rejected", "the leader must reject");
+    assert.equal(settled[1]?.status, "rejected", "a joiner must see the leader's failure, not success");
+
+    // Nothing was recorded, so the key is still retryable.
+    const retry = await call();
+    assert.equal(retry.status, "committed");
+    await flushIngestion(engine);
+  });
+});
