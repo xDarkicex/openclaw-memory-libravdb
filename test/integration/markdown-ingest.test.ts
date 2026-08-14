@@ -1133,3 +1133,181 @@ test("markdown ingestion default-excludes dependency and build directories", asy
 
   await handle.stop();
 });
+
+// ---------------------------------------------------------------------------
+// Hardening: a root whose directory enumeration never returns must not block
+// startup forever, and transient read/stat failures must never delete
+// documents from the daemon. Motivated by a production incident where iCloud
+// Drive enumeration blocked ~20s per call in an uninterruptible syscall
+// (missing file-provider consent), libuv retried on EINTR indefinitely,
+// gateway readiness never completed, and the cron scheduler was down for 48h.
+// ---------------------------------------------------------------------------
+
+class HangingReaddirFsApi extends FakeFsApi {
+  constructor(private readonly hangPrefix: string) { super(); }
+  readdirAttempts = 0;
+  override async readdir(dir: string): Promise<FsDirentLike[]> {
+    if (path.resolve(dir).startsWith(path.resolve(this.hangPrefix))) {
+      this.readdirAttempts += 1;
+      return new Promise(() => {}); // blocks forever, like an uninterruptible open
+    }
+    return super.readdir(dir);
+  }
+}
+
+test("a root whose walk never completes is quarantined instead of blocking start()", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-quarantine-"));
+  const hungRoot = path.join(tempRoot, "hung");
+  const goodRoot = path.join(tempRoot, "good");
+  const rpc = new FakeRpcClient();
+  const fsApi = new HangingReaddirFsApi(hungRoot);
+  await fsApi.mkdir(hungRoot);
+  await fsApi.mkdir(goodRoot);
+  await fsApi.writeFile(path.join(goodRoot, "note.md"), "# healthy root\n", 1000);
+
+  const errors: string[] = [];
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [hungRoot, goodRoot],
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+      markdownIngestionWalkTimeoutMs: 200,
+    },
+    async () => rpc as never,
+    { error: (m: string) => errors.push(m), warn: () => {}, info: () => {} } as never,
+    fsApi as never,
+  );
+
+  const startedAt = Date.now();
+  await handle.start();
+  const elapsed = Date.now() - startedAt;
+
+  // start() returned despite the hung root, and well under the hang horizon.
+  assert.ok(elapsed < 5_000, `start() took ${elapsed}ms; the hung root blocked it`);
+  // The healthy root was still ingested.
+  assert.ok(
+    rpc.calls.some((c) => c.method === "ingest_markdown_document"),
+    "healthy root was not ingested",
+  );
+  // Nothing was deleted: a partial walk must never feed the prune pass.
+  assert.equal(
+    rpc.calls.filter((c) => c.method === "delete_authored_document").length,
+    0,
+    "quarantined scan deleted documents",
+  );
+  assert.ok(
+    errors.some((m) => m.includes("quarantined")),
+    "quarantine was not reported at error level",
+  );
+
+  // The quarantine holds: another refresh does not touch the hung root again.
+  const attemptsAfterStart = fsApi.readdirAttempts;
+  assert.equal(attemptsAfterStart, 1, "expected exactly one enumeration attempt on the hung root");
+  await handle.refresh();
+  assert.equal(fsApi.readdirAttempts, attemptsAfterStart, "quarantined root was re-enumerated");
+
+  await handle.stop();
+});
+
+class FailingReadFsApi extends FakeFsApi {
+  failReadsFor = new Set<string>();
+  failStatsFor = new Set<string>();
+  override async openReadStream(filePath: string) {
+    if (this.failReadsFor.has(path.resolve(filePath))) {
+      throw Object.assign(new Error(`EPERM: operation not permitted, open '${filePath}'`), { code: "EPERM" });
+    }
+    return super.openReadStream(filePath);
+  }
+  override async stat(filePath: string) {
+    if (this.failStatsFor.has(path.resolve(filePath))) {
+      throw Object.assign(new Error(`EINTR: interrupted system call, stat '${filePath}'`), { code: "EINTR" });
+    }
+    return super.stat(filePath);
+  }
+}
+
+test("a transient read failure keeps the document; only ENOENT deletes it", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-readerr-"));
+  const root = path.join(tempRoot, "docs");
+  const notePath = path.join(root, "note.md");
+  const rpc = new FakeRpcClient();
+  const fsApi = new FailingReadFsApi();
+  await fsApi.mkdir(root);
+  await fsApi.writeFile(notePath, "# v1\n", 1000);
+
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [root],
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+    },
+    async () => rpc as never,
+    { error: () => {}, warn: () => {}, info: () => {} } as never,
+    fsApi as never,
+  );
+  await handle.start();
+  assert.ok(rpc.documents.has(path.resolve(notePath)), "initial ingest failed");
+
+  // The file changes but reading it now fails with EPERM: the document must
+  // survive. The old behavior deleted it on any read failure.
+  await fsApi.writeFile(notePath, "# v2\n", 2000);
+  fsApi.failReadsFor.add(path.resolve(notePath));
+  await handle.refresh();
+  assert.equal(
+    rpc.calls.filter((c) => c.method === "delete_authored_document").length,
+    0,
+    "a transient read failure deleted the document",
+  );
+  assert.ok(rpc.documents.has(path.resolve(notePath)), "document lost after read failure");
+
+  // Reading heals: the changed content is ingested on the next scan.
+  fsApi.failReadsFor.clear();
+  await handle.refresh();
+  assert.ok(
+    rpc.documents.get(path.resolve(notePath))?.text.includes("v2"),
+    "healed file was not re-ingested",
+  );
+
+  // Control: genuine deletion (ENOENT) still retires the document.
+  await fsApi.rm(notePath);
+  await handle.refresh();
+  assert.ok(!rpc.documents.has(path.resolve(notePath)), "ENOENT no longer deletes");
+
+  await handle.stop();
+});
+
+test("a transient stat failure protects the file from the prune pass", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-staterr-"));
+  const root = path.join(tempRoot, "docs");
+  const aPath = path.join(root, "a.md");
+  const bPath = path.join(root, "b.md");
+  const rpc = new FakeRpcClient();
+  const fsApi = new FailingReadFsApi();
+  await fsApi.mkdir(root);
+  await fsApi.writeFile(aPath, "# a\n", 1000);
+  await fsApi.writeFile(bPath, "# b\n", 1000);
+
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [root],
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+    },
+    async () => rpc as never,
+    { error: () => {}, warn: () => {}, info: () => {} } as never,
+    fsApi as never,
+  );
+  await handle.start();
+  assert.ok(rpc.documents.has(path.resolve(aPath)) && rpc.documents.has(path.resolve(bPath)));
+
+  // a.md still exists but stat fails transiently (EINTR). The old walk left it
+  // out of the current-files set, so the prune pass deleted its document.
+  fsApi.failStatsFor.add(path.resolve(aPath));
+  await handle.refresh();
+  assert.ok(
+    rpc.documents.has(path.resolve(aPath)),
+    "a transiently unstattable file was pruned from the daemon",
+  );
+
+  await handle.stop();
+});
