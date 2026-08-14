@@ -449,7 +449,15 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
           }
           await this.syncCandidates(rootState, candidates, stats);
           if (!this.stopping) {
-          if (!rootState.walkIncomplete) {
+          if (rootState.walkIncomplete) {
+            // Absence is not evidence here, so nothing is pruned. Presence
+            // still is: union what we did see into knownFiles, otherwise a
+            // file first discovered during a partial walk is never tracked
+            // and a later complete scan cannot prune it when it is deleted.
+            for (const file of currentFiles) {
+              rootState.knownFiles.add(file);
+            }
+          } else {
             await this.pruneDeletedFiles(rootState, currentFiles, stats);
             rootState.knownFiles = currentFiles;
           }

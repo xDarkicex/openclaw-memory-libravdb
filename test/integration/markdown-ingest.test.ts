@@ -38,9 +38,9 @@ class FakeRpcClient {
 
 class FakeFsApi {
   // in-memory filesystem: absolute path → file entry
-  private files = new Map<string, { content: Buffer; mtimeMs: number; ctimeMs: number }>();
+  protected files = new Map<string, { content: Buffer; mtimeMs: number; ctimeMs: number }>();
   // directory set — tracked so readdir works without scanning files map
-  private dirs = new Set<string>();
+  protected dirs = new Set<string>();
 
   callbacks = new Map<string, Array<(event: string, filename: string | Buffer | null) => void>>();
 
@@ -81,10 +81,22 @@ class FakeFsApi {
     this.files.delete(path.resolve(filePath));
   }
 
+  /** Removes a directory and everything under it, so readdir on it throws ENOENT. */
+  async rmdir(dir: string): Promise<void> {
+    const abs = path.resolve(dir);
+    this.dirs.delete(abs);
+    for (const filePath of [...this.files.keys()]) {
+      if (filePath.startsWith(abs + path.sep)) this.files.delete(filePath);
+    }
+  }
+
   // ── FsApi interface ──────────────────────────────────────────────────
 
   async readdir(dir: string): Promise<FsDirentLike[]> {
     const abs = path.resolve(dir);
+    if (!this.dirs.has(abs)) {
+      throw Object.assign(new Error(`ENOENT: no such file or directory, scandir '${dir}'`), { code: "ENOENT" });
+    }
     const results: FsDirentLike[] = [];
     const prefix = abs.endsWith(path.sep) ? abs : abs + path.sep;
 
@@ -1444,13 +1456,28 @@ test("a directory we cannot enumerate does not prune the documents hidden behind
   );
   assert.ok(rpc.documents.has(path.resolve(topPath)), "visible sibling was lost");
 
-  // Control: when the directory is genuinely removed, pruning proceeds.
+  // A file discovered only during a partial walk must still be tracked, or a
+  // later complete scan cannot prune it when it is deleted.
+  const lateFile = path.join(root, "late.md");
+  await fsApi.writeFile(lateFile, "# late\n", 2000);
+  await handle.refresh(); // still partial: subDir remains unreadable
+  assert.ok(rpc.documents.has(path.resolve(lateFile)), "late file was not ingested");
   fsApi.failReaddirFor.clear();
-  await fsApi.rm(hiddenPath);
+  await fsApi.rm(lateFile);
+  await handle.refresh(); // complete walk now
+  assert.ok(
+    !rpc.documents.has(path.resolve(lateFile)),
+    "a file first seen during a partial walk was never tracked, so its deletion was missed",
+  );
+
+  // Control: an ENOENT from readdir itself (the directory is gone, not
+  // unreadable) is real absence, so its files are pruned normally.
+  fsApi.failReaddirFor.clear();
+  await fsApi.rmdir(subDir);
   await handle.refresh();
   assert.ok(
     !rpc.documents.has(path.resolve(hiddenPath)),
-    "a genuinely deleted file was not pruned",
+    "files under a genuinely removed directory were not pruned",
   );
 
   await handle.stop();
