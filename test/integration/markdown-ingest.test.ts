@@ -1438,6 +1438,7 @@ test("a directory we cannot enumerate does not prune the documents hidden behind
       markdownIngestionEnabled: true,
       markdownIngestionRoots: [root],
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+      markdownIngestionMaxTokensPerFile: 100,
     },
     async () => rpc as never,
     { error: () => {}, warn: () => {}, info: () => {} } as never,
@@ -1468,6 +1469,39 @@ test("a directory we cannot enumerate does not prune the documents hidden behind
   assert.ok(
     !rpc.documents.has(path.resolve(lateFile)),
     "a file first seen during a partial walk was never tracked, so its deletion was missed",
+  );
+
+  // A file whose document is retired DURING a partial walk, while the file
+  // itself stays present, must not be re-tracked: the next complete scan would
+  // then delete an already-deleted document. The oversize path is the clean
+  // way to retire a document without the file leaving the walk.
+  const grower = path.join(root, "grower.md");
+  const countDeletes = () => rpc.calls.filter(
+    (c) => c.method === "delete_authored_document"
+      && (c.params as { sourceDoc: string }).sourceDoc === path.resolve(grower),
+  ).length;
+  await fsApi.writeFile(grower, "# small\n", 3000);
+  fsApi.failReaddirFor.add(path.resolve(subDir));
+  await handle.refresh();
+  assert.ok(rpc.documents.has(path.resolve(grower)), "grower was not ingested while small");
+
+  // Still a partial walk. The file is present in the walk but now exceeds the
+  // per-file cap, so its document is retired.
+  await fsApi.writeFile(grower, `# big\n${"x".repeat(4000)}\n`, 4000);
+  await handle.refresh();
+  assert.ok(!rpc.documents.has(path.resolve(grower)), "oversized document was not retired");
+  const deletesAfterRetire = countDeletes();
+  assert.equal(deletesAfterRetire, 1, "expected exactly one retire for the oversized file");
+
+  // Now the file leaves for real and a COMPLETE walk runs. Its document is
+  // already gone, so nothing further should be deleted for it.
+  await fsApi.rm(grower);
+  fsApi.failReaddirFor.clear();
+  await handle.refresh();
+  assert.equal(
+    countDeletes(),
+    deletesAfterRetire,
+    "an already-retired document was deleted a second time by the prune pass",
   );
 
   // Control: an ENOENT from readdir itself (the directory is gone, not

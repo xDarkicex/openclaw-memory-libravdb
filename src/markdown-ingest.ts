@@ -454,8 +454,17 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
             // still is: union what we did see into knownFiles, otherwise a
             // file first discovered during a partial walk is never tracked
             // and a later complete scan cannot prune it when it is deleted.
+            // Only files that still hold a document count -- syncing may have
+            // established a deletion (vanished between readdir and read, or
+            // grown oversized), and re-adding those would make the next
+            // complete scan delete an already-deleted document. Every deletion
+            // path clears fileStates, so it is the authority on what exists.
             for (const file of currentFiles) {
-              rootState.knownFiles.add(file);
+              if (this.fileStates.has(file)) {
+                rootState.knownFiles.add(file);
+              } else {
+                rootState.knownFiles.delete(file);
+              }
             }
           } else {
             await this.pruneDeletedFiles(rootState, currentFiles, stats);
