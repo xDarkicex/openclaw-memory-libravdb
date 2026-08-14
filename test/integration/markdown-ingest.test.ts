@@ -1146,8 +1146,9 @@ test("markdown ingestion default-excludes dependency and build directories", asy
 class HangingReaddirFsApi extends FakeFsApi {
   constructor(private readonly hangPrefix: string) { super(); }
   readdirAttempts = 0;
+  hangEnabled = true;
   override async readdir(dir: string): Promise<FsDirentLike[]> {
-    if (path.resolve(dir).startsWith(path.resolve(this.hangPrefix))) {
+    if (this.hangEnabled && path.resolve(dir).startsWith(path.resolve(this.hangPrefix))) {
       this.readdirAttempts += 1;
       return new Promise(() => {}); // blocks forever, like an uninterruptible open
     }
@@ -1165,8 +1166,11 @@ test("a root whose walk never completes is quarantined instead of blocking start
   await fsApi.mkdir(goodRoot);
   await fsApi.writeFile(path.join(goodRoot, "note.md"), "# healthy root\n", 1000);
 
+  const seededPath = path.join(hungRoot, "seeded.md");
+  await fsApi.writeFile(seededPath, "# seeded before the hang\n", 500);
+
   const errors: string[] = [];
-  const handle = createMarkdownIngestionHandle(
+  const makeHandle = () => createMarkdownIngestionHandle(
     {
       markdownIngestionEnabled: true,
       markdownIngestionRoots: [hungRoot, goodRoot],
@@ -1178,6 +1182,17 @@ test("a root whose walk never completes is quarantined instead of blocking start
     fsApi as never,
   );
 
+  // Phase 1: healthy. The soon-to-hang root ingests a document, so the
+  // no-deletion assertion below has something real to protect.
+  fsApi.hangEnabled = false;
+  const warmup = makeHandle();
+  await warmup.start();
+  assert.ok(rpc.documents.has(path.resolve(seededPath)), "seed ingest failed");
+  await warmup.stop();
+
+  // Phase 2: the same root now hangs, like a restart into broken consent.
+  fsApi.hangEnabled = true;
+  const handle = makeHandle();
   const startedAt = Date.now();
   await handle.start();
   const elapsed = Date.now() - startedAt;
@@ -1189,11 +1204,16 @@ test("a root whose walk never completes is quarantined instead of blocking start
     rpc.calls.some((c) => c.method === "ingest_markdown_document"),
     "healthy root was not ingested",
   );
-  // Nothing was deleted: a partial walk must never feed the prune pass.
+  // Nothing was deleted: a partial walk must never feed the prune pass. The
+  // seeded document under the hung root is the concrete thing at stake.
   assert.equal(
     rpc.calls.filter((c) => c.method === "delete_authored_document").length,
     0,
     "quarantined scan deleted documents",
+  );
+  assert.ok(
+    rpc.documents.has(path.resolve(seededPath)),
+    "the document seeded under the hung root was lost",
   );
   assert.ok(
     errors.some((m) => m.includes("quarantined")),
@@ -1211,10 +1231,14 @@ test("a root whose walk never completes is quarantined instead of blocking start
 
 class FailingReadFsApi extends FakeFsApi {
   failReadsFor = new Set<string>();
+  failReadsEnoentFor = new Set<string>();
   failStatsFor = new Set<string>();
   override async openReadStream(filePath: string) {
     if (this.failReadsFor.has(path.resolve(filePath))) {
       throw Object.assign(new Error(`EPERM: operation not permitted, open '${filePath}'`), { code: "EPERM" });
+    }
+    if (this.failReadsEnoentFor.has(path.resolve(filePath))) {
+      throw Object.assign(new Error(`ENOENT: no such file or directory, open '${filePath}'`), { code: "ENOENT" });
     }
     return super.openReadStream(filePath);
   }
@@ -1268,7 +1292,21 @@ test("a transient read failure keeps the document; only ENOENT deletes it", asyn
     "healed file was not re-ingested",
   );
 
-  // Control: genuine deletion (ENOENT) still retires the document.
+  // Control 1: ENOENT surfaced by the READ itself (file vanishes between stat
+  // and open) retires the document through safeReadFileStreamed's own branch.
+  await fsApi.writeFile(notePath, "# v3\n", 3000);
+  fsApi.failReadsEnoentFor.add(path.resolve(notePath));
+  await handle.refresh();
+  assert.ok(
+    !rpc.documents.has(path.resolve(notePath)),
+    "an ENOENT read no longer retires the document",
+  );
+  fsApi.failReadsEnoentFor.clear();
+
+  // Control 2: genuine deletion from disk still retires via the prune pass.
+  await fsApi.writeFile(notePath, "# v4\n", 4000);
+  await handle.refresh();
+  assert.ok(rpc.documents.has(path.resolve(notePath)), "re-ingest before prune control failed");
   await fsApi.rm(notePath);
   await handle.refresh();
   assert.ok(!rpc.documents.has(path.resolve(notePath)), "ENOENT no longer deletes");

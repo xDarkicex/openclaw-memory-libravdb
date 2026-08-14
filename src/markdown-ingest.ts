@@ -487,18 +487,35 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     stats: ScanStats,
     candidates: FileCandidate[],
   ): Promise<boolean> {
+    // Stall detector, not a total-time cap: a large or cold root that keeps
+    // completing operations is never quarantined, however long the full walk
+    // takes. Quarantine fires only when NO filesystem operation completes for
+    // walkTimeoutMs straight -- the signature of a blocked syscall.
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const timedOut = new Promise<"timeout">((resolve) => {
-      timer = setTimeout(() => resolve("timeout"), this.walkTimeoutMs);
-    });
+    let resolveStalled: (v: "stalled") => void = () => {};
+    const stalled = new Promise<"stalled">((resolve) => { resolveStalled = resolve; });
+    const progress = () => stats.directoriesScanned + stats.markdownFilesSeen;
+    let lastProgress = progress();
+    const arm = () => {
+      timer = setTimeout(() => {
+        const now = progress();
+        if (now === lastProgress) {
+          resolveStalled("stalled");
+          return;
+        }
+        lastProgress = now;
+        arm();
+      }, this.walkTimeoutMs);
+    };
+    arm();
     const walk = this.walkDirectory(rootState, rootState.root, currentFiles, stats, candidates)
       .then(() => "walked" as const);
     try {
-      const winner = await Promise.race([walk, timedOut]);
-      if (winner === "timeout") {
+      const winner = await Promise.race([walk, stalled]);
+      if (winner === "stalled") {
         rootState.quarantined = true;
         this.logger.error?.(
-          `[markdown-ingest] directory walk of ${rootState.root} did not complete within ` +
+          `[markdown-ingest] directory walk of ${rootState.root} made no progress for ` +
           `${this.walkTimeoutMs}ms and the root has been quarantined for this process. ` +
           `No files under it will be ingested or pruned until the next restart. This usually ` +
           `means enumeration is blocking in the OS (for iCloud Drive paths: missing ` +
@@ -747,10 +764,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       return "deleted";
     }
     if (stat === "error") {
-      // Unknown state is not deletion evidence; keep the document and let a
-      // later scan retry.
-      this.logger.warn?.(`[markdown-ingest] stat failed for ${sourceDoc}; keeping existing document`);
-      return "skipped";
+      // Unknown state is not deletion evidence; keep the document. Thrown so
+      // the caller's catch counts it as a sync error -- a persistent failure
+      // must show up in scan stats, not disappear into the skipped count.
+      throw new Error(`stat failed transiently for ${sourceDoc}; keeping existing document`);
     }
 
     const cached = this.fileStates.get(sourceDoc);
@@ -769,9 +786,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     if (streamed === "read_error") {
       // The file exists (it just passed stat) but could not be read. That is a
       // transient condition, not deletion evidence; the old behavior here
-      // deleted the document from the daemon on ANY read failure.
-      this.logger.warn?.(`[markdown-ingest] read failed for ${sourceDoc}; keeping existing document`);
-      return "skipped";
+      // deleted the document from the daemon on ANY read failure. Thrown so it
+      // lands in the caller's sync-error accounting rather than vanishing into
+      // the skipped count.
+      throw new Error(`read failed transiently for ${sourceDoc}; keeping existing document`);
     }
     if (!streamed) {
       await this.deleteSourceDocument(sourceDoc);
@@ -959,7 +977,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     } catch (error) {
       // Only a confirmed ENOENT means the file is gone. Any other failure is a
       // transient condition that must never be treated as deletion evidence.
-      return formatError(error).includes("ENOENT") ? "missing" : "error";
+      return isEnoent(error) ? "missing" : "error";
     }
   }
 
@@ -994,7 +1012,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     } catch (error) {
       // null (-> delete) only for a confirmed ENOENT; anything else is
       // transient and must not retire the document.
-      return formatError(error).includes("ENOENT") ? null : "read_error";
+      return isEnoent(error) ? null : "read_error";
     } finally {
       if (stream) {
         await stream.close().catch(() => {});
@@ -1158,6 +1176,22 @@ function resolveMarkdownSnapshotPath(kind: string, configuredPath?: string): str
 
 function isMarkdownIngestionEnabled(cfg: PluginConfig, roots: string[]): boolean {
   return cfg.markdownIngestionEnabled === true && roots.length > 0;
+}
+
+/**
+ * True only for a confirmed ENOENT, checked via the error code through the
+ * cause chain. Never string-matches the message: a wrapped or localized error
+ * whose text merely mentions ENOENT must not count as proof of deletion.
+ */
+function isEnoent(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current; depth += 1) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "ENOENT") {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 function createRealFsApi(): FsApi {
