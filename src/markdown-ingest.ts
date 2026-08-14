@@ -97,6 +97,13 @@ interface RootState {
    */
   walkCompletions: number;
   /**
+   * Paths whose document this scan retired. Recorded explicitly rather than
+   * inferred from fileStates, so the partial-walk reconciliation removes only
+   * what it actually deleted and never drops tracking for a file that merely
+   * has no local state yet.
+   */
+  retiredThisScan: Set<string>;
+  /**
    * Set when a directory in this walk could not be enumerated for a reason
    * other than ENOENT. The resulting file set is partial through no fault of
    * the filesystem's contents, so it must not drive the prune pass.
@@ -408,6 +415,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       knownFiles: this.snapshotFilesForRoot(resolved),
       walkCompletions: 0,
       walkIncomplete: false,
+      retiredThisScan: new Set<string>(),
       quarantined: false,
       directoryWatchers: new Map<string, FsWatcherLike>(),
     };
@@ -439,6 +447,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
           const candidates: FileCandidate[] = [];
           rootState.walkCompletions = 0;
           rootState.walkIncomplete = false;
+          rootState.retiredThisScan.clear();
           const walked = await this.walkDirectoryWithTimeout(rootState, currentFiles, stats, candidates);
           if (!walked) {
             // The walk is still blocked in a syscall that may never return.
@@ -454,16 +463,17 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
             // still is: union what we did see into knownFiles, otherwise a
             // file first discovered during a partial walk is never tracked
             // and a later complete scan cannot prune it when it is deleted.
-            // Only files that still hold a document count -- syncing may have
-            // established a deletion (vanished between readdir and read, or
-            // grown oversized), and re-adding those would make the next
-            // complete scan delete an already-deleted document. Every deletion
-            // path clears fileStates, so it is the authority on what exists.
+            // Files this scan retired (vanished between readdir and read, or
+            // grown past the per-file cap) must NOT be re-added, or the next
+            // complete scan would delete an already-deleted document.
+            // Everything else stays tracked, including candidates left unsynced
+            // by backpressure: those may still hold a document, and dropping
+            // them would orphan it.
             for (const file of currentFiles) {
-              if (this.fileStates.has(file)) {
-                rootState.knownFiles.add(file);
-              } else {
+              if (rootState.retiredThisScan.has(file)) {
                 rootState.knownFiles.delete(file);
+              } else {
+                rootState.knownFiles.add(file);
               }
             }
           } else {
@@ -697,6 +707,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         stats.filesDeferred++;
         if (await this.deleteCachedSourceDocument(candidate.path)) {
           stats.filesDeleted++;
+          rootState.retiredThisScan.add(candidate.path);
         }
         continue;
       }
@@ -706,6 +717,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
           mtimeMs: candidate.mtimeMs,
           ctimeMs: candidate.ctimeMs,
         });
+        if (result === "deleted") {
+          rootState.retiredThisScan.add(candidate.path);
+        }
         recordSyncResult(stats, result);
       } catch (error) {
         stats.syncErrors++;
