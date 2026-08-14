@@ -1349,3 +1349,51 @@ test("a transient stat failure protects the file from the prune pass", async () 
 
   await handle.stop();
 });
+
+class SlowButProgressingFsApi extends FakeFsApi {
+  constructor(private readonly delayMs: number) { super(); }
+  override async stat(filePath: string) {
+    await delay(this.delayMs);
+    return super.stat(filePath);
+  }
+}
+
+test("a root slower than the walk timeout is NOT quarantined while it keeps completing work", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-slow-"));
+  const root = path.join(tempRoot, "slow");
+  const rpc = new FakeRpcClient();
+  // Each stat takes 60ms; the stall timeout is 100ms. No single call exceeds
+  // it, but the whole walk (6 files) takes ~360ms — over 3x the timeout.
+  const fsApi = new SlowButProgressingFsApi(60);
+  await fsApi.mkdir(root);
+  for (let i = 0; i < 6; i += 1) {
+    await fsApi.writeFile(path.join(root, `note-${i}.md`), `# note ${i}\n`, 1000 + i);
+  }
+
+  const errors: string[] = [];
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [root],
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+      markdownIngestionWalkTimeoutMs: 100,
+    },
+    async () => rpc as never,
+    { error: (m: string) => errors.push(m), warn: () => {}, info: () => {} } as never,
+    fsApi as never,
+  );
+
+  await handle.start();
+
+  // The walk outlived the timeout many times over but never stalled, so the
+  // root must be fully ingested and never quarantined. A total-elapsed cap
+  // would have quarantined it here.
+  assert.deepEqual(errors, [], `slow-but-healthy root was quarantined: ${errors.join(" | ")}`);
+  assert.equal(
+    rpc.documents.size,
+    6,
+    `expected all 6 files ingested, got ${rpc.documents.size}`,
+  );
+
+  await handle.stop();
+});

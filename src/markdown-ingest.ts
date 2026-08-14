@@ -288,6 +288,13 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly priorityMode: "mtime" | "ctime" | "size" | "fifo";
   private readonly maxTokensPerFile: number;
   private readonly walkTimeoutMs: number;
+  /**
+   * Incremented after each filesystem call in a walk RETURNS. The stall
+   * detector watches this rather than the scan stats, which count attempts:
+   * a root is only quarantined when nothing completes, never merely because
+   * one slow call is outstanding.
+   */
+  private walkCompletions = 0;
   private readonly states = new Map<string, RootState>();
   private readonly fileStates = new Map<string, FileState>();
   private readonly activeScans = new Set<Promise<void>>();
@@ -474,8 +481,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 
   /**
-   * Runs walkDirectory bounded by the walk timeout. Returns true when the walk
-   * completed. On timeout the root is quarantined and false is returned; the
+   * Runs walkDirectory under a stall watchdog. Returns true when the walk
+   * completed. On a stall the root is quarantined and false is returned; the
    * orphaned walk cannot be cancelled (the blocking syscall is uninterruptible)
    * but it checks the quarantine flag between steps, so it goes quiet instead
    * of continuing to enumerate — and, critically, instead of issuing further
@@ -494,7 +501,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let resolveStalled: (v: "stalled") => void = () => {};
     const stalled = new Promise<"stalled">((resolve) => { resolveStalled = resolve; });
-    const progress = () => stats.directoriesScanned + stats.markdownFilesSeen;
+    const progress = () => this.walkCompletions;
     let lastProgress = progress();
     const arm = () => {
       timer = setTimeout(() => {
@@ -556,7 +563,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     let entries: FsDirentLike[];
     try {
       entries = await this.fsApi.readdir(dir);
+      this.walkCompletions += 1;
     } catch (error) {
+      this.walkCompletions += 1;
       const message = formatError(error);
       if (!message.includes("ENOENT")) {
         this.logger.warn?.(`[markdown-ingest] readdir failed for ${dir}: ${message}`);
@@ -583,6 +592,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       stats.filesIncluded++;
       const stat = await this.safeStatWithCtime(child);
+      this.walkCompletions += 1;
       if (stat === "missing") {
         // Genuinely gone between readdir and stat; leaving it out of
         // currentFiles lets pruneDeletedFiles retire its document.
