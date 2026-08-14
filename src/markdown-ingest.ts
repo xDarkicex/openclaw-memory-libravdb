@@ -115,8 +115,9 @@ interface RootState {
    * Drive paths when file-provider consent is missing: each open blocks ~20s
    * then fails EINTR, retried forever by libuv), and every blocked call
    * permanently occupies a libuv threadpool thread. A quarantined root is never
-   * scanned or watched again for the lifetime of this process; a restart
-   * retries it once.
+   * scanned again for the lifetime of this process, and no new watchers are
+   * created for it; watchers registered before the stall stay open until
+   * stop(), but they cannot schedule a scan. A restart retries the root once.
    */
   quarantined: boolean;
 }
@@ -717,9 +718,6 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
           mtimeMs: candidate.mtimeMs,
           ctimeMs: candidate.ctimeMs,
         });
-        if (result === "deleted") {
-          rootState.retiredThisScan.add(candidate.path);
-        }
         recordSyncResult(stats, result);
       } catch (error) {
         stats.syncErrors++;
@@ -818,13 +816,11 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     const sourceDoc = filePath;
     const relativePath = toPosixPath(path.relative(rootState.root, filePath));
 
-    // Re-check existence when initialStat is provided — the file may have been
-    // deleted between the scan pass and the sync pass.
+    // The walk's stat is reused when it supplied one; a file deleted between
+    // the walk and this point surfaces as an ENOENT from the read below.
     const stat = initialStat ?? (await this.safeStatWithCtime(filePath));
     if (stat === "missing") {
-      await this.deleteSourceDocument(sourceDoc);
-      this.fileStates.delete(sourceDoc);
-      this.snapshotDirty = true;
+      await this.retireDocument(rootState, sourceDoc);
       return "deleted";
     }
     if (stat === "error") {
@@ -843,6 +839,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     const streamed = await this.safeReadFileStreamed(filePath, maxBytes);
     if (streamed === "too_large") {
       if (cached && await this.deleteCachedSourceDocument(sourceDoc)) {
+        rootState.retiredThisScan.add(sourceDoc);
         return "deleted";
       }
       return "skipped";
@@ -856,9 +853,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       throw new Error(`read failed transiently for ${sourceDoc}; keeping existing document`);
     }
     if (!streamed) {
-      await this.deleteSourceDocument(sourceDoc);
-      this.fileStates.delete(sourceDoc);
-      this.snapshotDirty = true;
+      await this.retireDocument(rootState, sourceDoc);
       return "deleted";
     }
 
@@ -876,9 +871,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     if (this.kind === "obsidian" && this.includePatterns.length === 0 && !looksLikeObsidianNote(filePath, text)) {
-      await this.deleteSourceDocument(sourceDoc);
-      this.fileStates.delete(sourceDoc);
-      this.snapshotDirty = true;
+      // Retires the document even though the result is "skipped" rather than
+      // "deleted", which is exactly why retirement is recorded here and not
+      // inferred from the return value at the call site.
+      await this.retireDocument(rootState, sourceDoc);
       return "skipped";
     }
     await this.ingestMarkdownDocument(sourceDoc, text, rootState.root, relativePath, fileHash, stat.size, stat.mtimeMs, stat.ctimeMs);
@@ -966,6 +962,19 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private async deleteSourceDocument(sourceDoc: string): Promise<void> {
     const queue = await this.getIngestQueue();
     await queue.enqueueDelete(sourceDoc);
+  }
+
+  /**
+   * Deletes a document and records the retirement on the scan, so the
+   * partial-walk reconciliation knows this path no longer holds one. Every
+   * in-scan retirement goes through here or through
+   * deleteCachedSourceDocument, whose callers record it.
+   */
+  private async retireDocument(rootState: RootState, sourceDoc: string): Promise<void> {
+    await this.deleteSourceDocument(sourceDoc);
+    this.fileStates.delete(sourceDoc);
+    this.snapshotDirty = true;
+    rootState.retiredThisScan.add(sourceDoc);
   }
 
   private async deleteCachedSourceDocument(sourceDoc: string): Promise<boolean> {

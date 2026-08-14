@@ -1516,3 +1516,56 @@ test("a directory we cannot enumerate does not prune the documents hidden behind
 
   await handle.stop();
 });
+
+test("an obsidian note that stops qualifying is retired without being re-tracked", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-obsidian-retire-"));
+  const root = path.join(tempRoot, "vault");
+  const subDir = path.join(root, "sub");
+  const notePath = path.join(root, "note.md");
+  const rpc = new FakeRpcClient();
+  const fsApi = new FailingReaddirFsApi();
+  await fsApi.mkdir(root);
+  await fsApi.mkdir(subDir);
+  await fsApi.writeFile(path.join(subDir, "keep.md"), "#project keep\n", 1000);
+  await fsApi.writeFile(notePath, "#project a tagged note\n", 1000);
+
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionObsidianEnabled: true,
+      markdownIngestionObsidianRoots: [root],
+      markdownIngestionObsidianSnapshotPath: snapshotPath(tempRoot, "obsidian"),
+    },
+    async () => rpc as never,
+    { error: () => {}, warn: () => {}, info: () => {} } as never,
+    fsApi as never,
+  );
+  await handle.start();
+  assert.ok(rpc.documents.has(path.resolve(notePath)), "tagged note was not ingested");
+
+  const countDeletes = () => rpc.calls.filter(
+    (c) => c.method === "delete_authored_document"
+      && (c.params as { sourceDoc: string }).sourceDoc === path.resolve(notePath),
+  ).length;
+
+  // Partial walk: the note loses its tag, so it stops qualifying and its
+  // document is retired. This path returns "skipped", not "deleted" — the
+  // reason retirement is recorded at the deletion site rather than inferred
+  // from the result at the call site.
+  fsApi.failReaddirFor.add(path.resolve(subDir));
+  await fsApi.writeFile(notePath, "just prose now, no tag\n", 2000);
+  await handle.refresh();
+  assert.ok(!rpc.documents.has(path.resolve(notePath)), "untagged note was not retired");
+  assert.equal(countDeletes(), 1, "expected exactly one retire");
+
+  // The file then leaves and a complete walk runs: nothing more to delete.
+  await fsApi.rm(notePath);
+  fsApi.failReaddirFor.clear();
+  await handle.refresh();
+  assert.equal(
+    countDeletes(),
+    1,
+    "a document retired by obsidian filtering was deleted again by the prune pass",
+  );
+
+  await handle.stop();
+});
