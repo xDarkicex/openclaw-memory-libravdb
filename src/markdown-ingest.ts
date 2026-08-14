@@ -88,6 +88,21 @@ interface RootState {
   knownFiles: Set<string>;
   directoryWatchers: Map<string, FsWatcherLike>;
   /**
+   * Incremented after each filesystem call of THIS root's walk returns. The
+   * stall detector watches it rather than the scan stats, which count
+   * attempts. Per-root rather than per-adapter: watcher-triggered scans can
+   * overlap across roots, and a shared counter would let a busy root mask a
+   * stalled sibling indefinitely. Only one walk runs per root at a time
+   * (scanState.scanning), so a single counter per root is sufficient.
+   */
+  walkCompletions: number;
+  /**
+   * Set when a directory in this walk could not be enumerated for a reason
+   * other than ENOENT. The resulting file set is partial through no fault of
+   * the filesystem's contents, so it must not drive the prune pass.
+   */
+  walkIncomplete: boolean;
+  /**
    * Set when a directory walk of this root exceeded the walk timeout. Directory
    * enumeration can block in an uninterruptible syscall (observed on iCloud
    * Drive paths when file-provider consent is missing: each open blocks ~20s
@@ -288,13 +303,6 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly priorityMode: "mtime" | "ctime" | "size" | "fifo";
   private readonly maxTokensPerFile: number;
   private readonly walkTimeoutMs: number;
-  /**
-   * Incremented after each filesystem call in a walk RETURNS. The stall
-   * detector watches this rather than the scan stats, which count attempts:
-   * a root is only quarantined when nothing completes, never merely because
-   * one slow call is outstanding.
-   */
-  private walkCompletions = 0;
   private readonly states = new Map<string, RootState>();
   private readonly fileStates = new Map<string, FileState>();
   private readonly activeScans = new Set<Promise<void>>();
@@ -398,6 +406,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         resumeFromPath: null,
       },
       knownFiles: this.snapshotFilesForRoot(resolved),
+      walkCompletions: 0,
+      walkIncomplete: false,
       quarantined: false,
       directoryWatchers: new Map<string, FsWatcherLike>(),
     };
@@ -427,6 +437,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         try {
           const currentFiles = new Set<string>();
           const candidates: FileCandidate[] = [];
+          rootState.walkCompletions = 0;
+          rootState.walkIncomplete = false;
           const walked = await this.walkDirectoryWithTimeout(rootState, currentFiles, stats, candidates);
           if (!walked) {
             // The walk is still blocked in a syscall that may never return.
@@ -437,8 +449,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
           }
           await this.syncCandidates(rootState, candidates, stats);
           if (!this.stopping) {
-          await this.pruneDeletedFiles(rootState, currentFiles, stats);
-          rootState.knownFiles = currentFiles;
+          if (!rootState.walkIncomplete) {
+            await this.pruneDeletedFiles(rootState, currentFiles, stats);
+            rootState.knownFiles = currentFiles;
+          }
           await this.saveSnapshotIfDirty();
           this.logScanStats(rootState.root, stats, Date.now() - startedAt);
         }
@@ -501,7 +515,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let resolveStalled: (v: "stalled") => void = () => {};
     const stalled = new Promise<"stalled">((resolve) => { resolveStalled = resolve; });
-    const progress = () => this.walkCompletions;
+    const progress = () => rootState.walkCompletions;
     let lastProgress = progress();
     const arm = () => {
       timer = setTimeout(() => {
@@ -563,13 +577,22 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     let entries: FsDirentLike[];
     try {
       entries = await this.fsApi.readdir(dir);
-      this.walkCompletions += 1;
+      rootState.walkCompletions += 1;
     } catch (error) {
-      this.walkCompletions += 1;
-      const message = formatError(error);
-      if (!message.includes("ENOENT")) {
-        this.logger.warn?.(`[markdown-ingest] readdir failed for ${dir}: ${message}`);
+      rootState.walkCompletions += 1;
+      if (isEnoent(error)) {
+        // The directory really is gone; its files are legitimately absent from
+        // the walk and the prune pass should retire their documents.
+        return;
       }
+      // Anything else (EPERM, EIO, EINTR...) means we cannot see what is in
+      // there. Marking the walk partial keeps the prune pass from deleting
+      // every document under this directory on a transient error.
+      rootState.walkIncomplete = true;
+      this.logger.warn?.(
+        `[markdown-ingest] readdir failed for ${dir}: ${formatError(error)}; ` +
+        `skipping prune for this scan to avoid retiring documents we cannot see`,
+      );
       return;
     }
 
@@ -592,7 +615,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       stats.filesIncluded++;
       const stat = await this.safeStatWithCtime(child);
-      this.walkCompletions += 1;
+      rootState.walkCompletions += 1;
       if (stat === "missing") {
         // Genuinely gone between readdir and stat; leaving it out of
         // currentFiles lets pruneDeletedFiles retire its document.

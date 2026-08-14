@@ -1397,3 +1397,61 @@ test("a root slower than the walk timeout is NOT quarantined while it keeps comp
 
   await handle.stop();
 });
+
+class FailingReaddirFsApi extends FakeFsApi {
+  failReaddirFor = new Set<string>();
+  override async readdir(dir: string): Promise<FsDirentLike[]> {
+    if (this.failReaddirFor.has(path.resolve(dir))) {
+      throw Object.assign(new Error(`EPERM: operation not permitted, scandir '${dir}'`), { code: "EPERM" });
+    }
+    return super.readdir(dir);
+  }
+}
+
+test("a directory we cannot enumerate does not prune the documents hidden behind it", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-readdirerr-"));
+  const root = path.join(tempRoot, "docs");
+  const subDir = path.join(root, "sub");
+  const topPath = path.join(root, "top.md");
+  const hiddenPath = path.join(subDir, "hidden.md");
+  const rpc = new FakeRpcClient();
+  const fsApi = new FailingReaddirFsApi();
+  await fsApi.mkdir(root);
+  await fsApi.mkdir(subDir);
+  await fsApi.writeFile(topPath, "# top\n", 1000);
+  await fsApi.writeFile(hiddenPath, "# hidden\n", 1000);
+
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [root],
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+    },
+    async () => rpc as never,
+    { error: () => {}, warn: () => {}, info: () => {} } as never,
+    fsApi as never,
+  );
+  await handle.start();
+  assert.ok(rpc.documents.has(path.resolve(hiddenPath)), "initial ingest of nested file failed");
+
+  // The subdirectory becomes unreadable (EPERM). Its file is now invisible to
+  // the walk — but invisible is not deleted, so its document must survive.
+  fsApi.failReaddirFor.add(path.resolve(subDir));
+  await handle.refresh();
+  assert.ok(
+    rpc.documents.has(path.resolve(hiddenPath)),
+    "a document behind an unreadable directory was pruned",
+  );
+  assert.ok(rpc.documents.has(path.resolve(topPath)), "visible sibling was lost");
+
+  // Control: when the directory is genuinely removed, pruning proceeds.
+  fsApi.failReaddirFor.clear();
+  await fsApi.rm(hiddenPath);
+  await handle.refresh();
+  assert.ok(
+    !rpc.documents.has(path.resolve(hiddenPath)),
+    "a genuinely deleted file was not pruned",
+  );
+
+  await handle.stop();
+});
