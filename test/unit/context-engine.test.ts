@@ -3317,3 +3317,115 @@ test("excludeSubagents off by default: a subagent is granted a normal expansion 
   );
 
 });
+
+// ---------------------------------------------------------------------------
+// Ingestion durability.
+//
+// afterTurn's queued task is the only thing that makes a turn durable, and both
+// tests below cover ways it could quietly fail to: reporting a batch as ingested
+// that the daemon never confirmed, and losing the per-session serialization that
+// keeps two tasks from ingesting the same messages twice.
+// ---------------------------------------------------------------------------
+
+/** Lets queued ingestion tasks advance without depending on wall-clock timing. */
+async function tick(times = 3): Promise<void> {
+  for (let i = 0; i < times; i += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+test("afterTurn fails loudly when the daemon confirms none of the batch", async () => {
+  const client = new FakeClient();
+  // lastProcessedIndex sits before this batch, so the daemon has confirmed
+  // none of it and there is nothing to append to the manifest.
+  client.afterTurnResponse = {
+    ok: true,
+    turnCount: 1,
+    cursor: { lastProcessedIndex: -1, sessionVersion: 1, manifestTailHash: "deadbeef" },
+  };
+  const warnings: string[] = [];
+  const logger = {
+    error: () => {},
+    info: () => {},
+    warn: (message: string) => { warnings.push(message); },
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, logger);
+
+  await engine.afterTurn({
+    sessionId: "s1-unconfirmed-batch",
+    sessionKey: "sk-unconfirmed-batch",
+    messages: [makeMessage("user", "unconfirmed"), makeMessage("assistant", "reply")],
+  });
+  await flushIngestion(engine);
+
+  assert.ok(
+    warnings.some((w) => /Daemon confirmed no messages/.test(w)),
+    `an unconfirmed batch must be reported, got: ${JSON.stringify(warnings)}`,
+  );
+
+  // Absence assertion: the post-ingest best-effort steps must not run for a
+  // turn that was never stored. prewarmEmbeddingCache is the observable one.
+  assert.equal(
+    client.calls.filter((c) => c.method === "searchTextCollections").length,
+    0,
+    "post-ingest work ran for a turn the daemon did not confirm",
+  );
+});
+
+test("bootstrap does not orphan an ingestion that is still in flight", async () => {
+  const client = new FakeClient();
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const releases: Array<() => void> = [];
+  (client as unknown as {
+    afterTurnKernel: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  }).afterTurnKernel = async (params) => {
+    client.calls.push({ method: "afterTurnKernel", params });
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise<void>((resolve) => { releases.push(resolve); });
+    inFlight -= 1;
+    return { ok: true, turnCount: 1 };
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const sessionId = "s1-bootstrap-orphan";
+  const sessionKey = "sk-bootstrap-orphan";
+
+  await engine.afterTurn({
+    sessionId,
+    sessionKey,
+    messages: [makeMessage("user", "a"), makeMessage("assistant", "b")],
+  });
+  await tick();
+  assert.equal(releases.length, 1, "the first ingestion should be in flight");
+
+  // bootstrap runs on a session whose previous turn is still ingesting.
+  await engine.bootstrap({ sessionId, sessionKey });
+
+  await engine.afterTurn({
+    sessionId,
+    sessionKey,
+    messages: [
+      makeMessage("user", "a"),
+      makeMessage("assistant", "b"),
+      makeMessage("user", "c"),
+      makeMessage("assistant", "d"),
+    ],
+  });
+  await tick();
+
+  // The queue entry is the per-session serialization point. Dropping it lets
+  // this second task start from a fresh promise and run alongside the first,
+  // so both load the same manifest and ingest overlapping messages.
+  assert.equal(
+    maxInFlight,
+    1,
+    "bootstrap orphaned the in-flight ingestion and a second one ran concurrently",
+  );
+
+  for (let i = 0; i < 5 && releases.length > 0; i += 1) {
+    releases.shift()?.();
+    await tick();
+  }
+  await flushIngestion(engine);
+});

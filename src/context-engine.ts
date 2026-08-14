@@ -2738,7 +2738,13 @@ export function buildContextEngineFactory(
       predictiveContextCache.delete(sessionId);
       postToolRecallCache.delete(sessionId);
       turnCache.invalidateSession(sessionId);
-      asyncIngestionQueues.delete(sessionId);
+      // Deliberately NOT clearing asyncIngestionQueues here. The queue entry is
+      // the per-session serialization point, and bootstrap can run while an
+      // ingestion from the previous turn is still in flight. Dropping the entry
+      // lets the next enqueueAsyncIngestion start from a fresh Promise.resolve()
+      // and run concurrently with the task it just orphaned, so two tasks load
+      // the same manifest, compute the same overlap and both ingest. Entries
+      // remove themselves once settled, so there is nothing to clean up.
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -3447,15 +3453,27 @@ export function buildContextEngineFactory(
               // Normal path: reconcile to what the daemon actually confirmed.
               const confirmedIndex = daemonCursor.lastProcessedIndex;
               const ackCount = Math.max(0, confirmedIndex - startIndex + 1);
-              if (ackCount > 0) {
-                const ackedMessages = ingestMessages.slice(0, ackCount);
-                const updatedManifest = manifestStore.appendACKedMessages(
-                  manifest,
-                  ackedMessages,
-                  startIndex,
+              if (ackCount === 0) {
+                // The cursor the daemon returned sits before this batch, so it
+                // confirmed none of these messages. Falling through here left
+                // the manifest un-advanced with no diagnostic, so the same
+                // messages were re-sent on every subsequent turn and the
+                // session could never make progress. Fail instead: the catch
+                // below turns this into the same warning every other ingest
+                // failure produces, and skips the post-ingest best-effort work
+                // that would otherwise run for a turn that was never stored.
+                throw new Error(
+                  `[LibraVDB] Daemon confirmed no messages for session ${sessionId} ` +
+                  `(lastProcessedIndex=${confirmedIndex}, batch started at ${startIndex}).`,
                 );
-                manifestStore.save(updatedManifest);
               }
+              const ackedMessages = ingestMessages.slice(0, ackCount);
+              const updatedManifest = manifestStore.appendACKedMessages(
+                manifest,
+                ackedMessages,
+                startIndex,
+              );
+              manifestStore.save(updatedManifest);
             }
           } else if (!repairedCursorGap && ingestMessages.length > 0) {
             // Legacy daemon (no cursor in response): optimistic ACK.
