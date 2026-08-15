@@ -73,6 +73,13 @@ export interface PluginConfig {
   markdownIngestionDebounceMs?: number;
   markdownIngestionPriorityMode?: "mtime" | "ctime" | "size" | "fifo";
   markdownIngestionMaxTokensPerFile?: number;
+  /**
+   * Per-root stall timeout in milliseconds (default 60000). Measured as time
+   * since the last filesystem call returned, not as a budget for the whole
+   * walk: a large or slow root that keeps making progress is never
+   * interrupted. A root that goes this long with no completed filesystem call
+   * is treated as blocked and quarantined until the process restarts.
+   */
   markdownIngestionWalkTimeoutMs?: number;
   markdownIngestionSnapshotPath?: string;
   markdownIngestionObsidianSnapshotPath?: string;

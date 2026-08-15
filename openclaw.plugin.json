@@ -444,6 +444,11 @@
         ],
         "default": "mtime"
       },
+      "markdownIngestionWalkTimeoutMs": {
+        "type": "number",
+        "default": 60000,
+        "description": "Per-root stall timeout for markdown ingestion, in milliseconds. Measured as time since the last filesystem call returned, NOT a budget for the whole walk: a large or slow root that keeps making progress is never interrupted. A root that goes this long without a single completed filesystem call is treated as blocked and quarantined for the lifetime of the process."
+      },
       "markdownIngestionMaxTokensPerFile": {
         "type": "number",
         "default": 128000

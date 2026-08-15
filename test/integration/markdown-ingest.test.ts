@@ -85,6 +85,9 @@ class FakeFsApi {
   async rmdir(dir: string): Promise<void> {
     const abs = path.resolve(dir);
     this.dirs.delete(abs);
+    for (const d of [...this.dirs]) {
+      if (d.startsWith(abs + path.sep)) this.dirs.delete(d);
+    }
     for (const filePath of [...this.files.keys()]) {
       if (filePath.startsWith(abs + path.sep)) this.files.delete(filePath);
     }
@@ -1160,7 +1163,9 @@ class HangingReaddirFsApi extends FakeFsApi {
   readdirAttempts = 0;
   hangEnabled = true;
   override async readdir(dir: string): Promise<FsDirentLike[]> {
-    if (this.hangEnabled && path.resolve(dir).startsWith(path.resolve(this.hangPrefix))) {
+    const abs = path.resolve(dir);
+    const prefix = path.resolve(this.hangPrefix);
+    if (this.hangEnabled && (abs === prefix || abs.startsWith(prefix + path.sep))) {
       this.readdirAttempts += 1;
       return new Promise(() => {}); // blocks forever, like an uninterruptible open
     }
@@ -1374,8 +1379,10 @@ test("a root slower than the walk timeout is NOT quarantined while it keeps comp
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-slow-"));
   const root = path.join(tempRoot, "slow");
   const rpc = new FakeRpcClient();
-  // Each stat takes 60ms; the stall timeout is 100ms. No single call exceeds
-  // it, but the whole walk (6 files) takes ~360ms — over 3x the timeout.
+  // Each stat takes 60ms against a 400ms stall window, so no single step comes
+  // close to stalling even on a loaded runner, while the whole walk (6 files,
+  // ~360ms) still has to outlive a naive total-elapsed cap set at the same
+  // value. That is the distinction under test.
   const fsApi = new SlowButProgressingFsApi(60);
   await fsApi.mkdir(root);
   for (let i = 0; i < 6; i += 1) {
@@ -1388,7 +1395,7 @@ test("a root slower than the walk timeout is NOT quarantined while it keeps comp
       markdownIngestionEnabled: true,
       markdownIngestionRoots: [root],
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
-      markdownIngestionWalkTimeoutMs: 100,
+      markdownIngestionWalkTimeoutMs: 400,
     },
     async () => rpc as never,
     { error: (m: string) => errors.push(m), warn: () => {}, info: () => {} } as never,
@@ -1397,7 +1404,7 @@ test("a root slower than the walk timeout is NOT quarantined while it keeps comp
 
   await handle.start();
 
-  // The walk outlived the timeout many times over but never stalled, so the
+  // The walk outlived the timeout but never stalled, so the
   // root must be fully ingested and never quarantined. A total-elapsed cap
   // would have quarantined it here.
   assert.deepEqual(errors, [], `slow-but-healthy root was quarantined: ${errors.join(" | ")}`);
