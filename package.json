@@ -20,7 +20,6 @@
     "README.md",
     "HOOK.md",
     "index.js",
-    "cli-metadata.js",
     "openclaw.plugin.json",
     "package.json",
     "docs/",
@@ -31,8 +30,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./dist/index.js",
-      "./dist/cli-metadata.js"
+      "./dist/index.js"
     ],
     "compat": {
       "pluginApi": ">=2026.3.22",
