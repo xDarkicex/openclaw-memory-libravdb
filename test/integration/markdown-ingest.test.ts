@@ -1276,6 +1276,7 @@ test("a transient read failure keeps the document; only ENOENT deletes it", asyn
   await fsApi.mkdir(root);
   await fsApi.writeFile(notePath, "# v1\n", 1000);
 
+  const warns: string[] = [];
   const handle = createMarkdownIngestionHandle(
     {
       markdownIngestionEnabled: true,
@@ -1283,7 +1284,7 @@ test("a transient read failure keeps the document; only ENOENT deletes it", asyn
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
     async () => rpc as never,
-    { error: () => {}, warn: () => {}, info: () => {} } as never,
+    { error: () => {}, warn: (m: string) => warns.push(m), info: () => {} } as never,
     fsApi as never,
   );
   await handle.start();
@@ -1300,6 +1301,12 @@ test("a transient read failure keeps the document; only ENOENT deletes it", asyn
     "a transient read failure deleted the document",
   );
   assert.ok(rpc.documents.has(path.resolve(notePath)), "document lost after read failure");
+  // The original failure detail must survive to the log: errno text is how the
+  // production incident behind this change was diagnosed.
+  assert.ok(
+    warns.some((m) => m.includes("EPERM")),
+    `expected a warning carrying the EPERM detail, got: ${JSON.stringify(warns)}`,
+  );
 
   // Reading heals: the changed content is ingested on the next scan.
   fsApi.failReadsFor.clear();
@@ -1342,6 +1349,7 @@ test("a transient stat failure protects the file from the prune pass", async () 
   await fsApi.writeFile(aPath, "# a\n", 1000);
   await fsApi.writeFile(bPath, "# b\n", 1000);
 
+  const warns: string[] = [];
   const handle = createMarkdownIngestionHandle(
     {
       markdownIngestionEnabled: true,
@@ -1349,7 +1357,7 @@ test("a transient stat failure protects the file from the prune pass", async () 
       markdownIngestionSnapshotPath: snapshotPath(tempRoot),
     },
     async () => rpc as never,
-    { error: () => {}, warn: () => {}, info: () => {} } as never,
+    { error: () => {}, warn: (m: string) => warns.push(m), info: () => {} } as never,
     fsApi as never,
   );
   await handle.start();
@@ -1362,6 +1370,10 @@ test("a transient stat failure protects the file from the prune pass", async () 
   assert.ok(
     rpc.documents.has(path.resolve(aPath)),
     "a transiently unstattable file was pruned from the daemon",
+  );
+  assert.ok(
+    warns.some((m) => m.includes("EINTR")),
+    `expected a warning carrying the EINTR detail, got: ${JSON.stringify(warns)}`,
   );
 
   await handle.stop();

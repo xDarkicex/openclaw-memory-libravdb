@@ -161,7 +161,7 @@ interface FileCandidate {
 }
 
 type SyncMarkdownResult = "ingested" | "unchanged" | "deleted" | "skipped";
-type StreamReadResult = { text: string; fileHash: string } | "too_large" | "read_error" | null;
+type StreamReadResult = { text: string; fileHash: string } | "too_large" | { failed: string } | null;
 
 interface MarkdownSnapshotFile {
   version: number;
@@ -649,10 +649,12 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         // currentFiles lets pruneDeletedFiles retire its document.
         continue;
       }
-      if (stat === "error") {
-        // Transient failure (EINTR, EPERM, EIO...): we know nothing about the
-        // file's fate, so protect its document from the prune pass and let a
-        // later scan retry it.
+      if ("failed" in stat) {
+        // Transient failure: we know nothing about the file's fate, so protect
+        // its document from the prune pass and let a later scan retry it. The
+        // original failure (EINTR, EPERM, EIO...) goes to the log — errno
+        // detail is how the incident behind this code was diagnosed.
+        this.logger.warn?.(`[markdown-ingest] stat failed for ${child}: ${stat.failed}; keeping existing document`);
         currentFiles.add(child);
         stats.syncErrors++;
         continue;
@@ -823,11 +825,12 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       await this.retireDocument(rootState, sourceDoc);
       return "deleted";
     }
-    if (stat === "error") {
+    if ("failed" in stat) {
       // Unknown state is not deletion evidence; keep the document. Thrown so
       // the caller's catch counts it as a sync error -- a persistent failure
-      // must show up in scan stats, not disappear into the skipped count.
-      throw new Error(`stat failed transiently for ${sourceDoc}; keeping existing document`);
+      // must show up in scan stats, not disappear into the skipped count --
+      // and the original failure text rides along for diagnostics.
+      throw new Error(`stat failed transiently for ${sourceDoc} (${stat.failed}); keeping existing document`);
     }
 
     const cached = this.fileStates.get(sourceDoc);
@@ -844,13 +847,13 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       return "skipped";
     }
-    if (streamed === "read_error") {
+    if (streamed !== null && "failed" in streamed) {
       // The file exists (it just passed stat) but could not be read. That is a
       // transient condition, not deletion evidence; the old behavior here
       // deleted the document from the daemon on ANY read failure. Thrown so it
       // lands in the caller's sync-error accounting rather than vanishing into
-      // the skipped count.
-      throw new Error(`read failed transiently for ${sourceDoc}; keeping existing document`);
+      // the skipped count, with the original failure text for diagnostics.
+      throw new Error(`read failed transiently for ${sourceDoc} (${streamed.failed}); keeping existing document`);
     }
     if (!streamed) {
       await this.retireDocument(rootState, sourceDoc);
@@ -1044,13 +1047,15 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
 
   private async safeStatWithCtime(
     filePath: string,
-  ): Promise<{ size: number; mtimeMs: number; ctimeMs: number } | "missing" | "error"> {
+  ): Promise<{ size: number; mtimeMs: number; ctimeMs: number } | "missing" | { failed: string }> {
     try {
       return await this.fsApi.stat(filePath);
     } catch (error) {
       // Only a confirmed ENOENT means the file is gone. Any other failure is a
-      // transient condition that must never be treated as deletion evidence.
-      return isEnoent(error) ? "missing" : "error";
+      // transient condition that must never be treated as deletion evidence —
+      // and its detail (EINTR, EPERM, EIO...) is diagnostic gold, so it is
+      // carried along rather than collapsed into a bare sentinel.
+      return isEnoent(error) ? "missing" : { failed: formatError(error) };
     }
   }
 
@@ -1084,8 +1089,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       };
     } catch (error) {
       // null (-> delete) only for a confirmed ENOENT; anything else is
-      // transient and must not retire the document.
-      return isEnoent(error) ? null : "read_error";
+      // transient and must not retire the document. The detail rides along
+      // for diagnostics.
+      return isEnoent(error) ? null : { failed: formatError(error) };
     } finally {
       if (stream) {
         await stream.close().catch(() => {});
