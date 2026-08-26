@@ -1160,6 +1160,33 @@ function hasCompactedSessionContext(text: string): boolean {
   return HAS_COMPACTED_SESSION_CONTEXT_RE.test(text);
 }
 
+function extractCompactedSessionContext(text: string): string | undefined {
+  return text.match(COMPACTED_SESSION_CONTEXT_RE)?.join("\n") || undefined;
+}
+
+type CompactedProjectionSnapshot = {
+  context: string;
+  sourceStartIndex: number;
+  boundarySignature: string;
+};
+
+export type CompactedProjectionState = {
+  snapshots: Map<string, CompactedProjectionSnapshot>;
+  lifecycleTokens: Map<string, object>;
+};
+
+export function createCompactedProjectionState(): CompactedProjectionState {
+  return { snapshots: new Map(), lifecycleTokens: new Map() };
+}
+
+export function clearCompactedProjectionState(
+  state: CompactedProjectionState,
+  sessionId: string,
+): void {
+  state.snapshots.delete(sessionId);
+  state.lifecycleTokens.delete(sessionId);
+}
+
 function sanitizeDaemonSystemPromptAddition(text: string): string {
   return demoteDaemonAuthoredContextBlocks(
     sanitizeToolCallPatterns(canonicalizeCompactedSessionContextBlocks(text)),
@@ -1323,6 +1350,20 @@ export function normalizeKernelMessages(
       return normalized;
     })
     .filter((message) => message.role === "user" || message.content.trim().length > 0);
+}
+
+function buildProjectionBoundarySignature(
+  messages: OpenClawCompatibleMessage[],
+  sourceStartIndex: number,
+): string {
+  // ponytail: OpenClaw histories are append-only; use a durable transcript
+  // revision instead if the host ever permits arbitrary mid-prefix edits.
+  const boundary = messages.slice(Math.max(0, sourceStartIndex - 4), sourceStartIndex);
+  return createHash("sha256").update(JSON.stringify({ sourceStartIndex, boundary: boundary.map((message) => ({
+    role: message.role,
+    content: message.content,
+    id: typeof message.id === "string" ? message.id : undefined,
+  })) })).digest("hex");
 }
 
 function buildBeforeTurnSignature(messages: OpenClawCompatibleMessage[]): string | null {
@@ -1976,6 +2017,7 @@ export function buildContextEngineFactory(
   runtime: PluginRuntime,
   cfg: PluginConfig,
   logger: LoggerLike = console,
+  compactedProjectionState: CompactedProjectionState = createCompactedProjectionState(),
 ) {
   if (cfg?.optimizationMemoCacheSize !== undefined) {
     setOptimizationMemoCacheSize(cfg.optimizationMemoCacheSize);
@@ -2062,6 +2104,30 @@ export function buildContextEngineFactory(
         `LibraVDB activated daemon-owned compacted projection sessionId=${sessionId} source=${source}`,
       );
     }
+  }
+
+  function rememberCompactedProjection(
+    sessionId: string,
+    context: string,
+    sourceStartIndex: number,
+    boundarySignature: string,
+  ): void {
+    const snapshots = compactedProjectionState.snapshots;
+    snapshots.delete(sessionId);
+    if (snapshots.size >= POST_TOOL_CACHE_MAX_SIZE) {
+      const oldest = snapshots.keys().next().value;
+      if (oldest !== undefined) snapshots.delete(oldest);
+    }
+    snapshots.set(sessionId, { context, sourceStartIndex, boundarySignature });
+  }
+
+  function getProjectionLifecycleToken(sessionId: string): object {
+    let token = compactedProjectionState.lifecycleTokens.get(sessionId);
+    if (!token) {
+      token = {};
+      compactedProjectionState.lifecycleTokens.set(sessionId, token);
+    }
+    return token;
   }
 
   function enforceAssembleBudget(
@@ -2650,6 +2716,7 @@ export function buildContextEngineFactory(
     tokenBudget?: number;
     currentTokenCount?: number;
   }): Promise<OpenClawCompatibleCompactResult> {
+    const lifecycleToken = getProjectionLifecycleToken(args.sessionId);
     const request = buildCompactSessionRequest(args);
     try {
       const client = await runtime.getClient();
@@ -2659,7 +2726,11 @@ export function buildContextEngineFactory(
         logger,
         ...(threshold != null ? { threshold } : {}),
       });
-      if (result.ok && result.compacted) {
+      if (
+        result.ok &&
+        result.compacted &&
+        compactedProjectionState.lifecycleTokens.get(args.sessionId) === lifecycleToken
+      ) {
         activateCompactedProjection(args.sessionId, "compact");
       }
       return result;
@@ -2813,7 +2884,24 @@ export function buildContextEngineFactory(
         };
       }
 
-      let compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+      const assembleLifecycleToken = getProjectionLifecycleToken(sessionId);
+      let cachedCompactedProjection = compactedProjectionState.snapshots.get(sessionId);
+      if (cachedCompactedProjection) {
+        if (
+          args.messages.length < cachedCompactedProjection.sourceStartIndex ||
+          buildProjectionBoundarySignature(
+            args.messages,
+            cachedCompactedProjection.sourceStartIndex,
+          ) !== cachedCompactedProjection.boundarySignature
+        ) {
+          compactedProjectionState.snapshots.delete(sessionId);
+          compactedProjectionSessions.delete(sessionId);
+          postToolRecallCache.delete(sessionId);
+          cachedCompactedProjection = undefined;
+        }
+      }
+      let compactionProjectionActive =
+        compactedProjectionSessions.has(sessionId) || cachedCompactedProjection !== undefined;
 
       const userId = resolveUserId({
         userIdOverride: args.userId,
@@ -2827,7 +2915,9 @@ export function buildContextEngineFactory(
       const recentMessages = selectTurnAlignedSourceSuffix(args.messages, normalizeWindow);
       const messages = normalizeKernelMessages(recentMessages);
       const projectedSourceMessages = () => compactionProjectionActive
-        ? recentMessages
+        ? cachedCompactedProjection
+          ? args.messages.slice(cachedCompactedProjection.sourceStartIndex)
+          : recentMessages
         : args.messages;
       const buildAssembleFallback = (): OpenClawCompatibleAssembleResult => {
         if (!compactionProjectionActive) {
@@ -2835,8 +2925,10 @@ export function buildContextEngineFactory(
         }
         return enforceCompactedProjectionBudgetInvariant({
           messages: projectedSourceMessages(),
-          estimatedTokens: approximateMessagesTokens(projectedSourceMessages()),
-          systemPromptAddition: "",
+          estimatedTokens:
+            approximateMessagesTokens(projectedSourceMessages()) +
+            approximateTokenCount(cachedCompactedProjection?.context ?? ""),
+          systemPromptAddition: cachedCompactedProjection?.context ?? "",
           promptAuthority: "assembled",
         }, args.tokenBudget);
       };
@@ -2879,6 +2971,15 @@ export function buildContextEngineFactory(
           force: true,
           currentTokenCount: currentContextTokens,
         });
+        if (compactedProjectionState.lifecycleTokens.get(sessionId) !== assembleLifecycleToken) {
+          logger.warn?.(`LibraVDB discarded stale compaction result after session lifecycle change sessionId=${sessionId}`);
+          return ensureReplaySafeUserTurn(
+            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
         logPredictiveCompactionOutcome({
           logger,
           phase: "assemble",
@@ -2890,7 +2991,8 @@ export function buildContextEngineFactory(
           compacted: compactionResult.compacted,
           reason: compactionResult.reason,
         });
-        compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+        compactionProjectionActive =
+          compactedProjectionSessions.has(sessionId) || cachedCompactedProjection !== undefined;
         if (!compactionResult.ok && !compactionProjectionActive) {
           logger.info?.(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
@@ -2981,7 +3083,12 @@ export function buildContextEngineFactory(
             compactionProjectionActive = true;
           }
           const sourceProjection = projectedSourceMessages();
-          const mockResp = { messages: sourceProjection, systemPromptAddition: cachedSystemPrompt };
+          const mockResp = {
+            messages: sourceProjection,
+            systemPromptAddition: cachedSystemPrompt,
+            estimatedTokens:
+              approximateMessagesTokens(sourceProjection) + approximateTokenCount(cachedSystemPrompt),
+          };
           enforced = enforceAssembleBudget(
             normalizeAssembleResult(
               mockResp,
@@ -3080,16 +3187,46 @@ export function buildContextEngineFactory(
               setTimeout(() => reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`)), assembleTimeout)
             ),
           ]);
+          const daemonCompactedProjectionContext =
+            typeof resp.systemPromptAddition === "string"
+              ? extractCompactedSessionContext(resp.systemPromptAddition)
+              : undefined;
           if (
-            typeof resp.systemPromptAddition === "string" &&
-            hasCompactedSessionContext(resp.systemPromptAddition)
+            daemonCompactedProjectionContext &&
+            compactedProjectionState.lifecycleTokens.get(sessionId) === assembleLifecycleToken
           ) {
+            cachedCompactedProjection = undefined;
+            const sourceStartIndex = args.messages.length - recentMessages.length;
+            const boundarySignature = buildProjectionBoundarySignature(args.messages, sourceStartIndex);
+            rememberCompactedProjection(
+              sessionId,
+              daemonCompactedProjectionContext,
+              sourceStartIndex,
+              boundarySignature,
+            );
             activateCompactedProjection(sessionId, "assemble");
             compactionProjectionActive = true;
           }
           const sourceProjection = projectedSourceMessages();
+          const restoredCompactedContext =
+            cachedCompactedProjection && !daemonCompactedProjectionContext
+              ? cachedCompactedProjection.context
+              : undefined;
+          const restoredSystemPromptAddition = restoredCompactedContext
+            ? appendSystemPromptAddition(restoredCompactedContext, resp.systemPromptAddition)
+            : undefined;
           const assembled = normalizeAssembleResult(
-            resp,
+            restoredCompactedContext
+              ? {
+                  ...resp,
+                  systemPromptAddition: restoredSystemPromptAddition,
+                  estimatedTokens: Math.max(
+                    typeof resp.estimatedTokens === "number" ? resp.estimatedTokens : 0,
+                    approximateMessagesTokens(sourceProjection) +
+                      approximateTokenCount(restoredSystemPromptAddition ?? ""),
+                  ),
+                }
+              : resp,
             sourceProjection,
             compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
           );
@@ -3193,14 +3330,6 @@ export function buildContextEngineFactory(
             }
           }
 
-          if (postToolRecallCache.size >= POST_TOOL_CACHE_MAX_SIZE) {
-            const oldest = postToolRecallCache.keys().next().value;
-            if (oldest !== undefined) postToolRecallCache.delete(oldest);
-          }
-          postToolRecallCache.set(sessionId, {
-            lastUserIndex,
-            systemPromptAddition: enforced.systemPromptAddition,
-          });
         }
 
         // tokenBudgetMax stage 2 (enforcer): truncate the combined injection to
@@ -3236,13 +3365,57 @@ export function buildContextEngineFactory(
         // The returned transcript is always an untouched source projection.
         // Once daemon compaction owns history, OpenClaw must precheck this
         // assembled suffix rather than the unwindowed session transcript.
-        return ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
+        const lifecycleChanged =
+          compactedProjectionState.lifecycleTokens.get(sessionId) !== assembleLifecycleToken;
+        const compactedContextMissing =
+          compactionProjectionActive &&
+          extractCompactedSessionContext(enforced.systemPromptAddition) === undefined;
+        if (lifecycleChanged || compactedContextMissing) {
+          logger.warn?.(
+            `LibraVDB discarded ${lifecycleChanged ? "stale" : "incomplete"} compacted projection ` +
+            `sessionId=${sessionId}`,
+          );
+          return ensureReplaySafeUserTurn(
+            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
+        const replaySafe = ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
+        if (
+          compactionProjectionActive &&
+          extractCompactedSessionContext(replaySafe.systemPromptAddition) === undefined
+        ) {
+          logger.warn?.(`LibraVDB discarded compacted projection after user-turn repair sessionId=${sessionId}`);
+          return ensureReplaySafeUserTurn(
+            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
+        if (postToolRecallCache.size >= POST_TOOL_CACHE_MAX_SIZE) {
+          const oldest = postToolRecallCache.keys().next().value;
+          if (oldest !== undefined) postToolRecallCache.delete(oldest);
+        }
+        postToolRecallCache.set(sessionId, {
+          lastUserIndex,
+          systemPromptAddition: replaySafe.systemPromptAddition,
+        });
+        return replaySafe;
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
+        const fallback = compactedProjectionState.lifecycleTokens.get(sessionId) === assembleLifecycleToken
+          ? buildAssembleFallback()
+          : buildBudgetFallbackContext(args.messages, args.tokenBudget);
         return ensureReplaySafeUserTurn(
-          buildAssembleFallback(),
+          compactionProjectionActive &&
+            extractCompactedSessionContext(fallback.systemPromptAddition) === undefined
+            ? buildBudgetFallbackContext(args.messages, args.tokenBudget)
+            : fallback,
           args.messages,
           logger,
           args.tokenBudget,

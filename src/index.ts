@@ -2,7 +2,7 @@ import { resolveIdentity, resolveTenantKey, resolveReadTenants } from "./identit
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { registerMemoryCli } from "./cli.js";
 import { registerMemoryCliMetadata } from "./cli-descriptors.js";
-import { buildContextEngineFactory, clearSessionTrigger, extractSpeakers, normalizeKernelMessage, setSessionTrigger } from "./context-engine.js";
+import { buildContextEngineFactory, clearCompactedProjectionState, clearSessionTrigger, createCompactedProjectionState, extractSpeakers, normalizeKernelMessage, setSessionTrigger } from "./context-engine.js";
 import { createBeforeResetHook, createSessionEndHook } from "./lifecycle-hooks.js";
 import { createDreamPromotionHandle } from "./dream-promotion.js";
 import { createMarkdownIngestionHandle } from "./markdown-ingest.js";
@@ -181,6 +181,7 @@ export function register(api: OpenClawPluginApi) {
   // TypeScript can't narrow through the ternary, so re-bind and guard.
   const runtime = runtimeOrNull;
   if (!runtime) return; // unreachable but satisfies the type checker
+  const compactedProjectionState = createCompactedProjectionState();
 
   if (!memSlot) {
     logger.warn?.("[libravdb-memory] plugins.slots.memory is unset; set it to \"libravdb-memory\" for memory to work.");
@@ -219,7 +220,7 @@ export function register(api: OpenClawPluginApi) {
 
   api.registerContextEngine(
     MEMORY_ID,
-    () => buildContextEngineFactory(runtime, cfg, logger),
+    () => buildContextEngineFactory(runtime, cfg, logger, compactedProjectionState),
   );
 
   // Register the daemon's extractive summarization as a pluggable
@@ -385,12 +386,23 @@ export function register(api: OpenClawPluginApi) {
     }
   });
 
-  api.on("session_end", async (_event, ctx) => {
-    const sessionId = (ctx as Record<string, unknown> | undefined)?.sessionId as string | undefined;
-    if (sessionId) clearSessionTrigger(sessionId);
+  api.on("session_end", async (event, ctx) => {
+    const sessionId = (
+      (event as Record<string, unknown> | undefined)?.sessionId ??
+      (ctx as Record<string, unknown> | undefined)?.sessionId
+    ) as string | undefined;
+    if (sessionId) {
+      clearSessionTrigger(sessionId);
+      clearCompactedProjectionState(compactedProjectionState, sessionId);
+    }
   });
 
-  api.on("before_reset", createBeforeResetHook(runtime, logger));
+  const beforeResetHook = createBeforeResetHook(runtime, logger);
+  api.on("before_reset", async (event, ctx) => {
+    const sessionId = (ctx as Record<string, unknown> | undefined)?.sessionId as string | undefined;
+    if (sessionId) clearCompactedProjectionState(compactedProjectionState, sessionId);
+    await beforeResetHook(event, ctx);
+  });
   api.on("session_end", createSessionEndHook(runtime, logger));
   api.on("gateway_stop", async () => {
     await runtime.shutdown();
