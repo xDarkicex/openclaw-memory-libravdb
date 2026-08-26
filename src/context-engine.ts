@@ -2887,7 +2887,7 @@ export function buildContextEngineFactory(
         };
       }
 
-      const assembleLifecycleToken = getProjectionLifecycleToken(sessionId);
+      let assembleLifecycleToken = getProjectionLifecycleToken(sessionId);
       let cachedCompactedProjection = compactedProjectionState.snapshots.get(sessionId);
       if (cachedCompactedProjection) {
         if (
@@ -2897,9 +2897,8 @@ export function buildContextEngineFactory(
             cachedCompactedProjection.sourceStartIndex,
           ) !== cachedCompactedProjection.boundarySignature
         ) {
-          compactedProjectionState.snapshots.delete(sessionId);
-          compactedProjectionSessions.delete(sessionId);
-          postToolRecallCache.delete(sessionId);
+          clearCompactedProjectionState(compactedProjectionState, sessionId);
+          assembleLifecycleToken = getProjectionLifecycleToken(sessionId);
           cachedCompactedProjection = undefined;
         }
       }

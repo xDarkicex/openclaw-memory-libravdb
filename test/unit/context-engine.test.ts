@@ -1604,6 +1604,90 @@ test("session cleanup deactivates an existing engine and clears its post-tool pr
   assert.doesNotMatch(afterReset.systemPromptAddition, /Projection before reset/u);
 });
 
+test("boundary divergence fences an older overlapping assembly from restoring stale projection", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = "s1-boundary-divergence-race";
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nInitial projection\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  assert.equal(state.snapshots.has(sessionId), true);
+
+  let releaseOlder!: () => void;
+  let markOlderStarted!: () => void;
+  const olderStarted = new Promise<void>((resolve) => {
+    markOlderStarted = resolve;
+  });
+  const olderRelease = new Promise<void>((resolve) => {
+    releaseOlder = resolve;
+  });
+  let overlappingCalls = 0;
+  (client as unknown as {
+    assembleContextInternal: (params: Record<string, unknown>) => Promise<unknown>;
+  }).assembleContextInternal = async (params) => {
+    client.calls.push({ method: "assembleContextInternal", params });
+    overlappingCalls += 1;
+    if (overlappingCalls === 1) {
+      markOlderStarted();
+      await olderRelease;
+      return {
+        messages: [],
+        estimatedTokens: 500,
+        systemPromptAddition:
+          "<compacted_session_context>\nObsolete projection\n</compacted_session_context>",
+      };
+    }
+    return {
+      messages: [],
+      estimatedTokens: 500,
+      systemPromptAddition:
+        "<compacted_session_context>\nFresh projection\n</compacted_session_context>",
+    };
+  };
+
+  const olderPending = engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  await olderStarted;
+
+  const divergentMessages = [...sourceMessages];
+  divergentMessages[19] = makeMessage("assistant", "changed boundary history", "message-19");
+  const afterDivergence = await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: divergentMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  releaseOlder();
+  const olderResult = await olderPending;
+
+  assert.equal(afterDivergence.promptAuthority, "assembled");
+  assert.equal(olderResult.promptAuthority, "preassembly_may_overflow");
+  assert.match(state.snapshots.get(sessionId)?.context ?? "", /Fresh projection/u);
+  assert.equal(state.activeSessions.has(sessionId), true);
+  assert.deepEqual(olderResult.messages, sourceMessages);
+  assert.doesNotMatch(olderResult.systemPromptAddition, /Obsolete projection/u);
+});
+
 test("engine replacement does not persist ambiguous compaction or cross a lifecycle race", async () => {
   const client = new FakeClient();
   const state = createCompactedProjectionState();
