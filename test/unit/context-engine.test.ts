@@ -1541,6 +1541,69 @@ test("daemon compacted projection survives engine replacement until session stat
   assert.equal(afterReset.messages.length, appendedMessages.length);
 });
 
+test("session cleanup deactivates an existing engine and clears its post-tool projection", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = "s1-reset-active-engine";
+  const sourceMessages = [
+    ...Array.from({ length: 70 }, (_, index) =>
+      makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+    ),
+    makeMessage("user", "run tool", "message-70"),
+    {
+      role: "assistant",
+      id: "message-71",
+      content: [{ type: "toolCall", name: "lookup", arguments: {} }],
+    },
+    makeMessage("toolResult", "tool result", "message-72"),
+  ];
+  client.compactResponse = { ok: true, didCompact: true };
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nProjection before reset\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+
+  await engine.compact({ sessionId, force: true, tokenBudget: 100_000 });
+  const beforeReset = await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "run tool",
+    tokenBudget: 100_000,
+  });
+  assert.equal(state.activeSessions.has(sessionId), true);
+  assert.match(beforeReset.systemPromptAddition, /Projection before reset/u);
+
+  const assembleCallsBeforeReset = client.calls.filter(
+    (call) => call.method === "assembleContextInternal",
+  ).length;
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "<memory_context>fresh context</memory_context>",
+  };
+  clearCompactedProjectionState(state, sessionId);
+  const afterReset = await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "run tool",
+    tokenBudget: 100_000,
+  });
+
+  assert.equal(state.activeSessions.has(sessionId), false);
+  assert.equal(
+    client.calls.filter((call) => call.method === "assembleContextInternal").length,
+    assembleCallsBeforeReset + 1,
+  );
+  assert.equal(afterReset.promptAuthority, "preassembly_may_overflow");
+  assert.deepEqual(afterReset.messages, sourceMessages);
+  assert.doesNotMatch(afterReset.systemPromptAddition, /Projection before reset/u);
+});
+
 test("engine replacement does not persist ambiguous compaction or cross a lifecycle race", async () => {
   const client = new FakeClient();
   const state = createCompactedProjectionState();

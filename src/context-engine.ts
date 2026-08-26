@@ -1173,10 +1173,11 @@ type CompactedProjectionSnapshot = {
 export type CompactedProjectionState = {
   snapshots: Map<string, CompactedProjectionSnapshot>;
   lifecycleTokens: Map<string, object>;
+  activeSessions: Set<string>;
 };
 
 export function createCompactedProjectionState(): CompactedProjectionState {
-  return { snapshots: new Map(), lifecycleTokens: new Map() };
+  return { snapshots: new Map(), lifecycleTokens: new Map(), activeSessions: new Set() };
 }
 
 export function clearCompactedProjectionState(
@@ -1185,6 +1186,8 @@ export function clearCompactedProjectionState(
 ): void {
   state.snapshots.delete(sessionId);
   state.lifecycleTokens.delete(sessionId);
+  state.activeSessions.delete(sessionId);
+  postToolRecallCache.delete(sessionId);
 }
 
 function sanitizeDaemonSystemPromptAddition(text: string): string {
@@ -2024,7 +2027,7 @@ export function buildContextEngineFactory(
   }
 
   const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
-  const compactedProjectionSessions = new Set<string>();
+  const compactedProjectionSessions = compactedProjectionState.activeSessions;
   const PREDICTIVE_CACHE_MAX_SIZE = 100;
   // BeforeTurnKernel state
   const turnCache = new TurnMemoryCache(100);
@@ -3763,7 +3766,6 @@ export function buildContextEngineFactory(
         }
       }
       predictiveContextCache.clear();
-      compactedProjectionSessions.clear();
       postToolRecallCache.clear();
       asyncIngestionQueues.clear();
       triggerCache.clear();
