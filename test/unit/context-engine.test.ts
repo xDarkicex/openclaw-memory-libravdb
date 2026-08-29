@@ -1784,18 +1784,85 @@ test("reset during predictive compaction cannot activate stale projection state"
   assert.equal(state.snapshots.size, 0);
 });
 
-test("successful predictive compaction without a complete marker fails closed", async () => {
+test("queued afterTurn compaction cannot reactivate projection state after reset", async () => {
   const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = "s1-after-turn-reset-race";
+  let releaseAfterTurn!: () => void;
+  const afterTurnStarted = new Promise<void>((resolve) => {
+    (client as unknown as {
+      afterTurnKernel: (params: Record<string, unknown>) => Promise<unknown>;
+    }).afterTurnKernel = async (params) => {
+      client.calls.push({ method: "afterTurnKernel", params });
+      resolve();
+      await new Promise<void>((release) => {
+        releaseAfterTurn = release;
+      });
+      return { ok: true };
+    };
+  });
+  client.compactResponse = { ok: true, didCompact: true };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "queued before reset")],
+    tokenBudget: 100_000,
+    runtimeContext: { currentTokenCount: 50_000 },
+  });
+  await afterTurnStarted;
+
+  clearCompactedProjectionState(state, sessionId);
+  releaseAfterTurn();
+  await flushIngestion(engine);
+
+  assert.equal(client.calls.some((call) => call.method === "compactSession"), false);
+  assert.equal(state.activeSessions.has(sessionId), false);
+  assert.equal(state.snapshots.has(sessionId), false);
+});
+
+test("successful predictive compaction does not restore an older cached marker", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nOlder projection\n</compacted_session_context>",
+  };
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  const state = createCompactedProjectionState();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engine.assemble({
+    sessionId: "s1-compaction-without-marker",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  assert.equal(state.snapshots.has("s1-compaction-without-marker"), true);
+
+  const olderSnapshot = state.snapshots.get("s1-compaction-without-marker");
+  client.compactResponse = {
+    didCompact: false,
+    skippedNoNewTurns: true,
+    lastCompactedTurn: 37n,
+  };
+  const unchanged = await engine.compact({
+    sessionId: "s1-compaction-without-marker",
+    tokenBudget: 100_000,
+    currentTokenCount: 50_000,
+  });
+  assert.equal(unchanged.compacted, true);
+  assert.strictEqual(state.snapshots.get("s1-compaction-without-marker"), olderSnapshot);
+
   client.compactResponse = { ok: true, didCompact: true };
   client.assembleResponse = {
     messages: [],
     estimatedTokens: 0,
     systemPromptAddition: "",
   };
-  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
-    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
-  );
-  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
   const assembled = await engine.assemble({
     sessionId: "s1-compaction-without-marker",
     sessionKey: "sk1",
@@ -1808,6 +1875,68 @@ test("successful predictive compaction without a complete marker fails closed", 
   assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
   assert.equal(assembled.messages.length, sourceMessages.length);
   assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(state.snapshots.has("s1-compaction-without-marker"), false);
+});
+
+test("successful compaction fences an overlapping assembly holding an older marker", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = "s1-overlapping-compaction";
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nOlder projection\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+
+  let releaseAssemble!: () => void;
+  const assembleStarted = new Promise<void>((resolve) => {
+    (client as unknown as {
+      assembleContextInternal: (params: Record<string, unknown>) => Promise<unknown>;
+    }).assembleContextInternal = async (params) => {
+      client.calls.push({ method: "assembleContextInternal", params });
+      resolve();
+      await new Promise<void>((release) => {
+        releaseAssemble = release;
+      });
+      return {
+        messages: [],
+        estimatedTokens: 500,
+        systemPromptAddition:
+          "<compacted_session_context>\nLate stale projection\n</compacted_session_context>",
+      };
+    };
+  });
+  const pending = engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  await assembleStarted;
+
+  client.compactResponse = { ok: true, didCompact: true };
+  const compacted = await engine.compact({ sessionId, force: true, tokenBudget: 100_000 });
+  assert.equal(compacted.compacted, true);
+  releaseAssemble();
+  const assembled = await pending;
+
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
+  assert.deepEqual(assembled.messages, sourceMessages);
+  assert.doesNotMatch(assembled.systemPromptAddition, /Late stale projection/u);
+  assert.equal(state.snapshots.has(sessionId), false);
 });
 
 test("context engine assemble drops consecutive duplicate provider replay messages", async () => {
