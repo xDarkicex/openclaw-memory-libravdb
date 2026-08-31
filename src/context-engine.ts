@@ -3575,6 +3575,10 @@ export function buildContextEngineFactory(
       const lifecycleToken = getProjectionLifecycleToken(sessionId);
       enqueueAsyncIngestion(sessionId, async () => {
         try {
+          const lifecycleIsCurrent = () =>
+            compactedProjectionState.lifecycleTokens.get(sessionId) === lifecycleToken;
+          if (!lifecycleIsCurrent()) return;
+
           // Reload manifest inside the serialized queue so state is fresh
           // after any preceding queued tasks have completed.
           const manifest = manifestStore.load(sessionId, logger);
@@ -3607,6 +3611,7 @@ export function buildContextEngineFactory(
             };
 
           const client = await runtime.getClient();
+          if (!lifecycleIsCurrent()) return;
           const currentTokenCount = normalizeCurrentTokenCount(
             typeof args.runtimeContext?.currentTokenCount === "number"
               ? args.runtimeContext.currentTokenCount
@@ -3621,6 +3626,7 @@ export function buildContextEngineFactory(
             isHeartbeat: args.isHeartbeat,
             ...(cursor ? { cursor } : {}),
           } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+          if (!lifecycleIsCurrent()) return;
 
           updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
 
@@ -3658,6 +3664,7 @@ export function buildContextEngineFactory(
                   messages: seedMessages,
                   isHeartbeat: args.isHeartbeat,
                 } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+                if (!lifecycleIsCurrent()) return;
                 manifestStore.save(
                   manifestStore.appendACKedMessages(emptyManifest, seedMessages, 0),
                 );
@@ -3700,6 +3707,7 @@ export function buildContextEngineFactory(
             currentTokenCount,
             lifecycleToken,
           });
+          if (!lifecycleIsCurrent()) return;
           const predictions = result.predictions;
           if (Array.isArray(predictions) && predictions.length > 0) {
             if (predictiveContextCache.size >= PREDICTIVE_CACHE_MAX_SIZE) {

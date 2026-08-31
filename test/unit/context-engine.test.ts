@@ -7,6 +7,7 @@ import { buildContextEngineFactory, clearCompactedProjectionState, createCompact
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import { resolveIdentity } from "../../src/identity.js";
+import { manifestStore } from "../../src/manifest.js";
 import type { PluginConfig, SearchResult } from "../../src/types.js";
 
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
@@ -1784,20 +1785,24 @@ test("reset during predictive compaction cannot activate stale projection state"
   assert.equal(state.snapshots.size, 0);
 });
 
-test("queued afterTurn compaction cannot reactivate projection state after reset", async () => {
+test("queued afterTurn work cannot repopulate session state after reset", async () => {
   const client = new FakeClient();
   const state = createCompactedProjectionState();
-  const sessionId = "s1-after-turn-reset-race";
+  const sessionId = `s1-after-turn-reset-race-${process.pid}-${Date.now()}`;
   let releaseAfterTurn!: () => void;
+  let afterTurnCalls = 0;
   const afterTurnStarted = new Promise<void>((resolve) => {
     (client as unknown as {
       afterTurnKernel: (params: Record<string, unknown>) => Promise<unknown>;
     }).afterTurnKernel = async (params) => {
       client.calls.push({ method: "afterTurnKernel", params });
-      resolve();
-      await new Promise<void>((release) => {
-        releaseAfterTurn = release;
-      });
+      afterTurnCalls += 1;
+      if (afterTurnCalls === 1) {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAfterTurn = release;
+        });
+      }
       return { ok: true };
     };
   });
@@ -1811,12 +1816,21 @@ test("queued afterTurn compaction cannot reactivate projection state after reset
     runtimeContext: { currentTokenCount: 50_000 },
   });
   await afterTurnStarted;
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "queued behind the stale turn")],
+    tokenBudget: 100_000,
+    runtimeContext: { currentTokenCount: 50_000 },
+  });
 
   clearCompactedProjectionState(state, sessionId);
   releaseAfterTurn();
   await flushIngestion(engine);
 
+  assert.equal(client.calls.filter((call) => call.method === "afterTurnKernel").length, 1);
   assert.equal(client.calls.some((call) => call.method === "compactSession"), false);
+  assert.equal(manifestStore.load(sessionId).turns.length, 0);
   assert.equal(state.activeSessions.has(sessionId), false);
   assert.equal(state.snapshots.has(sessionId), false);
 });
