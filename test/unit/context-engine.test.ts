@@ -13,18 +13,45 @@ import type { PluginRuntime } from "../../src/plugin-runtime.js";
 import type { LibravDBClient } from "../../src/libravdb-client.js";
 
 // ---------------------------------------------------------------------------
-// Clean persisted turn manifests from prior test runs so each run starts
-// with a blank manifest store.
+// Isolate persisted turn manifests for this file.
+//
+// TurnManifestStore writes to $OPENCLAW_STATE_DIR, falling back to the real
+// ~/.openclaw, so these tests read and wrote the developer's live state. The
+// cleanup this replaces tried to contain that by deleting entries prefixed
+// "s1", "conformance-" or "session-", but the store names files
+// sha256(sessionId) + ".manifest.json" -- and none of those prefixes are valid
+// hex, so it never matched anything it had written. Manifests therefore
+// survived between runs, and the two afterTurn tests that expect a fresh
+// session saw their content already covered, reporting "no-new-messages"
+// instead of "queued" on every run after the first.
+//
+// Point the store at a per-process temp directory instead. Nothing outside the
+// test is read or written, and every run starts empty. Set unconditionally: an
+// inherited OPENCLAW_STATE_DIR would reintroduce exactly the cross-run carryover
+// this exists to prevent.
+//
+// Note what those two tests were accidentally reproducing: a manifest that
+// survives while the daemon has no record of the session. The preflight answers
+// "no-new-messages" from the manifest alone without contacting the daemon, so a
+// turn carrying nothing new cannot notice the daemon is empty. A turn with new
+// content does reach the daemon and does trigger the cursor-gap repair, so the
+// state is detected rather than permanent. What the repair then does is the part
+// worth a second look, and it is deliberately not addressed here: a broken
+// assertion in an unrelated test is not coverage of it, and any fix belongs with
+// the repair path rather than with test hygiene.
 // ---------------------------------------------------------------------------
 {
-  const manifestDir = path.join(os.homedir(), ".openclaw", "libravdb-manifests");
-  if (fs.existsSync(manifestDir)) {
-    for (const entry of fs.readdirSync(manifestDir)) {
-      if (entry.startsWith("s1") || entry.startsWith("conformance-") || entry.startsWith("session-")) {
-        fs.rmSync(path.join(manifestDir, entry));
-      }
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "libravdb-unit-state-"));
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  // Best effort: "exit" does not run for signals or a hard crash, so an
+  // interrupted run can leave one directory behind under the OS temp root.
+  process.on("exit", () => {
+    try {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    } catch {
+      // A leftover temp dir must never fail the run.
     }
-  }
+  });
 }
 
 /**
