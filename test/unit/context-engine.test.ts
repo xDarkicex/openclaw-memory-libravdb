@@ -1812,6 +1812,38 @@ test("reset during predictive compaction cannot activate stale projection state"
   assert.equal(state.snapshots.size, 0);
 });
 
+test("direct compact reports failure when reset wins the lifecycle race", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  let releaseCompaction!: () => void;
+  const compactionStarted = new Promise<void>((resolve) => {
+    (client as unknown as { compactSession: () => Promise<unknown> }).compactSession = async () => {
+      resolve();
+      await new Promise<void>((release) => {
+        releaseCompaction = release;
+      });
+      return { ok: true, didCompact: true };
+    };
+  });
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  const pending = engine.compact({
+    sessionId: "s1-direct-compact-reset-race",
+    force: true,
+    tokenBudget: 100_000,
+    currentTokenCount: 90_000,
+  });
+
+  await compactionStarted;
+  clearCompactedProjectionState(state, "s1-direct-compact-reset-race");
+  releaseCompaction();
+  const result = await pending;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.compacted, false);
+  assert.equal(result.reason, "session lifecycle changed");
+  assert.equal(state.activeSessions.has("s1-direct-compact-reset-race"), false);
+});
+
 test("queued afterTurn work cannot repopulate session state after reset", async () => {
   const client = new FakeClient();
   const state = createCompactedProjectionState();

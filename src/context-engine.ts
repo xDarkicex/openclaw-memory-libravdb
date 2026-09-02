@@ -2814,6 +2814,9 @@ export function buildContextEngineFactory(
         logger,
         ...(threshold != null ? { threshold } : {}),
       });
+      if (compactedProjectionState.lifecycleTokens.get(args.sessionId) !== lifecycleToken) {
+        return { ok: false, compacted: false, reason: "session lifecycle changed" };
+      }
       if (
         result.ok &&
         result.compacted &&
@@ -4094,6 +4097,10 @@ export function buildContextEngineFactory(
       }
       predictiveContextCache.clear();
       postToolRecallCache.clear();
+      // Invalidate work that outlives the bounded drain. A replacement engine
+      // may reuse this shared state, so clearing the token map is the factory
+      // generation fence for every queued task owned by this engine.
+      compactedProjectionState.lifecycleTokens.clear();
       asyncIngestionQueues.clear();
       triggerCache.clear();
       excludedSubagentKeys.clear();
