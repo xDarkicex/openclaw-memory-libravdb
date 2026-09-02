@@ -3317,3 +3317,311 @@ test("excludeSubagents off by default: a subagent is granted a normal expansion 
   );
 
 });
+
+// ---------------------------------------------------------------------------
+// commitTurn: atomic per-key idempotency (OpenClaw >= 2026.8.1 durable turn)
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs `fn` against a throwaway state dir.
+ *
+ * These tests assert on whether the daemon was called, which depends on the
+ * per-session manifest being empty. The default manifest dir is the user's real
+ * ~/.openclaw/libravdb-manifests, so a manifest left by an earlier run makes
+ * afterTurn short-circuit with "no-new-messages" and the assertions flip. Point
+ * the store at a fresh temp dir so each run starts from nothing and nothing is
+ * written outside the test.
+ */
+async function withTempStateDir(fn: () => Promise<void>): Promise<void> {
+  const previous = process.env.OPENCLAW_STATE_DIR;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "libravdb-commitTurn-"));
+  process.env.OPENCLAW_STATE_DIR = dir;
+  try {
+    await fn();
+  } finally {
+    if (previous === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Makes afterTurnKernel fail the next `times` calls, then succeed. */
+function failAfterTurnKernel(client: FakeClient, times: number): { calls: () => number } {
+  let seen = 0;
+  const original = client.afterTurnKernel.bind(client);
+  (client as unknown as {
+    afterTurnKernel: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  }).afterTurnKernel = async (params) => {
+    seen += 1;
+    if (seen <= times) {
+      client.calls.push({ method: "afterTurnKernel", params });
+      throw new Error("daemon unavailable");
+    }
+    return original(params);
+  };
+  return { calls: () => seen };
+}
+
+type CommitTurnEngine = {
+  commitTurn: (args: {
+    advancementKey: string;
+    sessionId: string;
+    sessionKey?: string;
+    messages: ReturnType<typeof makeMessage>[];
+  }) => Promise<{ status: "committed" | "duplicate" }>;
+};
+
+test("commitTurn works when the host holds it as a bare, unbound function", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+
+    // A host may store the hook rather than call it as a method. OpenClaw binds it today
+    // (`params.engine.commitTurn?.bind(params.engine)`), but nothing in the contract
+    // requires that, and an unbound call must not throw on `this`.
+    const detached = (engine as unknown as CommitTurnEngine).commitTurn;
+
+    const result = await detached({
+      advancementKey: "adv-unbound-1",
+      sessionId: "s1-commit-unbound",
+      sessionKey: "sk-commit-unbound",
+      messages: [makeMessage("user", "unbound"), makeMessage("assistant", "call")],
+    });
+    await flushIngestion(engine);
+
+    assert.equal(result.status, "committed");
+  });
+});
+
+test("commitTurn serializes concurrent calls with the same advancementKey", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const messages = [makeMessage("user", "concurrent"), makeMessage("assistant", "same key")];
+
+    const call = () => (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-concurrent-1",
+      sessionId: "s1-commit-concurrent",
+      sessionKey: "sk-commit-concurrent",
+      messages,
+    });
+
+    const [a, b, c] = await Promise.all([call(), call(), call()]);
+    await flushIngestion(engine);
+
+    // Exactly one call performs the ingest; the others join it and report duplicate.
+    const statuses = [a.status, b.status, c.status].sort();
+    assert.deepEqual(
+      statuses,
+      ["committed", "duplicate", "duplicate"],
+      `expected one committed and two duplicates, got ${JSON.stringify(statuses)}`,
+    );
+
+    const ingests = client.calls.filter((x) => x.method === "afterTurnKernel");
+    assert.equal(
+      ingests.length,
+      1,
+      `the same advancementKey must ingest once, saw ${ingests.length} afterTurnKernel calls`,
+    );
+
+    // A later retry of the same key short-circuits without touching the daemon.
+    const retry = await call();
+    assert.equal(retry.status, "duplicate");
+    assert.equal(client.calls.filter((x) => x.method === "afterTurnKernel").length, 1);
+  });
+});
+
+test("commitTurn does not record the key when ingestion fails, and a retry succeeds", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    const probe = failAfterTurnKernel(client, 1);
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const messages = [makeMessage("user", "retry me"), makeMessage("assistant", "after failure")];
+
+    const call = () => (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-retry-1",
+      sessionId: "s1-commit-retry",
+      sessionKey: "sk-commit-retry",
+      messages,
+    });
+
+    // The durable write failed, so the failure must propagate rather than be
+    // swallowed — the host cannot retry a turn it was told succeeded.
+    await assert.rejects(
+      call(),
+      /daemon unavailable/,
+      "a failed ingestion must reject rather than report committed",
+    );
+
+    // The key was not recorded, so the retry does real work instead of being
+    // told duplicate and losing the turn forever.
+    const retry = await call();
+    assert.equal(
+      retry.status,
+      "committed",
+      "retry after a failed ingestion must re-run, not report duplicate",
+    );
+    await flushIngestion(engine);
+
+    assert.equal(probe.calls(), 2, "the daemon should have been called once per attempt");
+
+    // Now that it has succeeded, the key is recorded and a further retry is a duplicate.
+    const third = await call();
+    assert.equal(third.status, "duplicate");
+    assert.equal(probe.calls(), 2, "a duplicate must not reach the daemon");
+  });
+});
+
+test("commitTurn concurrent callers all see the failure when the shared ingest fails", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    failAfterTurnKernel(client, 1);
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const messages = [makeMessage("user", "shared failure"), makeMessage("assistant", "propagate")];
+
+    const call = () => (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-shared-failure",
+      sessionId: "s1-commit-shared-failure",
+      sessionKey: "sk-commit-shared-failure",
+      messages,
+    });
+
+    const settled = await Promise.allSettled([call(), call()]);
+    assert.equal(settled[0]?.status, "rejected", "the leader must reject");
+    assert.equal(settled[1]?.status, "rejected", "a joiner must see the leader's failure, not success");
+
+    // Nothing was recorded, so the key is still retryable.
+    const retry = await call();
+    assert.equal(retry.status, "committed");
+    await flushIngestion(engine);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Absence assertions for the durable-commit contract.
+//
+// The host treats "duplicate" as "this exact advancementKey was already
+// committed" and deletes the outbox row either way, so a status that overstates
+// what happened loses the turn permanently. These assert that "duplicate" is
+// never reported for a key that was never committed, and that a turn the daemon
+// did not confirm is rejected rather than reported as a success. The earlier
+// tests only covered the happy paths.
+// ---------------------------------------------------------------------------
+
+test("commitTurn never reports duplicate for an excluded session", async () => {
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+
+  const result = await (engine as unknown as CommitTurnEngine).commitTurn({
+    advancementKey: "adv-excluded-1",
+    sessionId: "s1-commit-excluded",
+    sessionKey: "agent:fastbot:session:s1-commit-excluded",
+    messages: [makeMessage("user", "excluded"), makeMessage("assistant", "reply")],
+  });
+
+  // Nothing was ever stored under this key, so claiming a prior commit would be
+  // false. Exclusion is permanent, so the host must also not be told to retry.
+  assert.notEqual(
+    result.status,
+    "duplicate",
+    "an excluded turn was never committed before, so it cannot be a duplicate",
+  );
+  assert.equal(result.status, "committed");
+
+  // Nor may the key be remembered as committed: nothing is stored under it. A
+  // replay of the same key must therefore still not report a prior commit.
+  const replay = await (engine as unknown as CommitTurnEngine).commitTurn({
+    advancementKey: "adv-excluded-1",
+    sessionId: "s1-commit-excluded",
+    sessionKey: "agent:fastbot:session:s1-commit-excluded",
+    messages: [makeMessage("user", "excluded"), makeMessage("assistant", "reply")],
+  });
+  assert.notEqual(
+    replay.status,
+    "duplicate",
+    "an excluded key must not be recorded as committed, so a replay is not a duplicate",
+  );
+});
+
+test("commitTurn never reports duplicate when concurrent excluded calls share a key", async () => {
+  const engine = buildContextEngineFactory(throwingRuntime(), {
+    userId: "fixed-user",
+    excludeAgents: ["fastbot"],
+  });
+
+  const call = () => (engine as unknown as CommitTurnEngine).commitTurn({
+    advancementKey: "adv-excluded-concurrent",
+    sessionId: "s1-commit-excluded-concurrent",
+    sessionKey: "agent:fastbot:session:s1-commit-excluded-concurrent",
+    messages: [makeMessage("user", "excluded"), makeMessage("assistant", "reply")],
+  });
+
+  // The second caller joins the first one's in-flight promise instead of
+  // starting its own ingest. Joining a leader that stored nothing makes it a
+  // duplicate of nothing, so the join must not manufacture a prior commit.
+  const [a, b] = await Promise.all([call(), call()]);
+
+  for (const [label, result] of [["leader", a], ["joiner", b]] as const) {
+    assert.notEqual(
+      result.status,
+      "duplicate",
+      `${label} reported a prior commit for an excluded turn that was never stored`,
+    );
+    assert.equal(result.status, "committed");
+  }
+});
+
+test("commitTurn reports duplicate only for a replayed key, never for repeated content", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const identical = () => [makeMessage("user", "ok"), makeMessage("assistant", "ok")];
+
+    const first = await (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-distinct-1",
+      sessionId: "s1-commit-distinct",
+      sessionKey: "sk-commit-distinct",
+      messages: identical(),
+    });
+    await flushIngestion(engine);
+
+    const second = await (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-distinct-2",
+      sessionId: "s1-commit-distinct",
+      sessionKey: "sk-commit-distinct",
+      messages: identical(),
+    });
+    await flushIngestion(engine);
+
+    // This asserts the status contract, not storage. afterTurn dedupes by
+    // content, so the second turn is not separately ingested -- a pre-existing
+    // limitation documented on commitTurn. What must not happen is reporting it
+    // as "duplicate", which claims this advancementKey was committed before.
+    assert.notEqual(
+      second.status,
+      "duplicate",
+      "a new advancementKey must never be reported as a duplicate of earlier content",
+    );
+    assert.equal(first.status, "committed");
+    assert.equal(second.status, "committed");
+
+    // The assertions above pass vacuously if commitTurn simply never returns
+    // "duplicate". Replaying a key that did durable work must still report one,
+    // which is what establishes that key matching is the only route to it.
+    const replay = await (engine as unknown as CommitTurnEngine).commitTurn({
+      advancementKey: "adv-distinct-1",
+      sessionId: "s1-commit-distinct",
+      sessionKey: "sk-commit-distinct",
+      messages: identical(),
+    });
+    await flushIngestion(engine);
+    assert.equal(
+      replay.status,
+      "duplicate",
+      "a replayed advancementKey must still be reported as a duplicate",
+    );
+  });
+});
+
