@@ -3492,13 +3492,22 @@ export function buildContextEngineFactory(
         const compactedContextMissing =
           compactionProjectionActive &&
           extractCompactedSessionContext(enforced.systemPromptAddition) === undefined;
+        const buildUncompactedFallback = (): OpenClawCompatibleAssembleResult =>
+          enforceAssembleBudget({
+            ...enforced,
+            messages: args.messages,
+            estimatedTokens:
+              approximateMessagesTokens(args.messages) +
+              approximateTokenCount(enforced.systemPromptAddition),
+            promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
+          }, args.tokenBudget, false);
         if (stateChanged || compactedContextMissing) {
           logger.warn?.(
             `LibraVDB discarded ${stateChanged ? "stale" : "incomplete"} compacted projection ` +
             `sessionId=${sessionId}`,
           );
           return ensureReplaySafeUserTurn(
-            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            stateChanged ? buildBudgetFallbackContext(args.messages, args.tokenBudget) : buildUncompactedFallback(),
             args.messages,
             logger,
             args.tokenBudget,
@@ -3511,7 +3520,7 @@ export function buildContextEngineFactory(
         ) {
           logger.warn?.(`LibraVDB discarded compacted projection after user-turn repair sessionId=${sessionId}`);
           return ensureReplaySafeUserTurn(
-            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            buildUncompactedFallback(),
             args.messages,
             logger,
             args.tokenBudget,

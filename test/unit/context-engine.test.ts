@@ -1919,6 +1919,48 @@ test("successful predictive compaction does not restore an older cached marker",
   assert.equal(state.snapshots.has("s1-compaction-without-marker"), false);
 });
 
+test("empty successful compaction keeps the uncompacted source and recall injection", async () => {
+  const client = new FakeClient();
+  const marker = "EMPTY_SUCCESS_RECALL_MARKER_1234567890";
+  client.compactResponse = {
+    ok: true,
+    didCompact: true,
+    tokensAfter: 1000,
+  };
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "",
+  };
+  client.searchResults = [{
+    id: "empty-success-fact",
+    score: 1,
+    text: `${marker} means recall must remain available after an incomplete compaction handoff.`,
+    metadata: { collection: "user:fixed-user" },
+  }];
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  const engine = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user", compactThreshold: 1 },
+  );
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-empty-success-recall",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: `Please recall ${marker}`,
+    tokenBudget: 100_000,
+    currentTokenCount: 50_000,
+  });
+
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
+  assert.equal(assembled.messages.length, sourceMessages.length);
+  assert.match(assembled.systemPromptAddition, /<context_memory>/u);
+  assert.match(assembled.systemPromptAddition, new RegExp(marker));
+});
+
 test("successful compaction fences an overlapping assembly holding an older marker", async () => {
   const client = new FakeClient();
   const state = createCompactedProjectionState();
