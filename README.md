@@ -42,7 +42,7 @@ brew tap xDarkicex/homebrew-openclaw-libravdb-memory && brew install libravdbd &
 openclaw plugins install @xdarkicex/openclaw-memory-libravdb
 
 # 3. Verify
-openclaw memory status
+openclaw libravdb status
 ```
 
 > ⚡ **Done.** Your agent has persistent vector memory, identity tracking, and causal graph reasoning.
@@ -157,7 +157,7 @@ openclaw plugins list | grep libravdb
 Verify the service and plugin:
 
 ```bash
-openclaw memory status
+openclaw libravdb status
 ```
 
 Healthy output should show `Kernel=running`, stored memory counts, the active
@@ -402,13 +402,13 @@ Before exposing OpenClaw over remote channels, read [Security](./docs/security.m
 ## Operator Quick Refs
 
 ```bash
-openclaw memory status [--deep] [--json]
-openclaw memory index --force
-openclaw memory search "prior context"
-openclaw memory export --user-id <userId>
-openclaw memory flush --user-id <userId>
-openclaw memory journal --limit 50
-openclaw memory dream-promote --user-id <userId> --dream-file ~/DREAMS.md
+openclaw libravdb status [--deep] [--json]
+openclaw libravdb index --force
+openclaw libravdb search "prior context"
+openclaw libravdb export --user-id <userId>
+openclaw libravdb flush --user-id <userId>
+openclaw libravdb journal --limit 50
+openclaw libravdb dream-promote --user-id <userId> --dream-file ~/DREAMS.md
 ```
 
 ### memory kernel CLI (libravdbd v1.6.0+)
@@ -718,7 +718,7 @@ dream-related questions (e.g. "what did I dream about?").
 You can also promote manually without enabling the watcher:
 
 ```bash
-openclaw memory dream-promote --user-id <userId> --dream-file ~/DREAMS.md
+openclaw libravdb dream-promote --user-id <userId> --dream-file ~/DREAMS.md
 ```
 - **Embedding profiles** default to `nomic-embed-text-v1.5` with `bge-small-en-v1.5`
   fallback. See [Embedding profiles](./docs/embedding-profiles.md).

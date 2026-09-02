@@ -3,7 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 export const PLUGIN_ID = "libravdb-memory";
 
 export const MEMORY_CLI_DESCRIPTOR = {
-  name: "memory",
+  name: "libravdb",
   description: "Manage LibraVDB memory",
   hasSubcommands: true,
 } as const;

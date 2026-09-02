@@ -16,7 +16,7 @@ test("manifest and package metadata satisfy checklist structure", async () => {
     Object.keys(manifest).sort(),
     ["activation", "configSchema", "contracts", "description", "id", "kind", "name", "version"],
   );
-  assert.deepEqual(manifest.activation, { onCommands: ["memory"] });
+  assert.deepEqual(manifest.activation, { onCommands: ["libravdb"] });
   assert.equal(manifest.version, pkg.version);
   assert.deepEqual(manifest.contracts.tools, [
     "libravdb_memory_search",
