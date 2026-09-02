@@ -1218,6 +1218,13 @@ function extractCompactedSessionContext(text: string): string | undefined {
   return text.match(COMPACTED_SESSION_CONTEXT_RE)?.join("\n") || undefined;
 }
 
+function stripCompactedSessionContext(text: string): string {
+  return text
+    .replace(COMPACTED_SESSION_CONTEXT_RE, "")
+    .replace(/<compacted_session_context\b[^>]*>[\s\S]*$/i, "")
+    .trim();
+}
+
 type CompactedProjectionSnapshot = {
   context: string;
   sourceStartIndex: number;
@@ -3492,15 +3499,19 @@ export function buildContextEngineFactory(
         const compactedContextMissing =
           compactionProjectionActive &&
           extractCompactedSessionContext(enforced.systemPromptAddition) === undefined;
-        const buildUncompactedFallback = (): OpenClawCompatibleAssembleResult =>
-          enforceAssembleBudget({
-            ...enforced,
-            messages: args.messages,
+        const buildUncompactedFallback = (): OpenClawCompatibleAssembleResult => {
+          const fallback = buildBudgetFallbackContext(args.messages, args.tokenBudget);
+          const nonCompactedSystemPromptAddition = stripCompactedSessionContext(
+            enforced.systemPromptAddition,
+          );
+          return enforceCompactedProjectionBudgetInvariant({
+            ...fallback,
+            systemPromptAddition: nonCompactedSystemPromptAddition,
             estimatedTokens:
-              approximateMessagesTokens(args.messages) +
-              approximateTokenCount(enforced.systemPromptAddition),
-            promptAuthority: PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
-          }, args.tokenBudget, false);
+              approximateMessagesTokens(fallback.messages) +
+              approximateTokenCount(nonCompactedSystemPromptAddition),
+          }, args.tokenBudget);
+        };
         if (stateChanged || compactedContextMissing) {
           logger.warn?.(
             `LibraVDB discarded ${stateChanged ? "stale" : "incomplete"} compacted projection ` +
