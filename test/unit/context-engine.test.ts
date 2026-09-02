@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 
-import { buildContextEngineFactory, FLUSH_ASYNC_INGESTION } from "../../src/context-engine.js";
+import { buildContextEngineFactory, clearCompactedProjectionState, createCompactedProjectionState, FLUSH_ASYNC_INGESTION } from "../../src/context-engine.js";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import { resolveIdentity } from "../../src/identity.js";
+import { manifestStore } from "../../src/manifest.js";
 import type { PluginConfig, SearchResult } from "../../src/types.js";
 
 import type { PluginRuntime } from "../../src/plugin-runtime.js";
@@ -1314,7 +1315,7 @@ test("successful daemon compaction makes an exact turn-aligned source suffix aut
   assert.match(assembled.systemPromptAddition, /<compacted_session_context>/u);
 });
 
-test("compacted projection budget clamp preserves the complete live tool bundle", async () => {
+test("incomplete compacted marker falls back while preserving the complete live tool bundle", async () => {
   const client = new FakeClient();
   client.compactResponse = {
     ok: true,
@@ -1373,11 +1374,12 @@ test("compacted projection budget clamp preserves the complete live tool bundle"
   });
 
   assert.equal(assembled.promptAuthority, "assembled");
-  assert.deepEqual(assembled.messages, [liveUser, liveToolCall, liveToolResult, liveAnswer]);
-  assert.strictEqual(assembled.messages[0], liveUser);
-  assert.strictEqual(assembled.messages[1], liveToolCall);
-  assert.strictEqual(assembled.messages[2], liveToolResult);
-  assert.strictEqual(assembled.messages[3], liveAnswer);
+  assert.deepEqual(assembled.messages.slice(-4), [liveUser, liveToolCall, liveToolResult, liveAnswer]);
+  assert.strictEqual(assembled.messages.at(-4), liveUser);
+  assert.strictEqual(assembled.messages.at(-3), liveToolCall);
+  assert.strictEqual(assembled.messages.at(-2), liveToolResult);
+  assert.strictEqual(assembled.messages.at(-1), liveAnswer);
+  assert.equal(assembled.systemPromptAddition, "");
   assert.ok(assembled.estimatedTokens <= 800);
 });
 
@@ -1406,6 +1408,576 @@ test("daemon compacted context marker restores assembled authority after plugin 
   assert.equal(assembled.promptAuthority, "assembled");
   assert.ok(assembled.messages.length < sourceMessages.length);
   assert.strictEqual(assembled.messages.at(-1), sourceMessages.at(-1));
+});
+
+test("daemon compacted projection survives engine replacement until session state is cleared", async () => {
+  const client = new FakeClient();
+  client.compactResponse = {
+    ok: true,
+    didCompact: true,
+    summaryText: "Compacted prefix",
+    tokensAfter: 500,
+  };
+  const compactedProjectionState = createCompactedProjectionState();
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+
+  const engineA = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user" },
+    console,
+    compactedProjectionState,
+  );
+  const compacted = await engineA.compact({
+    sessionId: "s1-replaced-engine",
+    force: true,
+    tokenBudget: 100_000,
+    currentTokenCount: 90_000,
+  });
+  assert.equal(compacted.compacted, true);
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nDurable daemon projection\n</compacted_session_context>",
+  };
+  const firstAssembled = await engineA.assemble({
+    sessionId: "s1-replaced-engine",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  assert.match(firstAssembled.systemPromptAddition, /Durable daemon projection/u);
+  await engineA.dispose();
+
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: `<memory_context>${"noise ".repeat(200)}</memory_context>`,
+  };
+  client.compactResponse = { ok: true, didCompact: false };
+
+  const engineB = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user", tokenBudgetMax: 100 },
+    console,
+    compactedProjectionState,
+  );
+  const appendedMessages = [
+    ...sourceMessages,
+    makeMessage("user", "message 70", "message-70"),
+    makeMessage("assistant", "message 71", "message-71"),
+    makeMessage("user", "message 72", "message-72"),
+    makeMessage("assistant", "message 73", "message-73"),
+  ];
+  const assembled = await engineB.assemble({
+    sessionId: "s1-replaced-engine",
+    sessionKey: "sk1",
+    messages: appendedMessages,
+    prompt: "message 72",
+    tokenBudget: 100_000,
+    currentTokenCount: 50_000,
+  });
+
+  assert.equal(client.calls.filter((call) => call.method === "compactSession").length, 2);
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.deepEqual(assembled.messages, appendedMessages.slice(20));
+  assert.ok(assembled.systemPromptAddition.startsWith("<compacted_session_context>"));
+  assert.match(assembled.systemPromptAddition, /Durable daemon projection/u);
+  assert.ok(assembled.estimatedTokens > 500);
+
+  const callsBeforePostTool = client.calls.filter(
+    (call) => call.method === "assembleContextInternal",
+  ).length;
+  const postToolMessages = [
+    ...appendedMessages,
+    makeMessage("user", "run tool", "message-74"),
+    {
+      role: "assistant",
+      id: "message-75",
+      content: [{ type: "toolCall", name: "lookup", arguments: {} }],
+    },
+    makeMessage("toolResult", "tool result", "message-76"),
+  ];
+  const postTool = await engineB.assemble({
+    sessionId: "s1-replaced-engine",
+    sessionKey: "sk1",
+    messages: postToolMessages,
+    prompt: "run tool",
+    tokenBudget: 100_000,
+  });
+  assert.equal(
+    client.calls.filter((call) => call.method === "assembleContextInternal").length,
+    callsBeforePostTool,
+  );
+  assert.match(postTool.systemPromptAddition, /Durable daemon projection/u);
+  assert.deepEqual(postTool.messages, postToolMessages.slice(20));
+
+  const tightBudgetEngine = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user", tokenBudgetMax: 5 },
+    console,
+    compactedProjectionState,
+  );
+  const afterMarkerTruncation = await tightBudgetEngine.assemble({
+    sessionId: "s1-replaced-engine",
+    sessionKey: "sk1",
+    messages: appendedMessages,
+    prompt: "message 72",
+    tokenBudget: 100_000,
+  });
+  assert.equal(afterMarkerTruncation.promptAuthority, "preassembly_may_overflow");
+  assert.equal(afterMarkerTruncation.messages.length, appendedMessages.length);
+
+  const divergentState = createCompactedProjectionState();
+  divergentState.snapshots = new Map(compactedProjectionState.snapshots);
+  const divergentEngine = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user" },
+    console,
+    divergentState,
+  );
+  const divergentMessages = [...appendedMessages];
+  divergentMessages[19] = makeMessage("assistant", "changed boundary history", "message-19");
+  const afterDivergence = await divergentEngine.assemble({
+    sessionId: "s1-replaced-engine",
+    sessionKey: "sk1",
+    messages: divergentMessages,
+    prompt: "message 72",
+    tokenBudget: 100_000,
+  });
+  assert.equal(afterDivergence.promptAuthority, "preassembly_may_overflow");
+  assert.equal(afterDivergence.messages.length, divergentMessages.length);
+
+  clearCompactedProjectionState(compactedProjectionState, "s1-replaced-engine");
+  const engineC = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user" },
+    console,
+    compactedProjectionState,
+  );
+  const afterReset = await engineC.assemble({
+    sessionId: "s1-replaced-engine",
+    sessionKey: "sk1",
+    messages: appendedMessages,
+    prompt: "message 72",
+    tokenBudget: 100_000,
+  });
+  assert.equal(afterReset.promptAuthority, "preassembly_may_overflow");
+  assert.equal(afterReset.messages.length, appendedMessages.length);
+});
+
+test("session cleanup deactivates an existing engine and clears its post-tool projection", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = "s1-reset-active-engine";
+  const sourceMessages = [
+    ...Array.from({ length: 70 }, (_, index) =>
+      makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+    ),
+    makeMessage("user", "run tool", "message-70"),
+    {
+      role: "assistant",
+      id: "message-71",
+      content: [{ type: "toolCall", name: "lookup", arguments: {} }],
+    },
+    makeMessage("toolResult", "tool result", "message-72"),
+  ];
+  client.compactResponse = { ok: true, didCompact: true };
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nProjection before reset\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+
+  await engine.compact({ sessionId, force: true, tokenBudget: 100_000 });
+  const beforeReset = await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "run tool",
+    tokenBudget: 100_000,
+  });
+  assert.equal(state.activeSessions.has(sessionId), true);
+  assert.match(beforeReset.systemPromptAddition, /Projection before reset/u);
+
+  const assembleCallsBeforeReset = client.calls.filter(
+    (call) => call.method === "assembleContextInternal",
+  ).length;
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "<memory_context>fresh context</memory_context>",
+  };
+  clearCompactedProjectionState(state, sessionId);
+  const afterReset = await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "run tool",
+    tokenBudget: 100_000,
+  });
+
+  assert.equal(state.activeSessions.has(sessionId), false);
+  assert.equal(
+    client.calls.filter((call) => call.method === "assembleContextInternal").length,
+    assembleCallsBeforeReset + 1,
+  );
+  assert.equal(afterReset.promptAuthority, "preassembly_may_overflow");
+  assert.deepEqual(afterReset.messages, sourceMessages);
+  assert.doesNotMatch(afterReset.systemPromptAddition, /Projection before reset/u);
+});
+
+test("boundary divergence fences an older overlapping assembly from restoring stale projection", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = "s1-boundary-divergence-race";
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nInitial projection\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  assert.equal(state.snapshots.has(sessionId), true);
+
+  let releaseOlder!: () => void;
+  let markOlderStarted!: () => void;
+  const olderStarted = new Promise<void>((resolve) => {
+    markOlderStarted = resolve;
+  });
+  const olderRelease = new Promise<void>((resolve) => {
+    releaseOlder = resolve;
+  });
+  let overlappingCalls = 0;
+  (client as unknown as {
+    assembleContextInternal: (params: Record<string, unknown>) => Promise<unknown>;
+  }).assembleContextInternal = async (params) => {
+    client.calls.push({ method: "assembleContextInternal", params });
+    overlappingCalls += 1;
+    if (overlappingCalls === 1) {
+      markOlderStarted();
+      await olderRelease;
+      return {
+        messages: [],
+        estimatedTokens: 500,
+        systemPromptAddition:
+          "<compacted_session_context>\nObsolete projection\n</compacted_session_context>",
+      };
+    }
+    return {
+      messages: [],
+      estimatedTokens: 500,
+      systemPromptAddition:
+        "<compacted_session_context>\nFresh projection\n</compacted_session_context>",
+    };
+  };
+
+  const olderPending = engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  await olderStarted;
+
+  const divergentMessages = [...sourceMessages];
+  divergentMessages[19] = makeMessage("assistant", "changed boundary history", "message-19");
+  const afterDivergence = await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: divergentMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  releaseOlder();
+  const olderResult = await olderPending;
+
+  assert.equal(afterDivergence.promptAuthority, "assembled");
+  assert.equal(olderResult.promptAuthority, "preassembly_may_overflow");
+  assert.match(state.snapshots.get(sessionId)?.context ?? "", /Fresh projection/u);
+  assert.equal(state.activeSessions.has(sessionId), true);
+  assert.deepEqual(olderResult.messages, sourceMessages);
+  assert.doesNotMatch(olderResult.systemPromptAddition, /Obsolete projection/u);
+});
+
+test("engine replacement does not persist ambiguous compaction or cross a lifecycle race", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  client.compactResponse = { ok: true, didCompact: true };
+  const engineA = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engineA.compact({
+    sessionId: "s1-projection-race",
+    force: true,
+    tokenBudget: 100_000,
+    currentTokenCount: 90_000,
+  });
+  await engineA.dispose();
+
+  const engineB = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  const withoutMarker = await engineB.assemble({
+    sessionId: "s1-projection-race",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  assert.equal(withoutMarker.promptAuthority, "preassembly_may_overflow");
+  assert.equal(withoutMarker.messages.length, sourceMessages.length);
+
+  let releaseAssemble!: () => void;
+  const assembleStarted = new Promise<void>((resolve) => {
+    (client as unknown as { assembleContextInternal: () => Promise<unknown> }).assembleContextInternal = async () => {
+      resolve();
+      await new Promise<void>((release) => {
+        releaseAssemble = release;
+      });
+      return {
+        messages: [],
+        estimatedTokens: 500,
+        systemPromptAddition:
+          "<compacted_session_context>\nLate stale projection\n</compacted_session_context>",
+      };
+    };
+  });
+  const pending = engineB.assemble({
+    sessionId: "s1-projection-race",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  await assembleStarted;
+  const sessionToken = state.lifecycleTokens.get("s1-projection-race");
+  clearCompactedProjectionState(state, "unrelated-session");
+  assert.strictEqual(state.lifecycleTokens.get("s1-projection-race"), sessionToken);
+  clearCompactedProjectionState(state, "s1-projection-race");
+  releaseAssemble();
+  const afterRace = await pending;
+  assert.equal(afterRace.promptAuthority, "preassembly_may_overflow");
+  assert.equal(afterRace.messages.length, sourceMessages.length);
+  assert.equal(state.snapshots.size, 0);
+});
+
+test("reset during predictive compaction cannot activate stale projection state", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  let releaseCompaction!: () => void;
+  const compactionStarted = new Promise<void>((resolve) => {
+    (client as unknown as { compactSession: () => Promise<unknown> }).compactSession = async () => {
+      resolve();
+      await new Promise<void>((release) => {
+        releaseCompaction = release;
+      });
+      return { ok: true, didCompact: true };
+    };
+  });
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  const pending = engine.assemble({
+    sessionId: "s1-compaction-reset-race",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+    currentTokenCount: 50_000,
+  });
+  await compactionStarted;
+  clearCompactedProjectionState(state, "s1-compaction-reset-race");
+  releaseCompaction();
+  const assembled = await pending;
+
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
+  assert.equal(assembled.messages.length, sourceMessages.length);
+  assert.equal(state.snapshots.size, 0);
+});
+
+test("queued afterTurn work cannot repopulate session state after reset", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = `s1-after-turn-reset-race-${process.pid}-${Date.now()}`;
+  let releaseAfterTurn!: () => void;
+  let afterTurnCalls = 0;
+  const afterTurnStarted = new Promise<void>((resolve) => {
+    (client as unknown as {
+      afterTurnKernel: (params: Record<string, unknown>) => Promise<unknown>;
+    }).afterTurnKernel = async (params) => {
+      client.calls.push({ method: "afterTurnKernel", params });
+      afterTurnCalls += 1;
+      if (afterTurnCalls === 1) {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAfterTurn = release;
+        });
+      }
+      return { ok: true };
+    };
+  });
+  client.compactResponse = { ok: true, didCompact: true };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "queued before reset")],
+    tokenBudget: 100_000,
+    runtimeContext: { currentTokenCount: 50_000 },
+  });
+  await afterTurnStarted;
+  await engine.afterTurn({
+    sessionId,
+    sessionKey: "sk1",
+    messages: [makeMessage("user", "queued behind the stale turn")],
+    tokenBudget: 100_000,
+    runtimeContext: { currentTokenCount: 50_000 },
+  });
+
+  clearCompactedProjectionState(state, sessionId);
+  releaseAfterTurn();
+  await flushIngestion(engine);
+
+  assert.equal(client.calls.filter((call) => call.method === "afterTurnKernel").length, 1);
+  assert.equal(client.calls.some((call) => call.method === "compactSession"), false);
+  assert.equal(manifestStore.load(sessionId).turns.length, 0);
+  assert.equal(state.activeSessions.has(sessionId), false);
+  assert.equal(state.snapshots.has(sessionId), false);
+});
+
+test("successful predictive compaction does not restore an older cached marker", async () => {
+  const client = new FakeClient();
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nOlder projection\n</compacted_session_context>",
+  };
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  const state = createCompactedProjectionState();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engine.assemble({
+    sessionId: "s1-compaction-without-marker",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  assert.equal(state.snapshots.has("s1-compaction-without-marker"), true);
+
+  const olderSnapshot = state.snapshots.get("s1-compaction-without-marker");
+  client.compactResponse = {
+    didCompact: false,
+    skippedNoNewTurns: true,
+    lastCompactedTurn: 37n,
+  };
+  const unchanged = await engine.compact({
+    sessionId: "s1-compaction-without-marker",
+    tokenBudget: 100_000,
+    currentTokenCount: 50_000,
+  });
+  assert.equal(unchanged.compacted, true);
+  assert.strictEqual(state.snapshots.get("s1-compaction-without-marker"), olderSnapshot);
+
+  client.compactResponse = { ok: true, didCompact: true };
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "",
+  };
+  const assembled = await engine.assemble({
+    sessionId: "s1-compaction-without-marker",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+    currentTokenCount: 50_000,
+  });
+
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
+  assert.equal(assembled.messages.length, sourceMessages.length);
+  assert.equal(assembled.systemPromptAddition, "");
+  assert.equal(state.snapshots.has("s1-compaction-without-marker"), false);
+});
+
+test("successful compaction fences an overlapping assembly holding an older marker", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = "s1-overlapping-compaction";
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 500,
+    systemPromptAddition:
+      "<compacted_session_context>\nOlder projection\n</compacted_session_context>",
+  };
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" }, console, state);
+  await engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+
+  let releaseAssemble!: () => void;
+  const assembleStarted = new Promise<void>((resolve) => {
+    (client as unknown as {
+      assembleContextInternal: (params: Record<string, unknown>) => Promise<unknown>;
+    }).assembleContextInternal = async (params) => {
+      client.calls.push({ method: "assembleContextInternal", params });
+      resolve();
+      await new Promise<void>((release) => {
+        releaseAssemble = release;
+      });
+      return {
+        messages: [],
+        estimatedTokens: 500,
+        systemPromptAddition:
+          "<compacted_session_context>\nLate stale projection\n</compacted_session_context>",
+      };
+    };
+  });
+  const pending = engine.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  await assembleStarted;
+
+  client.compactResponse = { ok: true, didCompact: true };
+  const compacted = await engine.compact({ sessionId, force: true, tokenBudget: 100_000 });
+  assert.equal(compacted.compacted, true);
+  releaseAssemble();
+  const assembled = await pending;
+
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
+  assert.deepEqual(assembled.messages, sourceMessages);
+  assert.doesNotMatch(assembled.systemPromptAddition, /Late stale projection/u);
+  assert.equal(state.snapshots.has(sessionId), false);
 });
 
 test("context engine assemble drops consecutive duplicate provider replay messages", async () => {

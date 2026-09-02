@@ -1214,6 +1214,43 @@ function hasCompactedSessionContext(text: string): boolean {
   return HAS_COMPACTED_SESSION_CONTEXT_RE.test(text);
 }
 
+function extractCompactedSessionContext(text: string): string | undefined {
+  return text.match(COMPACTED_SESSION_CONTEXT_RE)?.join("\n") || undefined;
+}
+
+type CompactedProjectionSnapshot = {
+  context: string;
+  sourceStartIndex: number;
+  boundarySignature: string;
+};
+
+export type CompactedProjectionState = {
+  snapshots: Map<string, CompactedProjectionSnapshot>;
+  lifecycleTokens: Map<string, object>;
+  projectionTokens: Map<string, object>;
+  activeSessions: Set<string>;
+};
+
+export function createCompactedProjectionState(): CompactedProjectionState {
+  return {
+    snapshots: new Map(),
+    lifecycleTokens: new Map(),
+    projectionTokens: new Map(),
+    activeSessions: new Set(),
+  };
+}
+
+export function clearCompactedProjectionState(
+  state: CompactedProjectionState,
+  sessionId: string,
+): void {
+  state.snapshots.delete(sessionId);
+  state.lifecycleTokens.delete(sessionId);
+  state.projectionTokens.delete(sessionId);
+  state.activeSessions.delete(sessionId);
+  postToolRecallCache.delete(sessionId);
+}
+
 function sanitizeDaemonSystemPromptAddition(text: string): string {
   return demoteDaemonAuthoredContextBlocks(
     sanitizeToolCallPatterns(canonicalizeCompactedSessionContextBlocks(text)),
@@ -1377,6 +1414,20 @@ export function normalizeKernelMessages(
       return normalized;
     })
     .filter((message) => message.role === "user" || message.content.trim().length > 0);
+}
+
+function buildProjectionBoundarySignature(
+  messages: OpenClawCompatibleMessage[],
+  sourceStartIndex: number,
+): string {
+  // ponytail: OpenClaw histories are append-only; use a durable transcript
+  // revision instead if the host ever permits arbitrary mid-prefix edits.
+  const boundary = messages.slice(Math.max(0, sourceStartIndex - 4), sourceStartIndex);
+  return createHash("sha256").update(JSON.stringify({ sourceStartIndex, boundary: boundary.map((message) => ({
+    role: message.role,
+    content: message.content,
+    id: typeof message.id === "string" ? message.id : undefined,
+  })) })).digest("hex");
 }
 
 function buildBeforeTurnSignature(messages: OpenClawCompatibleMessage[]): string | null {
@@ -2030,13 +2081,14 @@ export function buildContextEngineFactory(
   runtime: PluginRuntime,
   cfg: PluginConfig,
   logger: LoggerLike = console,
+  compactedProjectionState: CompactedProjectionState = createCompactedProjectionState(),
 ) {
   if (cfg?.optimizationMemoCacheSize !== undefined) {
     setOptimizationMemoCacheSize(cfg.optimizationMemoCacheSize);
   }
 
   const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
-  const compactedProjectionSessions = new Set<string>();
+  const compactedProjectionSessions = compactedProjectionState.activeSessions;
   const PREDICTIVE_CACHE_MAX_SIZE = 100;
   // BeforeTurnKernel state
   const turnCache = new TurnMemoryCache(100);
@@ -2116,6 +2168,39 @@ export function buildContextEngineFactory(
         `LibraVDB activated daemon-owned compacted projection sessionId=${sessionId} source=${source}`,
       );
     }
+  }
+
+  function rememberCompactedProjection(
+    sessionId: string,
+    context: string,
+    sourceStartIndex: number,
+    boundarySignature: string,
+  ): void {
+    const snapshots = compactedProjectionState.snapshots;
+    snapshots.delete(sessionId);
+    if (snapshots.size >= POST_TOOL_CACHE_MAX_SIZE) {
+      const oldest = snapshots.keys().next().value;
+      if (oldest !== undefined) snapshots.delete(oldest);
+    }
+    snapshots.set(sessionId, { context, sourceStartIndex, boundarySignature });
+  }
+
+  function getProjectionLifecycleToken(sessionId: string): object {
+    let token = compactedProjectionState.lifecycleTokens.get(sessionId);
+    if (!token) {
+      token = {};
+      compactedProjectionState.lifecycleTokens.set(sessionId, token);
+    }
+    return token;
+  }
+
+  function getProjectionToken(sessionId: string): object {
+    let token = compactedProjectionState.projectionTokens.get(sessionId);
+    if (!token) {
+      token = {};
+      compactedProjectionState.projectionTokens.set(sessionId, token);
+    }
+    return token;
   }
 
   function enforceAssembleBudget(
@@ -2697,23 +2782,42 @@ export function buildContextEngineFactory(
     }
   }
 
-  async function runCompaction(args: {
-    sessionId: string;
-    force?: boolean;
-    targetSize?: number;
-    tokenBudget?: number;
-    currentTokenCount?: number;
-  }): Promise<OpenClawCompatibleCompactResult> {
+  async function runCompaction(
+    args: {
+      sessionId: string;
+      force?: boolean;
+      targetSize?: number;
+      tokenBudget?: number;
+      currentTokenCount?: number;
+      lifecycleToken?: object;
+    },
+    onProjectionChanged?: (token: object) => void,
+  ): Promise<OpenClawCompatibleCompactResult> {
+    const lifecycleToken = args.lifecycleToken ?? getProjectionLifecycleToken(args.sessionId);
+    if (compactedProjectionState.lifecycleTokens.get(args.sessionId) !== lifecycleToken) {
+      return { ok: false, compacted: false, reason: "session lifecycle changed" };
+    }
     const request = buildCompactSessionRequest(args);
     try {
       const client = await runtime.getClient();
       const threshold = getDynamicCompactThreshold(args.tokenBudget);
-      const result = normalizeCompactResult(await client.compactSession(request), {
+      const response = await client.compactSession(request);
+      const result = normalizeCompactResult(response, {
         tokensBefore: args.currentTokenCount,
         logger,
         ...(threshold != null ? { threshold } : {}),
       });
-      if (result.ok && result.compacted) {
+      if (
+        result.ok &&
+        result.compacted &&
+        compactedProjectionState.lifecycleTokens.get(args.sessionId) === lifecycleToken
+      ) {
+        if (response.didCompact === true) {
+          const projectionToken = {};
+          compactedProjectionState.snapshots.delete(args.sessionId);
+          compactedProjectionState.projectionTokens.set(args.sessionId, projectionToken);
+          onProjectionChanged?.(projectionToken);
+        }
         activateCompactedProjection(args.sessionId, "compact");
       }
       return result;
@@ -2731,6 +2835,7 @@ export function buildContextEngineFactory(
     messages: OpenClawCompatibleMessage[];
     tokenBudget?: number;
     currentTokenCount?: number;
+    lifecycleToken: object;
   }): Promise<void> {
     const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
     const currentContextTokens = resolveAfterTurnPredictiveCompactionTokenCount({
@@ -2763,6 +2868,7 @@ export function buildContextEngineFactory(
       tokenBudget: args.tokenBudget,
       force: true,
       currentTokenCount: currentContextTokens,
+      lifecycleToken: args.lifecycleToken,
     });
     logPredictiveCompactionOutcome({
       logger,
@@ -2886,7 +2992,25 @@ export function buildContextEngineFactory(
         };
       }
 
-      let compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+      let assembleLifecycleToken = getProjectionLifecycleToken(sessionId);
+      let assembleProjectionToken = getProjectionToken(sessionId);
+      let cachedCompactedProjection = compactedProjectionState.snapshots.get(sessionId);
+      if (cachedCompactedProjection) {
+        if (
+          args.messages.length < cachedCompactedProjection.sourceStartIndex ||
+          buildProjectionBoundarySignature(
+            args.messages,
+            cachedCompactedProjection.sourceStartIndex,
+          ) !== cachedCompactedProjection.boundarySignature
+        ) {
+          clearCompactedProjectionState(compactedProjectionState, sessionId);
+          assembleLifecycleToken = getProjectionLifecycleToken(sessionId);
+          assembleProjectionToken = getProjectionToken(sessionId);
+          cachedCompactedProjection = undefined;
+        }
+      }
+      let compactionProjectionActive =
+        compactedProjectionSessions.has(sessionId) || cachedCompactedProjection !== undefined;
 
       const userId = resolveUserId({
         userIdOverride: args.userId,
@@ -2900,7 +3024,9 @@ export function buildContextEngineFactory(
       const recentMessages = selectTurnAlignedSourceSuffix(args.messages, normalizeWindow);
       const messages = normalizeKernelMessages(recentMessages);
       const projectedSourceMessages = () => compactionProjectionActive
-        ? recentMessages
+        ? cachedCompactedProjection
+          ? args.messages.slice(cachedCompactedProjection.sourceStartIndex)
+          : recentMessages
         : args.messages;
       const buildAssembleFallback = (): OpenClawCompatibleAssembleResult => {
         if (!compactionProjectionActive) {
@@ -2908,8 +3034,10 @@ export function buildContextEngineFactory(
         }
         return enforceCompactedProjectionBudgetInvariant({
           messages: projectedSourceMessages(),
-          estimatedTokens: approximateMessagesTokens(projectedSourceMessages()),
-          systemPromptAddition: "",
+          estimatedTokens:
+            approximateMessagesTokens(projectedSourceMessages()) +
+            approximateTokenCount(cachedCompactedProjection?.context ?? ""),
+          systemPromptAddition: cachedCompactedProjection?.context ?? "",
           promptAuthority: "assembled",
         }, args.tokenBudget);
       };
@@ -2945,13 +3073,33 @@ export function buildContextEngineFactory(
           targetSize: predictiveTargetSize,
           tokenBudget: args.tokenBudget,
         });
-        const compactionResult = await runCompaction({
-          sessionId,
-          targetSize: predictiveTargetSize,
-          tokenBudget: args.tokenBudget,
-          force: true,
-          currentTokenCount: currentContextTokens,
-        });
+        const compactionResult = await runCompaction(
+          {
+            sessionId,
+            targetSize: predictiveTargetSize,
+            tokenBudget: args.tokenBudget,
+            force: true,
+            currentTokenCount: currentContextTokens,
+          },
+          (projectionToken) => {
+            assembleProjectionToken = projectionToken;
+            cachedCompactedProjection = undefined;
+          },
+        );
+        if (
+          compactedProjectionState.lifecycleTokens.get(sessionId) !== assembleLifecycleToken ||
+          compactedProjectionState.projectionTokens.get(sessionId) !== assembleProjectionToken
+        ) {
+          logger.warn?.(
+            `LibraVDB discarded stale compaction result after session state change sessionId=${sessionId}`,
+          );
+          return ensureReplaySafeUserTurn(
+            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
         logPredictiveCompactionOutcome({
           logger,
           phase: "assemble",
@@ -2963,7 +3111,8 @@ export function buildContextEngineFactory(
           compacted: compactionResult.compacted,
           reason: compactionResult.reason,
         });
-        compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+        compactionProjectionActive =
+          compactedProjectionSessions.has(sessionId) || cachedCompactedProjection !== undefined;
         if (!compactionResult.ok && !compactionProjectionActive) {
           logger.info?.(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
@@ -3054,7 +3203,12 @@ export function buildContextEngineFactory(
             compactionProjectionActive = true;
           }
           const sourceProjection = projectedSourceMessages();
-          const mockResp = { messages: sourceProjection, systemPromptAddition: cachedSystemPrompt };
+          const mockResp = {
+            messages: sourceProjection,
+            systemPromptAddition: cachedSystemPrompt,
+            estimatedTokens:
+              approximateMessagesTokens(sourceProjection) + approximateTokenCount(cachedSystemPrompt),
+          };
           enforced = enforceAssembleBudget(
             normalizeAssembleResult(
               mockResp,
@@ -3153,16 +3307,47 @@ export function buildContextEngineFactory(
               setTimeout(() => reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`)), assembleTimeout)
             ),
           ]);
+          const daemonCompactedProjectionContext =
+            typeof resp.systemPromptAddition === "string"
+              ? extractCompactedSessionContext(resp.systemPromptAddition)
+              : undefined;
           if (
-            typeof resp.systemPromptAddition === "string" &&
-            hasCompactedSessionContext(resp.systemPromptAddition)
+            daemonCompactedProjectionContext &&
+            compactedProjectionState.lifecycleTokens.get(sessionId) === assembleLifecycleToken &&
+            compactedProjectionState.projectionTokens.get(sessionId) === assembleProjectionToken
           ) {
+            cachedCompactedProjection = undefined;
+            const sourceStartIndex = args.messages.length - recentMessages.length;
+            const boundarySignature = buildProjectionBoundarySignature(args.messages, sourceStartIndex);
+            rememberCompactedProjection(
+              sessionId,
+              daemonCompactedProjectionContext,
+              sourceStartIndex,
+              boundarySignature,
+            );
             activateCompactedProjection(sessionId, "assemble");
             compactionProjectionActive = true;
           }
           const sourceProjection = projectedSourceMessages();
+          const restoredCompactedContext =
+            cachedCompactedProjection && !daemonCompactedProjectionContext
+              ? cachedCompactedProjection.context
+              : undefined;
+          const restoredSystemPromptAddition = restoredCompactedContext
+            ? appendSystemPromptAddition(restoredCompactedContext, resp.systemPromptAddition)
+            : undefined;
           const assembled = normalizeAssembleResult(
-            resp,
+            restoredCompactedContext
+              ? {
+                  ...resp,
+                  systemPromptAddition: restoredSystemPromptAddition,
+                  estimatedTokens: Math.max(
+                    typeof resp.estimatedTokens === "number" ? resp.estimatedTokens : 0,
+                    approximateMessagesTokens(sourceProjection) +
+                      approximateTokenCount(restoredSystemPromptAddition ?? ""),
+                  ),
+                }
+              : resp,
             sourceProjection,
             compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
           );
@@ -3266,14 +3451,6 @@ export function buildContextEngineFactory(
             }
           }
 
-          if (postToolRecallCache.size >= POST_TOOL_CACHE_MAX_SIZE) {
-            const oldest = postToolRecallCache.keys().next().value;
-            if (oldest !== undefined) postToolRecallCache.delete(oldest);
-          }
-          postToolRecallCache.set(sessionId, {
-            lastUserIndex,
-            systemPromptAddition: enforced.systemPromptAddition,
-          });
         }
 
         // tokenBudgetMax stage 2 (enforcer): truncate the combined injection to
@@ -3309,13 +3486,61 @@ export function buildContextEngineFactory(
         // The returned transcript is always an untouched source projection.
         // Once daemon compaction owns history, OpenClaw must precheck this
         // assembled suffix rather than the unwindowed session transcript.
-        return ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
+        const stateChanged =
+          compactedProjectionState.lifecycleTokens.get(sessionId) !== assembleLifecycleToken ||
+          compactedProjectionState.projectionTokens.get(sessionId) !== assembleProjectionToken;
+        const compactedContextMissing =
+          compactionProjectionActive &&
+          extractCompactedSessionContext(enforced.systemPromptAddition) === undefined;
+        if (stateChanged || compactedContextMissing) {
+          logger.warn?.(
+            `LibraVDB discarded ${stateChanged ? "stale" : "incomplete"} compacted projection ` +
+            `sessionId=${sessionId}`,
+          );
+          return ensureReplaySafeUserTurn(
+            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
+        const replaySafe = ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
+        if (
+          compactionProjectionActive &&
+          extractCompactedSessionContext(replaySafe.systemPromptAddition) === undefined
+        ) {
+          logger.warn?.(`LibraVDB discarded compacted projection after user-turn repair sessionId=${sessionId}`);
+          return ensureReplaySafeUserTurn(
+            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
+        if (postToolRecallCache.size >= POST_TOOL_CACHE_MAX_SIZE) {
+          const oldest = postToolRecallCache.keys().next().value;
+          if (oldest !== undefined) postToolRecallCache.delete(oldest);
+        }
+        postToolRecallCache.set(sessionId, {
+          lastUserIndex,
+          systemPromptAddition: replaySafe.systemPromptAddition,
+        });
+        return replaySafe;
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
+        const stateCurrent =
+          compactedProjectionState.lifecycleTokens.get(sessionId) === assembleLifecycleToken &&
+          compactedProjectionState.projectionTokens.get(sessionId) === assembleProjectionToken;
+        const fallback = stateCurrent
+          ? buildAssembleFallback()
+          : buildBudgetFallbackContext(args.messages, args.tokenBudget);
         return ensureReplaySafeUserTurn(
-          buildAssembleFallback(),
+          compactionProjectionActive &&
+            extractCompactedSessionContext(fallback.systemPromptAddition) === undefined
+            ? buildBudgetFallbackContext(args.messages, args.tokenBudget)
+            : fallback,
           args.messages,
           logger,
           args.tokenBudget,
@@ -3561,8 +3786,13 @@ export function buildContextEngineFactory(
         return { ok: true, skipped: true, reason: "no-new-messages" };
       }
 
+      const lifecycleToken = getProjectionLifecycleToken(sessionId);
       const ingestion = enqueueAsyncIngestion(sessionId, async () => {
         try {
+          const lifecycleIsCurrent = () =>
+            compactedProjectionState.lifecycleTokens.get(sessionId) === lifecycleToken;
+          if (!lifecycleIsCurrent()) return;
+
           // Reload manifest inside the serialized queue so state is fresh
           // after any preceding queued tasks have completed.
           const manifest = manifestStore.load(sessionId, logger);
@@ -3595,6 +3825,7 @@ export function buildContextEngineFactory(
             };
 
           const client = await runtime.getClient();
+          if (!lifecycleIsCurrent()) return;
           const currentTokenCount = normalizeCurrentTokenCount(
             typeof args.runtimeContext?.currentTokenCount === "number"
               ? args.runtimeContext.currentTokenCount
@@ -3609,6 +3840,7 @@ export function buildContextEngineFactory(
             isHeartbeat: args.isHeartbeat,
             ...(cursor ? { cursor } : {}),
           } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+          if (!lifecycleIsCurrent()) return;
 
           updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
 
@@ -3646,6 +3878,7 @@ export function buildContextEngineFactory(
                   messages: seedMessages,
                   isHeartbeat: args.isHeartbeat,
                 } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+                if (!lifecycleIsCurrent()) return;
                 manifestStore.save(
                   manifestStore.appendACKedMessages(emptyManifest, seedMessages, 0),
                 );
@@ -3704,7 +3937,9 @@ export function buildContextEngineFactory(
               messages,
               tokenBudget: args.tokenBudget,
               currentTokenCount,
+              lifecycleToken,
             });
+            if (!lifecycleIsCurrent()) return;
             const predictions = result.predictions;
             if (Array.isArray(predictions) && predictions.length > 0) {
               if (predictiveContextCache.size >= PREDICTIVE_CACHE_MAX_SIZE) {
@@ -3838,7 +4073,6 @@ export function buildContextEngineFactory(
         }
       }
       predictiveContextCache.clear();
-      compactedProjectionSessions.clear();
       postToolRecallCache.clear();
       asyncIngestionQueues.clear();
       triggerCache.clear();
