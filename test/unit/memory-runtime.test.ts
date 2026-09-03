@@ -74,7 +74,7 @@ test("memory runtime bridge searches the resolved durable namespace under the la
   assert.equal(result[0]?.source, "memory");
 });
 
-test("memory runtime bridge routes dream queries to the dream collection when cross-session recall is enabled", async () => {
+test("memory runtime bridge adds dream results to normal memory when cross-session recall is enabled", async () => {
   for (const cfg of [{}, { crossSessionRecall: true }] satisfies PluginConfig[]) {
     const rpc = new FakeRpc();
     const runtime = buildMemoryRuntimeBridge(async () => rpc as never, cfg);
@@ -83,12 +83,74 @@ test("memory runtime bridge routes dream queries to the dream collection when cr
     const result = await manager.search({ query: "tell me about your dreams from last week", userId: "u1" });
 
     assert.ok(Array.isArray(result));
-    assert.equal(rpc.calls[1]?.method, "searchText");
-    assert.deepEqual(rpc.calls[1]?.params.collection, "dream:u1");
-    assert.equal(rpc.calls.some((call) => call.method === "searchTextCollections"), false);
-    assert.equal(result.length, 1);
+    assert.equal(rpc.calls[1]?.method, "searchTextCollections");
+    assert.equal(rpc.calls[2]?.method, "searchText");
+    assert.deepEqual(rpc.calls[2]?.params.collection, "dream:u1");
+    assert.equal(result.length, 2);
     assert.equal(result[0]?.snippet, "dream recall item");
+    assert.equal(result[1]?.snippet, "remembered item");
   }
+});
+
+test("memory runtime bridge keeps normal results when the dream collection is empty", async () => {
+  const rpc = new FakeRpc();
+  rpc.searchText = async (params: Record<string, unknown>) => {
+    rpc.calls.push({ method: "searchText", params });
+    return { results: [] };
+  };
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({ query: "tell me about your dreams", userId: "u1" });
+
+  assert.ok(Array.isArray(result));
+  assert.deepEqual(result.map((item) => item.snippet), ["remembered item"]);
+  assert.equal(rpc.calls[1]?.method, "searchTextCollections");
+  assert.equal(rpc.calls[2]?.method, "searchText");
+});
+
+test("memory runtime bridge merges, deduplicates, and caps dream and normal results", async () => {
+  const rpc = new FakeRpc();
+  rpc.searchTextCollections = async (params: Record<string, unknown>) => {
+    rpc.calls.push({ method: "searchTextCollections", params });
+    return {
+      results: [
+        { id: "normal", score: 0.95, text: "normal memory", metadata: { collection: "user:u1" } },
+        { id: "shared", score: 0.7, text: "lower-ranked duplicate", metadata: { collection: "user:u1" } },
+      ],
+    };
+  };
+  rpc.searchText = async (params: Record<string, unknown>) => {
+    rpc.calls.push({ method: "searchText", params });
+    return {
+      results: [
+        { id: "dream", score: 0.9, text: "dream memory", metadata: { collection: "dream:u1" } },
+        { id: "shared", score: 0.8, text: "higher-ranked duplicate", metadata: { collection: "dream:u1" } },
+        { id: "overflow", score: 0.6, text: "outside result limit", metadata: { collection: "dream:u1" } },
+      ],
+    };
+  };
+  const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
+  const { manager } = await runtime.getMemorySearchManager();
+
+  const result = await manager.search({
+    query: "tell me about your dreams",
+    userId: "u1",
+    limit: 3,
+    kind: "episodic",
+    signals: ["visual"],
+  });
+
+  assert.ok(Array.isArray(result));
+  assert.deepEqual(result.map((item) => item.snippet), [
+    "normal memory",
+    "dream memory",
+    "higher-ranked duplicate",
+  ]);
+  assert.deepEqual(rpc.calls[1]?.params.kind, "episodic");
+  assert.deepEqual(rpc.calls[1]?.params.signals, ["visual"]);
+  assert.deepEqual(rpc.calls[2]?.params.kind, "episodic");
+  assert.deepEqual(rpc.calls[2]?.params.signals, ["visual"]);
 });
 
 test("memory runtime bridge rejects invalid dream collections before daemon search", async () => {
