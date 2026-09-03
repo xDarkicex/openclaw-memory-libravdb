@@ -1569,6 +1569,65 @@ test("daemon compacted projection survives engine replacement until session stat
   assert.equal(afterReset.messages.length, appendedMessages.length);
 });
 
+test("disposing one engine does not invalidate another engine's in-flight assembly", async () => {
+  const client = new FakeClient();
+  const state = createCompactedProjectionState();
+  const sessionId = "s1-dispose-other-engine-assembly";
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  let releaseAssembly!: () => void;
+  const assemblyStarted = new Promise<void>((resolve) => {
+    (client as unknown as {
+      assembleContextInternal: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    }).assembleContextInternal = async (params) => {
+      client.calls.push({ method: "assembleContextInternal", params });
+      resolve();
+      await new Promise<void>((release) => {
+        releaseAssembly = release;
+      });
+      return {
+        messages: [],
+        estimatedTokens: 500,
+        systemPromptAddition:
+          "<compacted_session_context>\nProjection from the live engine\n</compacted_session_context>",
+      };
+    };
+  });
+
+  const engineA = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user", beforeTurnEnabled: false },
+    console,
+    state,
+  );
+  const engineB = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user", beforeTurnEnabled: false },
+    console,
+    state,
+  );
+
+  const pending = engineB.assemble({
+    sessionId,
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: "message 68",
+    tokenBudget: 100_000,
+  });
+  await assemblyStarted;
+
+  await engineA.dispose();
+  releaseAssembly();
+  const assembled = await pending;
+
+  assert.equal(assembled.promptAuthority, "assembled");
+  assert.match(assembled.systemPromptAddition, /Projection from the live engine/u);
+  assert.equal(state.snapshots.has(sessionId), true);
+
+  await engineB.dispose();
+});
+
 test("session cleanup deactivates an existing engine and clears its post-tool projection", async () => {
   const client = new FakeClient();
   const state = createCompactedProjectionState();
@@ -4140,6 +4199,60 @@ test("commitTurn concurrent callers all see the failure when the shared ingest f
     const retry = await call();
     assert.equal(retry.status, "committed");
     await flushIngestion(engine);
+  });
+});
+
+test("commitTurn leaves the advancement key retryable when the session resets during ingestion", async () => {
+  await withTempStateDir(async () => {
+    const client = new FakeClient();
+    const state = createCompactedProjectionState();
+    let releaseFirstIngest!: () => void;
+    let afterTurnCalls = 0;
+    const firstIngestStarted = new Promise<void>((resolve) => {
+      (client as unknown as {
+        afterTurnKernel: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+      }).afterTurnKernel = async (params) => {
+        client.calls.push({ method: "afterTurnKernel", params });
+        afterTurnCalls += 1;
+        if (afterTurnCalls === 1) {
+          resolve();
+          await new Promise<void>((release) => {
+            releaseFirstIngest = release;
+          });
+        }
+        return { ok: true, turnCount: afterTurnCalls };
+      };
+    });
+    const engine = buildContextEngineFactory(
+      fakeRuntime(client),
+      { userId: "fixed-user" },
+      console,
+      state,
+    );
+    const args = {
+      advancementKey: "adv-reset-retry-1",
+      sessionId: "s1-commit-reset-retry",
+      sessionKey: "sk-commit-reset-retry",
+      messages: [makeMessage("user", "retry after reset"), makeMessage("assistant", "continue")],
+    };
+
+    const pending = (engine as unknown as CommitTurnEngine).commitTurn(args);
+    await firstIngestStarted;
+    clearCompactedProjectionState(state, args.sessionId);
+    releaseFirstIngest();
+
+    await assert.rejects(
+      pending,
+      /session lifecycle changed/u,
+      "a reset during ingestion must remain retryable rather than being memoized",
+    );
+
+    const retry = await (engine as unknown as CommitTurnEngine).commitTurn(args);
+    assert.equal(retry.status, "committed");
+    await flushIngestion(engine);
+    const replay = await (engine as unknown as CommitTurnEngine).commitTurn(args);
+    assert.equal(replay.status, "duplicate");
+    assert.equal(afterTurnCalls, 2, "the reset attempt must not consume the advancement key");
   });
 });
 

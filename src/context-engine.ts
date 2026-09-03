@@ -315,6 +315,13 @@ function isHistoricalToolControlText(normalizedContent: string): boolean {
 
 const asyncIngestionQueues = new Map<string, Promise<void>>();
 
+class SessionLifecycleChangedError extends Error {
+  constructor() {
+    super("session lifecycle changed");
+    this.name = "SessionLifecycleChangedError";
+  }
+}
+
 interface PostToolContextCache {
   lastUserIndex: number;
   systemPromptAddition: string;
@@ -2106,6 +2113,7 @@ export function buildContextEngineFactory(
 
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
+  let engineDisposed = false;
 
   // --- Per-agent / per-subagent exclusion ---
   // Sessions belonging to an excluded agent (or, when excludeSubagents is set,
@@ -2208,6 +2216,21 @@ export function buildContextEngineFactory(
       compactedProjectionState.projectionTokens.set(sessionId, token);
     }
     return token;
+  }
+
+  function isProjectionLifecycleCurrent(sessionId: string, lifecycleToken: object): boolean {
+    return !engineDisposed && compactedProjectionState.lifecycleTokens.get(sessionId) === lifecycleToken;
+  }
+
+  function isProjectionStateCurrent(
+    sessionId: string,
+    lifecycleToken: object,
+    projectionToken: object,
+  ): boolean {
+    return (
+      isProjectionLifecycleCurrent(sessionId, lifecycleToken) &&
+      compactedProjectionState.projectionTokens.get(sessionId) === projectionToken
+    );
   }
 
   function enforceAssembleBudget(
@@ -2801,7 +2824,7 @@ export function buildContextEngineFactory(
     onProjectionChanged?: (token: object) => void,
   ): Promise<OpenClawCompatibleCompactResult> {
     const lifecycleToken = args.lifecycleToken ?? getProjectionLifecycleToken(args.sessionId);
-    if (compactedProjectionState.lifecycleTokens.get(args.sessionId) !== lifecycleToken) {
+    if (!isProjectionLifecycleCurrent(args.sessionId, lifecycleToken)) {
       return { ok: false, compacted: false, reason: "session lifecycle changed" };
     }
     const request = buildCompactSessionRequest(args);
@@ -2814,13 +2837,13 @@ export function buildContextEngineFactory(
         logger,
         ...(threshold != null ? { threshold } : {}),
       });
-      if (compactedProjectionState.lifecycleTokens.get(args.sessionId) !== lifecycleToken) {
+      if (!isProjectionLifecycleCurrent(args.sessionId, lifecycleToken)) {
         return { ok: false, compacted: false, reason: "session lifecycle changed" };
       }
       if (
         result.ok &&
         result.compacted &&
-        compactedProjectionState.lifecycleTokens.get(args.sessionId) === lifecycleToken
+        isProjectionLifecycleCurrent(args.sessionId, lifecycleToken)
       ) {
         if (response.didCompact === true) {
           const projectionToken = {};
@@ -3097,8 +3120,7 @@ export function buildContextEngineFactory(
           },
         );
         if (
-          compactedProjectionState.lifecycleTokens.get(sessionId) !== assembleLifecycleToken ||
-          compactedProjectionState.projectionTokens.get(sessionId) !== assembleProjectionToken
+          !isProjectionStateCurrent(sessionId, assembleLifecycleToken, assembleProjectionToken)
         ) {
           logger.warn?.(
             `LibraVDB discarded stale compaction result after session state change sessionId=${sessionId}`,
@@ -3323,8 +3345,7 @@ export function buildContextEngineFactory(
               : undefined;
           if (
             daemonCompactedProjectionContext &&
-            compactedProjectionState.lifecycleTokens.get(sessionId) === assembleLifecycleToken &&
-            compactedProjectionState.projectionTokens.get(sessionId) === assembleProjectionToken
+            isProjectionStateCurrent(sessionId, assembleLifecycleToken, assembleProjectionToken)
           ) {
             cachedCompactedProjection = undefined;
             const sourceStartIndex = args.messages.length - recentMessages.length;
@@ -3496,9 +3517,11 @@ export function buildContextEngineFactory(
         // The returned transcript is always an untouched source projection.
         // Once daemon compaction owns history, OpenClaw must precheck this
         // assembled suffix rather than the unwindowed session transcript.
-        const stateChanged =
-          compactedProjectionState.lifecycleTokens.get(sessionId) !== assembleLifecycleToken ||
-          compactedProjectionState.projectionTokens.get(sessionId) !== assembleProjectionToken;
+        const stateChanged = !isProjectionStateCurrent(
+          sessionId,
+          assembleLifecycleToken,
+          assembleProjectionToken,
+        );
         const compactedContextMissing =
           compactionProjectionActive &&
           extractCompactedSessionContext(enforced.systemPromptAddition) === undefined;
@@ -3553,9 +3576,11 @@ export function buildContextEngineFactory(
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
-        const stateCurrent =
-          compactedProjectionState.lifecycleTokens.get(sessionId) === assembleLifecycleToken &&
-          compactedProjectionState.projectionTokens.get(sessionId) === assembleProjectionToken;
+        const stateCurrent = isProjectionStateCurrent(
+          sessionId,
+          assembleLifecycleToken,
+          assembleProjectionToken,
+        );
         const fallback = stateCurrent
           ? buildAssembleFallback()
           : buildBudgetFallbackContext(args.messages, args.tokenBudget);
@@ -3762,6 +3787,9 @@ export function buildContextEngineFactory(
         return { status: outcome.status };
       } catch (error) {
         // Leave no trace of a failed commit: the next retry must do real work.
+        // A lifecycle fence is intentionally rethrown so OpenClaw keeps the
+        // durable-turn outbox row retryable instead of treating an interrupted
+        // turn as committed.
         inFlightAdvancements.delete(key);
         throw error;
       }
@@ -3813,8 +3841,8 @@ export function buildContextEngineFactory(
       const ingestion = enqueueAsyncIngestion(sessionId, async () => {
         try {
           const lifecycleIsCurrent = () =>
-            compactedProjectionState.lifecycleTokens.get(sessionId) === lifecycleToken;
-          if (!lifecycleIsCurrent()) return;
+            isProjectionLifecycleCurrent(sessionId, lifecycleToken);
+          if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
 
           // Reload manifest inside the serialized queue so state is fresh
           // after any preceding queued tasks have completed.
@@ -3848,7 +3876,7 @@ export function buildContextEngineFactory(
             };
 
           const client = await runtime.getClient();
-          if (!lifecycleIsCurrent()) return;
+          if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
           const currentTokenCount = normalizeCurrentTokenCount(
             typeof args.runtimeContext?.currentTokenCount === "number"
               ? args.runtimeContext.currentTokenCount
@@ -3863,7 +3891,7 @@ export function buildContextEngineFactory(
             isHeartbeat: args.isHeartbeat,
             ...(cursor ? { cursor } : {}),
           } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
-          if (!lifecycleIsCurrent()) return;
+          if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
 
           updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
 
@@ -3901,7 +3929,7 @@ export function buildContextEngineFactory(
                   messages: seedMessages,
                   isHeartbeat: args.isHeartbeat,
                 } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
-                if (!lifecycleIsCurrent()) return;
+                if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
                 manifestStore.save(
                   manifestStore.appendACKedMessages(emptyManifest, seedMessages, 0),
                 );
@@ -3962,7 +3990,7 @@ export function buildContextEngineFactory(
               currentTokenCount,
               lifecycleToken,
             });
-            if (!lifecycleIsCurrent()) return;
+            if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
             const predictions = result.predictions;
             if (Array.isArray(predictions) && predictions.length > 0) {
               if (predictiveContextCache.size >= PREDICTIVE_CACHE_MAX_SIZE) {
@@ -4074,6 +4102,10 @@ export function buildContextEngineFactory(
       subagentBudgets.delete(key);
     },
     async dispose() {
+      // Fence only work created by this engine. Projection tokens and the
+      // serialized ingestion queues are shared with replacement engines, so
+      // clearing either one here would invalidate unrelated live work.
+      engineDisposed = true;
       // Drain in-flight ingestion so writes are not lost during shutdown.
       // Apply a timeout so a stuck daemon doesn't block process exit.
       const DISPOSE_DRAIN_TIMEOUT_MS = 5000;
@@ -4097,11 +4129,6 @@ export function buildContextEngineFactory(
       }
       predictiveContextCache.clear();
       postToolRecallCache.clear();
-      // Invalidate work that outlives the bounded drain. A replacement engine
-      // may reuse this shared state, so clearing the token map is the factory
-      // generation fence for every queued task owned by this engine.
-      compactedProjectionState.lifecycleTokens.clear();
-      asyncIngestionQueues.clear();
       triggerCache.clear();
       excludedSubagentKeys.clear();
       excludedSessionIds.clear();
