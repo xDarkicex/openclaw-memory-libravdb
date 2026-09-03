@@ -116,13 +116,35 @@ function createMemorySearchManager(
       const minScore = normalizeNumber(params.minScore);
       const client = await getClient();
 
-      const result = dreamQuery.active && cfg.crossSessionRecall !== false && searchCorpus !== "sessions"
-        ? await client.searchText({
-            collection: resolveDreamCollection(userId),
-            text: queryText,
+      const dreamCollection = dreamQuery.active && cfg.crossSessionRecall !== false && searchCorpus !== "sessions"
+        ? resolveDreamCollection(userId)
+        : undefined;
+      const normalSearch = searchResolvedCollections(
+        client,
+        cfg,
+        userId,
+        sessionId,
+        queryText,
+        k,
+        searchCorpus,
+        params.kind,
+        params.signals,
+      );
+      const result = dreamCollection
+        ? mergeSearchResults(
+            await Promise.all([
+              normalSearch,
+              client.searchText({
+                collection: dreamCollection,
+                text: queryText,
+                k,
+                kind: params.kind || undefined,
+                signals: params.signals && params.signals.length > 0 ? params.signals : undefined,
+              }),
+            ]),
             k,
-          })
-        : await searchResolvedCollections(client, cfg, userId, sessionId, queryText, k, searchCorpus, params.kind, params.signals);
+          )
+        : await normalSearch;
       const filteredResults =
         minScore === undefined
           ? result.results
@@ -224,6 +246,23 @@ async function searchResolvedCollections(
         kind: kindFilter,
         signals: signalFilter,
       });
+}
+
+function mergeSearchResults(
+  responses: Array<{ results: ProtoSearchResult[] }>,
+  limit: number,
+): { results: ProtoSearchResult[] } {
+  const seenIds = new Set<string>();
+  const results = responses
+    .flatMap((response) => response.results)
+    .sort((left, right) => right.score - left.score)
+    .filter((item) => {
+      if (seenIds.has(item.id)) return false;
+      seenIds.add(item.id);
+      return true;
+    })
+    .slice(0, limit);
+  return { results };
 }
 
 function resolveSearchCollections(

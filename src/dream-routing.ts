@@ -23,11 +23,11 @@ const DREAM_PATTERN_RULES: Array<{ label: string; patterns: RegExp[] }> = [
 
 /** Phrases that contain "dream" but are idiomatic (not memory-recall intent). */
 const DREAM_FALSE_POSITIVE_PATTERNS: RegExp[] = [
-  /\bpipe\s+dreams?\b/i,
-  /\bdream\s+team\b/i,
-  /\bamerican\s+dream\b/i,
-  /\bdream\s+(?:house|home|car|wedding|vacation|job|school)\b/i,
-  /\bin\s+(?:my|our|your)\s+dreams\b/i,
+  /\bpipe\s+dreams?\b/gi,
+  /\bdream\s+team\b/gi,
+  /\bamerican\s+dream\b/gi,
+  /\bdream\s+(?:house|home|car|wedding|vacation|job|school)\b/gi,
+  /\bin\s+(?:my|our|your)\s+dreams\b/gi,
 ];
 
 const DREAM_MATCHED_PATTERNS = ["dream"] as const;
@@ -38,15 +38,13 @@ export interface DreamQuerySignal {
 }
 
 export function detectDreamQuerySignal(queryText: string): DreamQuerySignal {
+  const candidateText = DREAM_FALSE_POSITIVE_PATTERNS.reduce(
+    (text, pattern) => text.replace(pattern, " "),
+    queryText,
+  );
+
   for (const rule of DREAM_PATTERN_RULES) {
-    if (rule.patterns.some((pattern) => pattern.test(queryText))) {
-      // Reject known idiomatic false positives that slip through.
-      if (DREAM_FALSE_POSITIVE_PATTERNS.some((p) => p.test(queryText))) {
-        return {
-          active: false,
-          matchedPatterns: [],
-        };
-      }
+    if (rule.patterns.some((pattern) => pattern.test(candidateText))) {
       return {
         active: true,
         matchedPatterns: [...DREAM_MATCHED_PATTERNS],
