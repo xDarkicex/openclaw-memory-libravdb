@@ -1120,7 +1120,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     try {
       raw = await fsp.readFile(this.snapshotPath, "utf8");
     } catch (error) {
-      if (!formatError(error).includes("ENOENT")) {
+      if (!isEnoent(error)) {
         this.logger.warn?.(`[markdown-ingest] failed to read snapshot ${this.snapshotPath}: ${formatError(error)}`);
       }
       return;

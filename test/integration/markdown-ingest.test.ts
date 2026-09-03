@@ -1399,12 +1399,12 @@ test("a root slower than the walk timeout is NOT quarantined while it keeps comp
   const root = path.join(tempRoot, "slow");
   const rpc = new FakeRpcClient();
   // Each stat takes 60ms against a 400ms stall window, so no single step comes
-  // close to stalling even on a loaded runner, while the whole walk (6 files,
+  // close to stalling even on a loaded runner, while the whole walk (10 files,
   // ~360ms) still has to outlive a naive total-elapsed cap set at the same
   // value. That is the distinction under test.
   const fsApi = new SlowButProgressingFsApi(60);
   await fsApi.mkdir(root);
-  for (let i = 0; i < 6; i += 1) {
+  for (let i = 0; i < 10; i += 1) {
     await fsApi.writeFile(path.join(root, `note-${i}.md`), `# note ${i}\n`, 1000 + i);
   }
 
@@ -1429,8 +1429,8 @@ test("a root slower than the walk timeout is NOT quarantined while it keeps comp
   assert.deepEqual(errors, [], `slow-but-healthy root was quarantined: ${errors.join(" | ")}`);
   assert.equal(
     rpc.documents.size,
-    6,
-    `expected all 6 files ingested, got ${rpc.documents.size}`,
+    10,
+    `expected all 10 files ingested, got ${rpc.documents.size}`,
   );
 
   await handle.stop();
