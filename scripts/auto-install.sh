@@ -470,7 +470,7 @@ verify_openclaw_memory_status_with_retry() {
     return 0
   fi
   for ((i=1; i<=attempts; i++)); do
-    if openclaw memory status >/dev/null 2>&1; then
+    if openclaw libravdb status >/dev/null 2>&1; then
       info "OpenClaw memory status passed on attempt ${i}/${attempts}."
       return 0
     fi
@@ -532,7 +532,7 @@ This script will:
 1) Install and start the local 'libravdbd' daemon.
 2) Install the OpenClaw plugin package '${PLUGIN_PACKAGE}'.
 3) Update '${HOME}/.openclaw/openclaw.json' so both plugin slots use '${PLUGIN_ID}'.
-4) Run 'openclaw memory status' to verify connectivity.
+4) Run 'openclaw libravdb status' to verify connectivity.
 
 No task/memory/spec databases in this repository are modified by this installer.
 EOF
@@ -569,7 +569,7 @@ Daemon: ${daemon_bin:-not-found} (${daemon_version})
 Plugin package: ${PLUGIN_PACKAGE}
 Config file: ${HOME}/.openclaw/openclaw.json
 Config backup: ${LAST_CONFIG_BACKUP:-not-created}
-Next check: openclaw memory status
+Next check: openclaw libravdb status
 EOF
 }
 
@@ -823,15 +823,15 @@ main() {
     warn "Skipped openclaw.json update. You must set plugin slots manually."
   fi
 
-  info "Verifying installation with: openclaw memory status"
+  info "Verifying installation with: openclaw libravdb status"
   if verify_openclaw_memory_status_with_retry; then
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      openclaw memory status
+      openclaw libravdb status
     fi
     print_summary
   else
     warn "Verification reported an error."
-    warn "Check daemon status and sidecar endpoint in ~/.openclaw/openclaw.json, then rerun: openclaw memory status"
+    warn "Check daemon status and sidecar endpoint in ~/.openclaw/openclaw.json, then rerun: openclaw libravdb status"
     exit 1
   fi
 }

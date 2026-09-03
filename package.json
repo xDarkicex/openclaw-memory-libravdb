@@ -20,7 +20,6 @@
     "README.md",
     "HOOK.md",
     "index.js",
-    "cli-metadata.js",
     "openclaw.plugin.json",
     "package.json",
     "docs/",
@@ -31,8 +30,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./dist/index.js",
-      "./dist/cli-metadata.js"
+      "./dist/index.js"
     ],
     "compat": {
       "pluginApi": ">=2026.3.22",
@@ -71,7 +69,7 @@
     "@openclaw/plugin-inspector": "0.3.7",
     "@types/node": "^20.11.0",
     "esbuild": "^0.27.0",
-    "openclaw": "2026.4.23",
+    "openclaw": "2026.8.2",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {

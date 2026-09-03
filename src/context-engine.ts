@@ -25,6 +25,42 @@ import { resolveUserCollection } from "./memory-scopes.js";
 import { manifestStore } from "./manifest.js";
 import { TurnMemoryCache, extractQueryHint, isNewUserTurn } from "./turn-cache.js";
 
+/** Host advancement keys whose turn is durably ingested, so an exact retry answers "duplicate". */
+const committedAdvancementKeys = new Set<string>();
+const COMMITTED_ADVANCEMENT_KEY_LIMIT = 4096;
+
+/**
+ * Commits in flight, keyed by advancementKey. Concurrent calls carrying the
+ * same key join the first call's promise instead of starting a second ingest,
+ * which is what makes the commit atomic per key rather than a racy
+ * check-then-act. Entries are removed once settled, so a failed commit leaves
+ * nothing behind and a host retry starts clean.
+ */
+const inFlightAdvancements = new Map<string, Promise<CommitOutcome>>();
+
+/**
+ * The result of running one turn through afterTurn. `status` is what the host is
+ * told; only "committed" is produced here, because "duplicate" is a statement
+ * about advancement keys and is decided by key matching, not by running a turn.
+ *
+ * `durable` is the separate question of whether this attempt queued an ingestion
+ * that then completed, and it is what decides whether the key may be remembered
+ * as committed. The two diverge whenever afterTurn short-circuits: an excluded
+ * session, or content the manifest already covers, needs no retry and so still
+ * reports "committed", but this attempt itself committed nothing.
+ */
+type CommitOutcome = { status: "committed"; durable: boolean };
+
+/** Records a durably committed key, evicting oldest-first to stay bounded. */
+function rememberCommittedAdvancementKey(key: string): void {
+  committedAdvancementKeys.add(key);
+  while (committedAdvancementKeys.size > COMMITTED_ADVANCEMENT_KEY_LIMIT) {
+    const oldest = committedAdvancementKeys.values().next().value;
+    if (oldest === undefined) break;
+    committedAdvancementKeys.delete(oldest);
+  }
+}
+
 type KernelCompatibleMessage = {
   role: string;
   content: string;
@@ -279,6 +315,13 @@ function isHistoricalToolControlText(normalizedContent: string): boolean {
 
 const asyncIngestionQueues = new Map<string, Promise<void>>();
 
+class SessionLifecycleChangedError extends Error {
+  constructor() {
+    super("session lifecycle changed");
+    this.name = "SessionLifecycleChangedError";
+  }
+}
+
 interface PostToolContextCache {
   lastUserIndex: number;
   systemPromptAddition: string;
@@ -286,14 +329,21 @@ interface PostToolContextCache {
 const POST_TOOL_CACHE_MAX_SIZE = 100;
 const postToolRecallCache = new Map<string, PostToolContextCache>();
 
-function enqueueAsyncIngestion(sessionId: string, task: () => Promise<void>): void {
+/**
+ * Appends `task` to the per-session serialized ingestion queue.
+ *
+ * Returns a handle that settles with the task's real outcome, so a caller that
+ * needs to know whether the work actually succeeded (commitTurn) can await it.
+ * The queue chain itself never rejects: one failed task must not poison the
+ * queue for the tasks behind it, and the `.catch` that guarantees that also
+ * marks the returned handle as handled, so ignoring it cannot raise an
+ * unhandled rejection.
+ */
+function enqueueAsyncIngestion(sessionId: string, task: () => Promise<void>): Promise<void> {
   const previous = asyncIngestionQueues.get(sessionId) ?? Promise.resolve();
-  // The task body wraps all work in try/catch with logger.warn, so any
-  // rejection is already logged. This outer catch handles the edge case of
-  // a synchronously-thrown error during task invocation (not promise
-  // rejection) and prevents an unhandled rejection from surfacing.
-  const next = previous.then(task).catch(() => {
-    // Errors are already caught and logged inside the task.
+  const run = previous.then(task);
+  const next = run.catch(() => {
+    // Swallowed for the chain only; `run` still carries the real outcome.
   }).finally(() => {
     // Clean up settled entries to prevent unbounded map growth across sessions.
     if (asyncIngestionQueues.get(sessionId) === next) {
@@ -301,6 +351,7 @@ function enqueueAsyncIngestion(sessionId: string, task: () => Promise<void>): vo
     }
   });
   asyncIngestionQueues.set(sessionId, next);
+  return run;
 }
 
 
@@ -428,6 +479,16 @@ function capRetrievalQuery(text: string): string {
  * code must explicitly import the symbol to call the hook.
  */
 export const FLUSH_ASYNC_INGESTION = Symbol("flushAsyncIngestion");
+
+/**
+ * Internal, symbol-keyed afterTurn argument. When present, afterTurn hands back
+ * the queued ingestion's real outcome so commitTurn can await durability.
+ *
+ * Passed in rather than returned so afterTurn's return value stays exactly what
+ * the host already sees, and symbol-keyed so it cannot collide with any
+ * host-supplied argument.
+ */
+const CAPTURE_INGESTION = Symbol("libravdbCaptureIngestion");
 
 let maxOptimizationMemoCacheSize = 50000;
 const metadataEnvelopeCache = new Map<string, string>();
@@ -1160,6 +1221,50 @@ function hasCompactedSessionContext(text: string): boolean {
   return HAS_COMPACTED_SESSION_CONTEXT_RE.test(text);
 }
 
+function extractCompactedSessionContext(text: string): string | undefined {
+  return text.match(COMPACTED_SESSION_CONTEXT_RE)?.join("\n") || undefined;
+}
+
+function stripCompactedSessionContext(text: string): string {
+  return text
+    .replace(COMPACTED_SESSION_CONTEXT_RE, "")
+    .replace(/<compacted_session_context\b[^>]*>[\s\S]*$/i, "")
+    .trim();
+}
+
+type CompactedProjectionSnapshot = {
+  context: string;
+  sourceStartIndex: number;
+  boundarySignature: string;
+};
+
+export type CompactedProjectionState = {
+  snapshots: Map<string, CompactedProjectionSnapshot>;
+  lifecycleTokens: Map<string, object>;
+  projectionTokens: Map<string, object>;
+  activeSessions: Set<string>;
+};
+
+export function createCompactedProjectionState(): CompactedProjectionState {
+  return {
+    snapshots: new Map(),
+    lifecycleTokens: new Map(),
+    projectionTokens: new Map(),
+    activeSessions: new Set(),
+  };
+}
+
+export function clearCompactedProjectionState(
+  state: CompactedProjectionState,
+  sessionId: string,
+): void {
+  state.snapshots.delete(sessionId);
+  state.lifecycleTokens.delete(sessionId);
+  state.projectionTokens.delete(sessionId);
+  state.activeSessions.delete(sessionId);
+  postToolRecallCache.delete(sessionId);
+}
+
 function sanitizeDaemonSystemPromptAddition(text: string): string {
   return demoteDaemonAuthoredContextBlocks(
     sanitizeToolCallPatterns(canonicalizeCompactedSessionContextBlocks(text)),
@@ -1323,6 +1428,20 @@ export function normalizeKernelMessages(
       return normalized;
     })
     .filter((message) => message.role === "user" || message.content.trim().length > 0);
+}
+
+function buildProjectionBoundarySignature(
+  messages: OpenClawCompatibleMessage[],
+  sourceStartIndex: number,
+): string {
+  // ponytail: OpenClaw histories are append-only; use a durable transcript
+  // revision instead if the host ever permits arbitrary mid-prefix edits.
+  const boundary = messages.slice(Math.max(0, sourceStartIndex - 4), sourceStartIndex);
+  return createHash("sha256").update(JSON.stringify({ sourceStartIndex, boundary: boundary.map((message) => ({
+    role: message.role,
+    content: message.content,
+    id: typeof message.id === "string" ? message.id : undefined,
+  })) })).digest("hex");
 }
 
 function buildBeforeTurnSignature(messages: OpenClawCompatibleMessage[]): string | null {
@@ -1976,13 +2095,14 @@ export function buildContextEngineFactory(
   runtime: PluginRuntime,
   cfg: PluginConfig,
   logger: LoggerLike = console,
+  compactedProjectionState: CompactedProjectionState = createCompactedProjectionState(),
 ) {
   if (cfg?.optimizationMemoCacheSize !== undefined) {
     setOptimizationMemoCacheSize(cfg.optimizationMemoCacheSize);
   }
 
   const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
-  const compactedProjectionSessions = new Set<string>();
+  const compactedProjectionSessions = compactedProjectionState.activeSessions;
   const PREDICTIVE_CACHE_MAX_SIZE = 100;
   // BeforeTurnKernel state
   const turnCache = new TurnMemoryCache(100);
@@ -1993,6 +2113,7 @@ export function buildContextEngineFactory(
 
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
+  let engineDisposed = false;
 
   // --- Per-agent / per-subagent exclusion ---
   // Sessions belonging to an excluded agent (or, when excludeSubagents is set,
@@ -2062,6 +2183,54 @@ export function buildContextEngineFactory(
         `LibraVDB activated daemon-owned compacted projection sessionId=${sessionId} source=${source}`,
       );
     }
+  }
+
+  function rememberCompactedProjection(
+    sessionId: string,
+    context: string,
+    sourceStartIndex: number,
+    boundarySignature: string,
+  ): void {
+    const snapshots = compactedProjectionState.snapshots;
+    snapshots.delete(sessionId);
+    if (snapshots.size >= POST_TOOL_CACHE_MAX_SIZE) {
+      const oldest = snapshots.keys().next().value;
+      if (oldest !== undefined) snapshots.delete(oldest);
+    }
+    snapshots.set(sessionId, { context, sourceStartIndex, boundarySignature });
+  }
+
+  function getProjectionLifecycleToken(sessionId: string): object {
+    let token = compactedProjectionState.lifecycleTokens.get(sessionId);
+    if (!token) {
+      token = {};
+      compactedProjectionState.lifecycleTokens.set(sessionId, token);
+    }
+    return token;
+  }
+
+  function getProjectionToken(sessionId: string): object {
+    let token = compactedProjectionState.projectionTokens.get(sessionId);
+    if (!token) {
+      token = {};
+      compactedProjectionState.projectionTokens.set(sessionId, token);
+    }
+    return token;
+  }
+
+  function isProjectionLifecycleCurrent(sessionId: string, lifecycleToken: object): boolean {
+    return !engineDisposed && compactedProjectionState.lifecycleTokens.get(sessionId) === lifecycleToken;
+  }
+
+  function isProjectionStateCurrent(
+    sessionId: string,
+    lifecycleToken: object,
+    projectionToken: object,
+  ): boolean {
+    return (
+      isProjectionLifecycleCurrent(sessionId, lifecycleToken) &&
+      compactedProjectionState.projectionTokens.get(sessionId) === projectionToken
+    );
   }
 
   function enforceAssembleBudget(
@@ -2643,23 +2812,45 @@ export function buildContextEngineFactory(
     }
   }
 
-  async function runCompaction(args: {
-    sessionId: string;
-    force?: boolean;
-    targetSize?: number;
-    tokenBudget?: number;
-    currentTokenCount?: number;
-  }): Promise<OpenClawCompatibleCompactResult> {
+  async function runCompaction(
+    args: {
+      sessionId: string;
+      force?: boolean;
+      targetSize?: number;
+      tokenBudget?: number;
+      currentTokenCount?: number;
+      lifecycleToken?: object;
+    },
+    onProjectionChanged?: (token: object) => void,
+  ): Promise<OpenClawCompatibleCompactResult> {
+    const lifecycleToken = args.lifecycleToken ?? getProjectionLifecycleToken(args.sessionId);
+    if (!isProjectionLifecycleCurrent(args.sessionId, lifecycleToken)) {
+      return { ok: false, compacted: false, reason: "session lifecycle changed" };
+    }
     const request = buildCompactSessionRequest(args);
     try {
       const client = await runtime.getClient();
       const threshold = getDynamicCompactThreshold(args.tokenBudget);
-      const result = normalizeCompactResult(await client.compactSession(request), {
+      const response = await client.compactSession(request);
+      const result = normalizeCompactResult(response, {
         tokensBefore: args.currentTokenCount,
         logger,
         ...(threshold != null ? { threshold } : {}),
       });
-      if (result.ok && result.compacted) {
+      if (!isProjectionLifecycleCurrent(args.sessionId, lifecycleToken)) {
+        return { ok: false, compacted: false, reason: "session lifecycle changed" };
+      }
+      if (
+        result.ok &&
+        result.compacted &&
+        isProjectionLifecycleCurrent(args.sessionId, lifecycleToken)
+      ) {
+        if (response.didCompact === true) {
+          const projectionToken = {};
+          compactedProjectionState.snapshots.delete(args.sessionId);
+          compactedProjectionState.projectionTokens.set(args.sessionId, projectionToken);
+          onProjectionChanged?.(projectionToken);
+        }
         activateCompactedProjection(args.sessionId, "compact");
       }
       return result;
@@ -2677,6 +2868,7 @@ export function buildContextEngineFactory(
     messages: OpenClawCompatibleMessage[];
     tokenBudget?: number;
     currentTokenCount?: number;
+    lifecycleToken: object;
   }): Promise<void> {
     const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
     const currentContextTokens = resolveAfterTurnPredictiveCompactionTokenCount({
@@ -2709,6 +2901,7 @@ export function buildContextEngineFactory(
       tokenBudget: args.tokenBudget,
       force: true,
       currentTokenCount: currentContextTokens,
+      lifecycleToken: args.lifecycleToken,
     });
     logPredictiveCompactionOutcome({
       logger,
@@ -2723,8 +2916,21 @@ export function buildContextEngineFactory(
     });
   }
 
-  return {
-    info: { id: "libravdb-memory", name: "LibraVDB Memory", ownsCompaction: true },
+  // Named so commitTurn can call afterTurn through the closure rather than `this`:
+  // a host that stores or wraps the hook as a bare function would otherwise
+  // leave `this` undefined and break the durable-turn path.
+  const engine = {
+    info: {
+      id: "libravdb-memory",
+      name: "LibraVDB Memory",
+      ownsCompaction: true,
+      // OpenClaw >= 2026.8.1 requires these before it will run a plugin context engine
+      // for a durable logical turn. See openclaw/openclaw#119325.
+      transcriptSemantics: {
+        currentTurnFence: "before-current-turn-entry-v1",
+        turnAdvancementIdempotency: "atomic-idempotent-v1",
+      },
+    },
     ownsCompaction: true,
     async bootstrap(args: { sessionId: string; sessionKey?: string; userId?: string }) {
       const sessionId = requireSessionId(args.sessionId, "bootstrap");
@@ -2738,7 +2944,13 @@ export function buildContextEngineFactory(
       predictiveContextCache.delete(sessionId);
       postToolRecallCache.delete(sessionId);
       turnCache.invalidateSession(sessionId);
-      asyncIngestionQueues.delete(sessionId);
+      // Deliberately NOT clearing asyncIngestionQueues here. The queue entry is
+      // the per-session serialization point, and bootstrap can run while an
+      // ingestion from the previous turn is still in flight. Dropping the entry
+      // lets the next enqueueAsyncIngestion start from a fresh Promise.resolve()
+      // and run concurrently with the task it just orphaned, so two tasks load
+      // the same manifest, compute the same overlap and both ingest. Entries
+      // remove themselves once settled, so there is nothing to clean up.
       const userId = resolveUserId({
         userIdOverride: args.userId,
         sessionKey: args.sessionKey,
@@ -2813,7 +3025,25 @@ export function buildContextEngineFactory(
         };
       }
 
-      let compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+      let assembleLifecycleToken = getProjectionLifecycleToken(sessionId);
+      let assembleProjectionToken = getProjectionToken(sessionId);
+      let cachedCompactedProjection = compactedProjectionState.snapshots.get(sessionId);
+      if (cachedCompactedProjection) {
+        if (
+          args.messages.length < cachedCompactedProjection.sourceStartIndex ||
+          buildProjectionBoundarySignature(
+            args.messages,
+            cachedCompactedProjection.sourceStartIndex,
+          ) !== cachedCompactedProjection.boundarySignature
+        ) {
+          clearCompactedProjectionState(compactedProjectionState, sessionId);
+          assembleLifecycleToken = getProjectionLifecycleToken(sessionId);
+          assembleProjectionToken = getProjectionToken(sessionId);
+          cachedCompactedProjection = undefined;
+        }
+      }
+      let compactionProjectionActive =
+        compactedProjectionSessions.has(sessionId) || cachedCompactedProjection !== undefined;
 
       const userId = resolveUserId({
         userIdOverride: args.userId,
@@ -2827,7 +3057,9 @@ export function buildContextEngineFactory(
       const recentMessages = selectTurnAlignedSourceSuffix(args.messages, normalizeWindow);
       const messages = normalizeKernelMessages(recentMessages);
       const projectedSourceMessages = () => compactionProjectionActive
-        ? recentMessages
+        ? cachedCompactedProjection
+          ? args.messages.slice(cachedCompactedProjection.sourceStartIndex)
+          : recentMessages
         : args.messages;
       const buildAssembleFallback = (): OpenClawCompatibleAssembleResult => {
         if (!compactionProjectionActive) {
@@ -2835,8 +3067,10 @@ export function buildContextEngineFactory(
         }
         return enforceCompactedProjectionBudgetInvariant({
           messages: projectedSourceMessages(),
-          estimatedTokens: approximateMessagesTokens(projectedSourceMessages()),
-          systemPromptAddition: "",
+          estimatedTokens:
+            approximateMessagesTokens(projectedSourceMessages()) +
+            approximateTokenCount(cachedCompactedProjection?.context ?? ""),
+          systemPromptAddition: cachedCompactedProjection?.context ?? "",
           promptAuthority: "assembled",
         }, args.tokenBudget);
       };
@@ -2872,13 +3106,32 @@ export function buildContextEngineFactory(
           targetSize: predictiveTargetSize,
           tokenBudget: args.tokenBudget,
         });
-        const compactionResult = await runCompaction({
-          sessionId,
-          targetSize: predictiveTargetSize,
-          tokenBudget: args.tokenBudget,
-          force: true,
-          currentTokenCount: currentContextTokens,
-        });
+        const compactionResult = await runCompaction(
+          {
+            sessionId,
+            targetSize: predictiveTargetSize,
+            tokenBudget: args.tokenBudget,
+            force: true,
+            currentTokenCount: currentContextTokens,
+          },
+          (projectionToken) => {
+            assembleProjectionToken = projectionToken;
+            cachedCompactedProjection = undefined;
+          },
+        );
+        if (
+          !isProjectionStateCurrent(sessionId, assembleLifecycleToken, assembleProjectionToken)
+        ) {
+          logger.warn?.(
+            `LibraVDB discarded stale compaction result after session state change sessionId=${sessionId}`,
+          );
+          return ensureReplaySafeUserTurn(
+            buildBudgetFallbackContext(args.messages, args.tokenBudget),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
         logPredictiveCompactionOutcome({
           logger,
           phase: "assemble",
@@ -2890,7 +3143,8 @@ export function buildContextEngineFactory(
           compacted: compactionResult.compacted,
           reason: compactionResult.reason,
         });
-        compactionProjectionActive = compactedProjectionSessions.has(sessionId);
+        compactionProjectionActive =
+          compactedProjectionSessions.has(sessionId) || cachedCompactedProjection !== undefined;
         if (!compactionResult.ok && !compactionProjectionActive) {
           logger.info?.(
             `LibraVDB predictive compaction blocked assemble path at ${currentContextTokens} tokens ` +
@@ -2981,7 +3235,12 @@ export function buildContextEngineFactory(
             compactionProjectionActive = true;
           }
           const sourceProjection = projectedSourceMessages();
-          const mockResp = { messages: sourceProjection, systemPromptAddition: cachedSystemPrompt };
+          const mockResp = {
+            messages: sourceProjection,
+            systemPromptAddition: cachedSystemPrompt,
+            estimatedTokens:
+              approximateMessagesTokens(sourceProjection) + approximateTokenCount(cachedSystemPrompt),
+          };
           enforced = enforceAssembleBudget(
             normalizeAssembleResult(
               mockResp,
@@ -3080,16 +3339,46 @@ export function buildContextEngineFactory(
               setTimeout(() => reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`)), assembleTimeout)
             ),
           ]);
+          const daemonCompactedProjectionContext =
+            typeof resp.systemPromptAddition === "string"
+              ? extractCompactedSessionContext(resp.systemPromptAddition)
+              : undefined;
           if (
-            typeof resp.systemPromptAddition === "string" &&
-            hasCompactedSessionContext(resp.systemPromptAddition)
+            daemonCompactedProjectionContext &&
+            isProjectionStateCurrent(sessionId, assembleLifecycleToken, assembleProjectionToken)
           ) {
+            cachedCompactedProjection = undefined;
+            const sourceStartIndex = args.messages.length - recentMessages.length;
+            const boundarySignature = buildProjectionBoundarySignature(args.messages, sourceStartIndex);
+            rememberCompactedProjection(
+              sessionId,
+              daemonCompactedProjectionContext,
+              sourceStartIndex,
+              boundarySignature,
+            );
             activateCompactedProjection(sessionId, "assemble");
             compactionProjectionActive = true;
           }
           const sourceProjection = projectedSourceMessages();
+          const restoredCompactedContext =
+            cachedCompactedProjection && !daemonCompactedProjectionContext
+              ? cachedCompactedProjection.context
+              : undefined;
+          const restoredSystemPromptAddition = restoredCompactedContext
+            ? appendSystemPromptAddition(restoredCompactedContext, resp.systemPromptAddition)
+            : undefined;
           const assembled = normalizeAssembleResult(
-            resp,
+            restoredCompactedContext
+              ? {
+                  ...resp,
+                  systemPromptAddition: restoredSystemPromptAddition,
+                  estimatedTokens: Math.max(
+                    typeof resp.estimatedTokens === "number" ? resp.estimatedTokens : 0,
+                    approximateMessagesTokens(sourceProjection) +
+                      approximateTokenCount(restoredSystemPromptAddition ?? ""),
+                  ),
+                }
+              : resp,
             sourceProjection,
             compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
           );
@@ -3193,14 +3482,6 @@ export function buildContextEngineFactory(
             }
           }
 
-          if (postToolRecallCache.size >= POST_TOOL_CACHE_MAX_SIZE) {
-            const oldest = postToolRecallCache.keys().next().value;
-            if (oldest !== undefined) postToolRecallCache.delete(oldest);
-          }
-          postToolRecallCache.set(sessionId, {
-            lastUserIndex,
-            systemPromptAddition: enforced.systemPromptAddition,
-          });
         }
 
         // tokenBudgetMax stage 2 (enforcer): truncate the combined injection to
@@ -3236,13 +3517,78 @@ export function buildContextEngineFactory(
         // The returned transcript is always an untouched source projection.
         // Once daemon compaction owns history, OpenClaw must precheck this
         // assembled suffix rather than the unwindowed session transcript.
-        return ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
+        const stateChanged = !isProjectionStateCurrent(
+          sessionId,
+          assembleLifecycleToken,
+          assembleProjectionToken,
+        );
+        const compactedContextMissing =
+          compactionProjectionActive &&
+          extractCompactedSessionContext(enforced.systemPromptAddition) === undefined;
+        const buildUncompactedFallback = (): OpenClawCompatibleAssembleResult => {
+          const fallback = buildBudgetFallbackContext(args.messages, args.tokenBudget);
+          const nonCompactedSystemPromptAddition = stripCompactedSessionContext(
+            enforced.systemPromptAddition,
+          );
+          return enforceCompactedProjectionBudgetInvariant({
+            ...fallback,
+            systemPromptAddition: nonCompactedSystemPromptAddition,
+            estimatedTokens:
+              approximateMessagesTokens(fallback.messages) +
+              approximateTokenCount(nonCompactedSystemPromptAddition),
+          }, args.tokenBudget);
+        };
+        if (stateChanged || compactedContextMissing) {
+          logger.warn?.(
+            `LibraVDB discarded ${stateChanged ? "stale" : "incomplete"} compacted projection ` +
+            `sessionId=${sessionId}`,
+          );
+          return ensureReplaySafeUserTurn(
+            stateChanged ? buildBudgetFallbackContext(args.messages, args.tokenBudget) : buildUncompactedFallback(),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
+        const replaySafe = ensureReplaySafeUserTurn(enforced, args.messages, logger, args.tokenBudget);
+        if (
+          compactionProjectionActive &&
+          extractCompactedSessionContext(replaySafe.systemPromptAddition) === undefined
+        ) {
+          logger.warn?.(`LibraVDB discarded compacted projection after user-turn repair sessionId=${sessionId}`);
+          return ensureReplaySafeUserTurn(
+            buildUncompactedFallback(),
+            args.messages,
+            logger,
+            args.tokenBudget,
+          );
+        }
+        if (postToolRecallCache.size >= POST_TOOL_CACHE_MAX_SIZE) {
+          const oldest = postToolRecallCache.keys().next().value;
+          if (oldest !== undefined) postToolRecallCache.delete(oldest);
+        }
+        postToolRecallCache.set(sessionId, {
+          lastUserIndex,
+          systemPromptAddition: replaySafe.systemPromptAddition,
+        });
+        return replaySafe;
       } catch (error) {
         logger.warn?.(
           `LibraVDB assemble failed, using budget-clamped fallback context: ${error instanceof Error ? error.message : String(error)}`,
         );
+        const stateCurrent = isProjectionStateCurrent(
+          sessionId,
+          assembleLifecycleToken,
+          assembleProjectionToken,
+        );
+        const fallback = stateCurrent
+          ? buildAssembleFallback()
+          : buildBudgetFallbackContext(args.messages, args.tokenBudget);
         return ensureReplaySafeUserTurn(
-          buildAssembleFallback(),
+          compactionProjectionActive &&
+            extractCompactedSessionContext(fallback.systemPromptAddition) === undefined
+            ? buildBudgetFallbackContext(args.messages, args.tokenBudget)
+            : fallback,
           args.messages,
           logger,
           args.tokenBudget,
@@ -3306,6 +3652,149 @@ export function buildContextEngineFactory(
       };
       return await runCompaction(runArgs);
     },
+    /**
+     * OpenClaw >= 2026.8.1 durable turn advancement.
+     *
+     * The host requires one atomic, idempotent commit per accepted turn, keyed by
+     * `advancementKey`, and may retry the same key after a process or plugin failure.
+     *
+     * A key is recorded only after the ingestion this call queued has run to
+     * completion — leaving the turn's content in the persisted manifest, whether this
+     * task wrote it or found a preceding one already had — never when the work was
+     * merely queued, and never when afterTurn short-circuited without queuing anything.
+     * If ingestion fails, nothing is recorded, the error propagates, and a host retry
+     * with the same key runs the work again.
+     *
+     * A short-circuit still resolves rather than throwing, because retrying it is not
+     * expected to do better: an excluded session stores nothing and never will, and
+     * content the manifest already covers short-circuits again on the next call for as
+     * long as that manifest survives. The host is told to stop, not that this key
+     * named a commit.
+     *
+     * Known limitations, inherited from afterTurn and not introduced here:
+     * - Overlap detection compares message id hashes where it has them, but a
+     *   multi-message overlap still matches on role and content alone, so two distinct
+     *   turns whose messages are byte-identical dedupe against each other and the
+     *   second is not ingested. It is reported as committed anyway, since replaying it
+     *   would dedupe identically. The stored content is the same either way; what is
+     *   lost is the repeat occurrence.
+     * - A daemon that answers without a cursor is ACKed optimistically, so for those
+     *   the manifest records what was sent rather than what was confirmed.
+     * - A daemon that returns a cursor confirming none of the batch leaves the queued
+     *   task resolving normally, so this reports "committed" for a turn that was never
+     *   stored. That is a defect in afterTurn's cursor reconciliation rather than in
+     *   this contract, and is fixed separately; until that lands, this method is only
+     *   as trustworthy as the ingest beneath it.
+     *
+     * Concurrent calls carrying the same key are serialized on one in-flight promise,
+     * so at most one of them performs the ingest. The others reject with the same
+     * error if it fails. If it succeeds they resolve to "duplicate" when it committed
+     * something, and otherwise to whatever it resolved to — a leader that stored
+     * nothing leaves them no earlier commit to be a duplicate of.
+     *
+     * `afterTurn` remains idempotent underneath this: it reloads the per-session
+     * manifest inside the serialized ingestion queue and slices off `findOverlapIndex`,
+     * so a replayed turn contributes no new messages even across a process restart,
+     * where the in-memory key set is empty.
+     */
+    async commitTurn(args: {
+      advancementKey: string;
+      sessionId: string;
+      sessionKey?: string;
+      messages: OpenClawCompatibleMessage[];
+      prePromptMessageCount?: number;
+      isHeartbeat?: boolean;
+      runtimeContext?: Record<string, unknown>;
+    }): Promise<{ status: "committed" | "duplicate" }> {
+      const key = args.advancementKey;
+
+      // Run the turn and wait for the durable part of the ingest to finish.
+      // Errors propagate: a caller that is told nothing must be free to retry.
+      const ingestTurn = async (): Promise<CommitOutcome> => {
+        // afterTurn returns as soon as the work is queued, so capture the handle
+        // and wait on it: it settles once the queued ingest has run to
+        // completion. It stays undefined when afterTurn short-circuited
+        // (excluded agent, no new messages), where there is nothing to wait for
+        // and nothing that can fail.
+        let ingestion: Promise<void> | undefined;
+        await engine.afterTurn({
+          sessionId: args.sessionId,
+          sessionKey: args.sessionKey,
+          messages: args.messages,
+          prePromptMessageCount: args.prePromptMessageCount,
+          isHeartbeat: args.isHeartbeat,
+          runtimeContext: args.runtimeContext,
+          [CAPTURE_INGESTION]: (handle) => { ingestion = handle; },
+        });
+        // The host defines "duplicate" as "this exact advancementKey was already
+        // committed", so it is decided by key matching below and never by
+        // afterTurn's result. afterTurn skips for reasons that are not prior
+        // commits -- an excluded session, or content already present in the
+        // manifest -- and reporting those as "duplicate" told the host a turn
+        // had been committed earlier when it never had. Reaching here means no
+        // further attempt can help, which is what "committed" tells the host;
+        // anything that failed threw before this point.
+        //
+        // Whether to remember the key is the narrower question of whether THIS
+        // call queued ingestion that then completed, and it is answered by the
+        // handle rather than by classifying skip reasons. A reason string is a
+        // fail-open signal: an unrecognized, renamed or absent one would be read
+        // as durable and memoize a commit that never happened. The handle is
+        // present only when afterTurn actually queued work, and awaiting it is
+        // what rules out a failure partway through that work.
+        //
+        // A queued task can still settle having found a preceding task already
+        // persisted the same content, so it did no work of its own; the content
+        // is durable either way, which is what the key records. Synchronous
+        // short-circuits, where no handle exists at all, never memoize. Replaying
+        // such a key costs a manifest reload and overlap scan but no RPC, and
+        // afterTurn is idempotent against the persisted manifest, so it simply
+        // re-derives the same skip. The key set is a fast path, not the
+        // correctness mechanism.
+        if (!ingestion) return { status: "committed", durable: false };
+        await ingestion;
+        return { status: "committed", durable: true };
+      };
+
+      // Without a key there is nothing to deduplicate against, and nothing to
+      // remember either: a later call carrying no key could not be matched to
+      // this one anyway.
+      if (!key) return { status: (await ingestTurn()).status };
+
+      if (committedAdvancementKeys.has(key)) return { status: "duplicate" };
+
+      // Join an identical commit already running rather than starting a second
+      // ingest. If it fails, both callers see the failure and may retry.
+      const existing = inFlightAdvancements.get(key);
+      if (existing) {
+        // Only a leader that actually committed makes this call a duplicate of
+        // something. When the leader stored nothing -- an excluded session, or
+        // content the manifest already covered -- there is no earlier commit to
+        // be a duplicate of, so report what the leader reported.
+        const outcome = await existing;
+        return { status: outcome.durable ? "duplicate" : outcome.status };
+      }
+
+      const run = ingestTurn();
+      inFlightAdvancements.set(key, run);
+      try {
+        const outcome = await run;
+        // Recorded only now, and only when this call's own ingestion settled.
+        // No await separates this from the delete below, so no racing caller can
+        // observe a window where the key is neither in flight nor committed.
+        if (outcome.durable) rememberCommittedAdvancementKey(key);
+        inFlightAdvancements.delete(key);
+        return { status: outcome.status };
+      } catch (error) {
+        // Leave no trace of a failed commit: the next retry must do real work.
+        // A lifecycle fence is intentionally rethrown so OpenClaw keeps the
+        // durable-turn outbox row retryable instead of treating an interrupted
+        // turn as committed.
+        inFlightAdvancements.delete(key);
+        throw error;
+      }
+    },
+
     async afterTurn(args: {
       sessionId: string;
       sessionKey?: string;
@@ -3315,6 +3804,7 @@ export function buildContextEngineFactory(
       isHeartbeat?: boolean;
       tokenBudget?: number;
       runtimeContext?: Record<string, unknown>;
+      [CAPTURE_INGESTION]?: (ingestion: Promise<void>) => void;
     }) {
       const sessionId = requireSessionId(args.sessionId, "afterTurn");
       if (isExcludedSession(args.sessionKey, sessionId)) {
@@ -3347,8 +3837,13 @@ export function buildContextEngineFactory(
         return { ok: true, skipped: true, reason: "no-new-messages" };
       }
 
-      enqueueAsyncIngestion(sessionId, async () => {
+      const lifecycleToken = getProjectionLifecycleToken(sessionId);
+      const ingestion = enqueueAsyncIngestion(sessionId, async () => {
         try {
+          const lifecycleIsCurrent = () =>
+            isProjectionLifecycleCurrent(sessionId, lifecycleToken);
+          if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
+
           // Reload manifest inside the serialized queue so state is fresh
           // after any preceding queued tasks have completed.
           const manifest = manifestStore.load(sessionId, logger);
@@ -3381,6 +3876,7 @@ export function buildContextEngineFactory(
             };
 
           const client = await runtime.getClient();
+          if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
           const currentTokenCount = normalizeCurrentTokenCount(
             typeof args.runtimeContext?.currentTokenCount === "number"
               ? args.runtimeContext.currentTokenCount
@@ -3395,6 +3891,7 @@ export function buildContextEngineFactory(
             isHeartbeat: args.isHeartbeat,
             ...(cursor ? { cursor } : {}),
           } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+          if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
 
           updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
 
@@ -3432,6 +3929,7 @@ export function buildContextEngineFactory(
                   messages: seedMessages,
                   isHeartbeat: args.isHeartbeat,
                 } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+                if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
                 manifestStore.save(
                   manifestStore.appendACKedMessages(emptyManifest, seedMessages, 0),
                 );
@@ -3447,15 +3945,27 @@ export function buildContextEngineFactory(
               // Normal path: reconcile to what the daemon actually confirmed.
               const confirmedIndex = daemonCursor.lastProcessedIndex;
               const ackCount = Math.max(0, confirmedIndex - startIndex + 1);
-              if (ackCount > 0) {
-                const ackedMessages = ingestMessages.slice(0, ackCount);
-                const updatedManifest = manifestStore.appendACKedMessages(
-                  manifest,
-                  ackedMessages,
-                  startIndex,
+              if (ackCount === 0) {
+                // The cursor the daemon returned sits before this batch, so it
+                // confirmed none of these messages. Falling through here left
+                // the manifest un-advanced with no diagnostic, so the same
+                // messages were re-sent on every subsequent turn and the
+                // session could never make progress. Fail instead: the catch
+                // below turns this into the same warning every other ingest
+                // failure produces, and skips the post-ingest best-effort work
+                // that would otherwise run for a turn that was never stored.
+                throw new Error(
+                  `[LibraVDB] Daemon confirmed no messages for session ${sessionId} ` +
+                  `(lastProcessedIndex=${confirmedIndex}, batch started at ${startIndex}).`,
                 );
-                manifestStore.save(updatedManifest);
               }
+              const ackedMessages = ingestMessages.slice(0, ackCount);
+              const updatedManifest = manifestStore.appendACKedMessages(
+                manifest,
+                ackedMessages,
+                startIndex,
+              );
+              manifestStore.save(updatedManifest);
             }
           } else if (!repairedCursorGap && ingestMessages.length > 0) {
             // Legacy daemon (no cursor in response): optimistic ACK.
@@ -3467,39 +3977,63 @@ export function buildContextEngineFactory(
             manifestStore.save(updatedManifest);
           }
 
-          await performAfterTurnPredictiveCompaction({
-            sessionId,
-            messages,
-            tokenBudget: args.tokenBudget,
-            currentTokenCount,
-          });
-          const predictions = result.predictions;
-          if (Array.isArray(predictions) && predictions.length > 0) {
-            if (predictiveContextCache.size >= PREDICTIVE_CACHE_MAX_SIZE) {
-              const oldest = predictiveContextCache.keys().next().value;
-              if (oldest !== undefined) predictiveContextCache.delete(oldest);
+          // Everything above is the durable part of the turn: the daemon has
+          // acknowledged the messages and the manifest has been persisted.
+          // Everything below is best effort. A failure there must not fail the
+          // commit, because asking the host to retry an already-durable turn
+          // is worse than losing a prediction or a warm cache entry.
+          try {
+            await performAfterTurnPredictiveCompaction({
+              sessionId,
+              messages,
+              tokenBudget: args.tokenBudget,
+              currentTokenCount,
+              lifecycleToken,
+            });
+            if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
+            const predictions = result.predictions;
+            if (Array.isArray(predictions) && predictions.length > 0) {
+              if (predictiveContextCache.size >= PREDICTIVE_CACHE_MAX_SIZE) {
+                const oldest = predictiveContextCache.keys().next().value;
+                if (oldest !== undefined) predictiveContextCache.delete(oldest);
+              }
+              predictiveContextCache.set(sessionId, predictions);
+              logger.info?.(
+                `LibraVDB predictive graph returned predictions sessionId=${sessionId} ` +
+                `count=${predictions.length}`,
+              );
+            } else {
+              logger.info?.(
+                `LibraVDB predictive graph returned no predictions sessionId=${sessionId}`,
+              );
             }
-            predictiveContextCache.set(sessionId, predictions);
-            logger.info?.(
-              `LibraVDB predictive graph returned predictions sessionId=${sessionId} ` +
-              `count=${predictions.length}`,
-            );
-          } else {
-            logger.info?.(
-              `LibraVDB predictive graph returned no predictions sessionId=${sessionId}`,
+            // Pre-warm embedding cache: the assistant's reply is the strongest
+            // predictor of what the user asks next. Embedding it now means the
+            // daemon's mmap cache is warm when the next BeforeTurnKernel fires.
+            prewarmEmbeddingCache(messages, userId, client);
+          } catch (error) {
+            logger.warn?.(
+              `LibraVDB afterTurn post-ingest step failed sessionId=${sessionId}: ` +
+              `${error instanceof Error ? error.message : String(error)}`,
             );
           }
-          // Pre-warm embedding cache: the assistant's reply is the strongest
-          // predictor of what the user asks next. Embedding it now means the
-          // daemon's mmap cache is warm when the next BeforeTurnKernel fires.
-          prewarmEmbeddingCache(messages, userId, client);
         } catch (error) {
           logger.warn?.(
             `LibraVDB afterTurn failed sessionId=${sessionId}: ` +
             `${error instanceof Error ? error.message : String(error)}`,
           );
+          // Rethrow so commitTurn can distinguish a durable failure from a
+          // success. afterTurn itself stays fire-and-forget via the no-op
+          // handler attached below, so this never surfaces as unhandled.
+          throw error;
         }
       });
+
+      // afterTurn's own contract is fire-and-forget and the task already
+      // logged. commitTurn awaits the handle instead, so it sees real failures.
+      ingestion.catch(() => {});
+
+      args[CAPTURE_INGESTION]?.(ingestion);
 
       return { ok: true, queued: true };
     },
@@ -3568,6 +4102,10 @@ export function buildContextEngineFactory(
       subagentBudgets.delete(key);
     },
     async dispose() {
+      // Fence only work created by this engine. Projection tokens and the
+      // serialized ingestion queues are shared with replacement engines, so
+      // clearing either one here would invalidate unrelated live work.
+      engineDisposed = true;
       // Drain in-flight ingestion so writes are not lost during shutdown.
       // Apply a timeout so a stuck daemon doesn't block process exit.
       const DISPOSE_DRAIN_TIMEOUT_MS = 5000;
@@ -3590,12 +4128,12 @@ export function buildContextEngineFactory(
         }
       }
       predictiveContextCache.clear();
-      compactedProjectionSessions.clear();
       postToolRecallCache.clear();
-      asyncIngestionQueues.clear();
       triggerCache.clear();
       excludedSubagentKeys.clear();
       excludedSessionIds.clear();
     },
   };
+
+  return engine;
 }

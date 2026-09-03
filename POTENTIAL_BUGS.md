@@ -114,7 +114,7 @@ last user message if it exists in the new slice.
 
 ## Diagnostic commands
 
-- `openclaw memory status` — current counts, profile, sidecar health
+- `openclaw libravdb status` — current counts, profile, sidecar health
 - `libravdbd status -v --json` — daemon health, cache stats, tenant registry
 - `libravdbd search -k 30 -tenant <key> "query"` — see what the DB has
 - `ls -lt ~/.openclaw/libravdb-manifests/*.manifest.json | head -5` — see

@@ -16,7 +16,7 @@ test("manifest and package metadata satisfy checklist structure", async () => {
     Object.keys(manifest).sort(),
     ["activation", "configSchema", "contracts", "description", "id", "kind", "name", "version"],
   );
-  assert.deepEqual(manifest.activation, { onCommands: ["memory"] });
+  assert.deepEqual(manifest.activation, { onCommands: ["libravdb"] });
   assert.equal(manifest.version, pkg.version);
   assert.deepEqual(manifest.contracts.tools, [
     "libravdb_memory_search",
@@ -40,7 +40,7 @@ test("manifest and package metadata satisfy checklist structure", async () => {
   assert.ok(Array.isArray(pkg.openclaw?.extensions));
   assert.ok(pkg.openclaw.extensions.includes("./dist/index.js"));
   assert.equal(pkg.exports["."].import, "./dist/index.js");
-  assert.ok(pkg.files.includes("cli-metadata.js"));
+  assert.equal(pkg.files.includes("cli-metadata.js"), false);
   assert.match(hookMd, /name:\s*libravdb-memory/);
 });
 
