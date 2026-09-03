@@ -11,6 +11,9 @@ import { IngestQueue } from "./ingest-queue.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
+// Generous for a filesystem walk (a healthy 800-file root walks in milliseconds);
+// exists to bound walks over directories whose syscalls never return.
+const DEFAULT_WALK_TIMEOUT_MS = 60_000;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
 const MARKDOWN_INGEST_VERSION = 3;
 const HASH_BACKEND = "wasm-fnv1a64";
@@ -84,6 +87,39 @@ interface RootState {
   };
   knownFiles: Set<string>;
   directoryWatchers: Map<string, FsWatcherLike>;
+  /**
+   * Incremented after each filesystem call of THIS root's walk returns. The
+   * stall detector watches it rather than the scan stats, which count
+   * attempts. Per-root rather than per-adapter: watcher-triggered scans can
+   * overlap across roots, and a shared counter would let a busy root mask a
+   * stalled sibling indefinitely. Only one walk runs per root at a time
+   * (scanState.scanning), so a single counter per root is sufficient.
+   */
+  walkCompletions: number;
+  /**
+   * Paths whose document this scan retired. Recorded explicitly rather than
+   * inferred from fileStates, so the partial-walk reconciliation removes only
+   * what it actually deleted and never drops tracking for a file that merely
+   * has no local state yet.
+   */
+  retiredThisScan: Set<string>;
+  /**
+   * Set when a directory in this walk could not be enumerated for a reason
+   * other than ENOENT. The resulting file set is partial through no fault of
+   * the filesystem's contents, so it must not drive the prune pass.
+   */
+  walkIncomplete: boolean;
+  /**
+   * Set when a directory walk of this root exceeded the walk timeout. Directory
+   * enumeration can block in an uninterruptible syscall (observed on iCloud
+   * Drive paths when file-provider consent is missing: each open blocks ~20s
+   * then fails EINTR, retried forever by libuv), and every blocked call
+   * permanently occupies a libuv threadpool thread. A quarantined root is never
+   * scanned again for the lifetime of this process, and no new watchers are
+   * created for it; watchers registered before the stall stay open until
+   * stop(), but they cannot schedule a scan. A restart retries the root once.
+   */
+  quarantined: boolean;
 }
 
 interface FileState extends MarkdownIngestionSnapshot {
@@ -100,6 +136,7 @@ interface GenericMarkdownSourceConfig {
   snapshotPath?: string;
   priorityMode?: "mtime" | "ctime" | "size" | "fifo";
   maxTokensPerFile?: number;
+  walkTimeoutMs?: number;
 }
 
 interface ScanStats {
@@ -124,7 +161,7 @@ interface FileCandidate {
 }
 
 type SyncMarkdownResult = "ingested" | "unchanged" | "deleted" | "skipped";
-type StreamReadResult = { text: string; fileHash: string } | "too_large" | null;
+type StreamReadResult = { text: string; fileHash: string } | "too_large" | { failed: string } | null;
 
 interface MarkdownSnapshotFile {
   version: number;
@@ -190,6 +227,7 @@ export function createMarkdownIngestionHandle(
           snapshotPath: resolveMarkdownSnapshotPath("generic", cfg.markdownIngestionSnapshotPath),
           priorityMode: cfg.markdownIngestionPriorityMode,
           maxTokensPerFile: cfg.markdownIngestionMaxTokensPerFile,
+          walkTimeoutMs: cfg.markdownIngestionWalkTimeoutMs,
         },
         getClient,
         logger,
@@ -211,6 +249,7 @@ export function createMarkdownIngestionHandle(
           snapshotPath: resolveMarkdownSnapshotPath("obsidian", cfg.markdownIngestionObsidianSnapshotPath),
           priorityMode: cfg.markdownIngestionPriorityMode,
           maxTokensPerFile: cfg.markdownIngestionMaxTokensPerFile,
+          walkTimeoutMs: cfg.markdownIngestionWalkTimeoutMs,
         },
         getClient,
         logger,
@@ -271,6 +310,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly snapshotPath: string;
   private readonly priorityMode: "mtime" | "ctime" | "size" | "fifo";
   private readonly maxTokensPerFile: number;
+  private readonly walkTimeoutMs: number;
   private readonly states = new Map<string, RootState>();
   private readonly fileStates = new Map<string, FileState>();
   private readonly activeScans = new Set<Promise<void>>();
@@ -299,6 +339,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     this.includePatterns = config.include?.length ? config.include : [];
     this.excludePatterns = config.exclude?.length ? config.exclude : DEFAULT_MARKDOWN_INGEST_EXCLUDES;
     this.debounceMs = config.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+    this.walkTimeoutMs = Math.max(1, Math.trunc(config.walkTimeoutMs ?? DEFAULT_WALK_TIMEOUT_MS));
     this.fsApi = fsApi;
     this.getClient = getClient;
     this.logger = logger;
@@ -373,6 +414,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         resumeFromPath: null,
       },
       knownFiles: this.snapshotFilesForRoot(resolved),
+      walkCompletions: 0,
+      walkIncomplete: false,
+      retiredThisScan: new Set<string>(),
+      quarantined: false,
       directoryWatchers: new Map<string, FsWatcherLike>(),
     };
     this.states.set(resolved, created);
@@ -384,6 +429,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       return;
     }
     const rootState = this.getRootState(root);
+    if (rootState.quarantined) {
+      return;
+    }
     if (rootState.scanState.scanning) {
       rootState.scanState.dirty = true;
       return;
@@ -398,11 +446,43 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         try {
           const currentFiles = new Set<string>();
           const candidates: FileCandidate[] = [];
-          await this.walkDirectory(rootState, rootState.root, currentFiles, stats, candidates);
+          rootState.walkCompletions = 0;
+          rootState.walkIncomplete = false;
+          rootState.retiredThisScan.clear();
+          const walked = await this.walkDirectoryWithTimeout(rootState, currentFiles, stats, candidates);
+          if (!walked) {
+            // The walk is still blocked in a syscall that may never return.
+            // Everything below assumes a COMPLETE currentFiles set — pruning
+            // against a partial one would delete documents for files that were
+            // never reached. Skip it all; the root is quarantined.
+            return;
+          }
           await this.syncCandidates(rootState, candidates, stats);
           if (!this.stopping) {
-          await this.pruneDeletedFiles(rootState, currentFiles, stats);
-          rootState.knownFiles = currentFiles;
+          if (rootState.walkIncomplete) {
+            // Absence is not evidence here, so nothing is pruned. Presence
+            // still is: union what we did see into knownFiles, otherwise a
+            // file first discovered during a partial walk is never tracked
+            // and a later complete scan cannot prune it when it is deleted.
+            // Files this scan retired (vanished between readdir and read, or
+            // grown past the per-file cap) must NOT be re-added, or the next
+            // complete scan would delete an already-deleted document.
+            // Everything else stays tracked, including candidates left unsynced
+            // by backpressure: those may still hold a document, and dropping
+            // them would orphan it.
+            for (const file of currentFiles) {
+              if (rootState.retiredThisScan.has(file)) {
+                rootState.knownFiles.delete(file);
+              } else {
+                rootState.knownFiles.add(file);
+              }
+            }
+          } else {
+            await this.pruneDeletedFiles(rootState, currentFiles, stats);
+            rootState.knownFiles = new Set(
+              [...currentFiles].filter((file) => !rootState.retiredThisScan.has(file)),
+            );
+          }
           await this.saveSnapshotIfDirty();
           this.logScanStats(rootState.root, stats, Date.now() - startedAt);
         }
@@ -410,7 +490,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         rootState.scanState.scanning = false;
         if (rootState.scanState.dirty) {
           rootState.scanState.dirty = false;
-          if (!this.stopping) {
+          if (!this.stopping && !rootState.quarantined) {
             this.scheduleRootScan(rootState);
           }
         }
@@ -426,7 +506,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 
   private scheduleRootScan(rootState: RootState, delayMs?: number): void {
-    if (!this.started || this.stopping) {
+    if (!this.started || this.stopping || rootState.quarantined) {
       return;
     }
     if (rootState.scanState.scanning) {
@@ -444,6 +524,65 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }, Math.max(this.debounceMs, delayMs ?? 0));
   }
 
+  /**
+   * Runs walkDirectory under a stall watchdog. Returns true when the walk
+   * completed. On a stall the root is quarantined and false is returned; the
+   * orphaned walk cannot be cancelled (the blocking syscall is uninterruptible)
+   * but it checks the quarantine flag between steps, so it goes quiet instead
+   * of continuing to enumerate — and, critically, instead of issuing further
+   * calls into a directory that eats a threadpool thread per attempt.
+   */
+  private async walkDirectoryWithTimeout(
+    rootState: RootState,
+    currentFiles: Set<string>,
+    stats: ScanStats,
+    candidates: FileCandidate[],
+  ): Promise<boolean> {
+    // Stall detector, not a total-time cap: a large or cold root that keeps
+    // completing operations is never quarantined, however long the full walk
+    // takes. Quarantine fires only when NO filesystem operation completes for
+    // walkTimeoutMs straight -- the signature of a blocked syscall.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let resolveStalled: (v: "stalled") => void = () => {};
+    const stalled = new Promise<"stalled">((resolve) => { resolveStalled = resolve; });
+    const progress = () => rootState.walkCompletions;
+    let lastProgress = progress();
+    const arm = () => {
+      timer = setTimeout(() => {
+        const now = progress();
+        if (now === lastProgress) {
+          resolveStalled("stalled");
+          return;
+        }
+        lastProgress = now;
+        arm();
+      }, this.walkTimeoutMs);
+    };
+    arm();
+    const walk = this.walkDirectory(rootState, rootState.root, currentFiles, stats, candidates)
+      .then(() => "walked" as const);
+    try {
+      const winner = await Promise.race([walk, stalled]);
+      if (winner === "stalled") {
+        rootState.quarantined = true;
+        this.logger.error?.(
+          `[markdown-ingest] directory walk of ${rootState.root} made no progress for ` +
+          `${this.walkTimeoutMs}ms and the root has been quarantined for this process. ` +
+          `No files under it will be ingested or pruned until the next restart. This usually ` +
+          `means enumeration is blocking in the OS (for iCloud Drive paths: missing ` +
+          `file-provider consent for this binary).`,
+        );
+        // The abandoned walk still holds real work; keep failures from
+        // surfacing as unhandled rejections.
+        walk.then(() => {}, () => {});
+        return false;
+      }
+      return true;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private async walkDirectory(
     rootState: RootState,
     dir: string,
@@ -456,22 +595,39 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       return;
     }
 
+    if (rootState.quarantined) {
+      return;
+    }
     stats.directoriesScanned++;
     await this.ensureDirectoryWatcher(rootState, dir);
+    if (rootState.quarantined) {
+      return;
+    }
 
     let entries: FsDirentLike[];
     try {
       entries = await this.fsApi.readdir(dir);
+      rootState.walkCompletions += 1;
     } catch (error) {
-      const message = formatError(error);
-      if (!message.includes("ENOENT")) {
-        this.logger.warn?.(`[markdown-ingest] readdir failed for ${dir}: ${message}`);
+      rootState.walkCompletions += 1;
+      if (isEnoent(error)) {
+        // The directory really is gone; its files are legitimately absent from
+        // the walk and the prune pass should retire their documents.
+        return;
       }
+      // Anything else (EPERM, EIO, EINTR...) means we cannot see what is in
+      // there. Marking the walk partial keeps the prune pass from deleting
+      // every document under this directory on a transient error.
+      rootState.walkIncomplete = true;
+      this.logger.warn?.(
+        `[markdown-ingest] readdir failed for ${dir}: ${formatError(error)}; ` +
+        `skipping prune for this scan to avoid retiring documents we cannot see`,
+      );
       return;
     }
 
     for (const entry of entries) {
-      if (this.stopping) {
+      if (this.stopping || rootState.quarantined) {
         return;
       }
       const child = path.join(dir, entry.name);
@@ -489,7 +645,20 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       }
       stats.filesIncluded++;
       const stat = await this.safeStatWithCtime(child);
-      if (!stat) {
+      rootState.walkCompletions += 1;
+      if (stat === "missing") {
+        // Genuinely gone between readdir and stat; leaving it out of
+        // currentFiles lets pruneDeletedFiles retire its document.
+        continue;
+      }
+      if ("failed" in stat) {
+        // Transient failure: we know nothing about the file's fate, so protect
+        // its document from the prune pass and let a later scan retry it. The
+        // original failure (EINTR, EPERM, EIO...) goes to the log — errno
+        // detail is how the incident behind this code was diagnosed.
+        this.logger.warn?.(`[markdown-ingest] stat failed for ${child}: ${stat.failed}; keeping existing document`);
+        currentFiles.add(child);
+        stats.syncErrors++;
         continue;
       }
       currentFiles.add(child);
@@ -543,6 +712,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         stats.filesDeferred++;
         if (await this.deleteCachedSourceDocument(candidate.path)) {
           stats.filesDeleted++;
+          rootState.retiredThisScan.add(candidate.path);
         }
         continue;
       }
@@ -650,14 +820,19 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     const sourceDoc = filePath;
     const relativePath = toPosixPath(path.relative(rootState.root, filePath));
 
-    // Re-check existence when initialStat is provided — the file may have been
-    // deleted between the scan pass and the sync pass.
+    // The walk's stat is reused when it supplied one; a file deleted between
+    // the walk and this point surfaces as an ENOENT from the read below.
     const stat = initialStat ?? (await this.safeStatWithCtime(filePath));
-    if (!stat) {
-      await this.deleteSourceDocument(sourceDoc);
-      this.fileStates.delete(sourceDoc);
-      this.snapshotDirty = true;
+    if (stat === "missing") {
+      await this.retireDocument(rootState, sourceDoc);
       return "deleted";
+    }
+    if ("failed" in stat) {
+      // Unknown state is not deletion evidence; keep the document. Thrown so
+      // the caller's catch counts it as a sync error -- a persistent failure
+      // must show up in scan stats, not disappear into the skipped count --
+      // and the original failure text rides along for diagnostics.
+      throw new Error(`stat failed transiently for ${sourceDoc} (${stat.failed}); keeping existing document`);
     }
 
     const cached = this.fileStates.get(sourceDoc);
@@ -669,14 +844,21 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     const streamed = await this.safeReadFileStreamed(filePath, maxBytes);
     if (streamed === "too_large") {
       if (cached && await this.deleteCachedSourceDocument(sourceDoc)) {
+        rootState.retiredThisScan.add(sourceDoc);
         return "deleted";
       }
       return "skipped";
     }
+    if (streamed !== null && "failed" in streamed) {
+      // The file exists (it just passed stat) but could not be read. That is a
+      // transient condition, not deletion evidence; the old behavior here
+      // deleted the document from the daemon on ANY read failure. Thrown so it
+      // lands in the caller's sync-error accounting rather than vanishing into
+      // the skipped count, with the original failure text for diagnostics.
+      throw new Error(`read failed transiently for ${sourceDoc} (${streamed.failed}); keeping existing document`);
+    }
     if (!streamed) {
-      await this.deleteSourceDocument(sourceDoc);
-      this.fileStates.delete(sourceDoc);
-      this.snapshotDirty = true;
+      await this.retireDocument(rootState, sourceDoc);
       return "deleted";
     }
 
@@ -694,9 +876,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     if (this.kind === "obsidian" && this.includePatterns.length === 0 && !looksLikeObsidianNote(filePath, text)) {
-      await this.deleteSourceDocument(sourceDoc);
-      this.fileStates.delete(sourceDoc);
-      this.snapshotDirty = true;
+      // Retires the document even though the result is "skipped" rather than
+      // "deleted", which is exactly why retirement is recorded here and not
+      // inferred from the return value at the call site.
+      await this.retireDocument(rootState, sourceDoc);
       return "skipped";
     }
     await this.ingestMarkdownDocument(sourceDoc, text, rootState.root, relativePath, fileHash, stat.size, stat.mtimeMs, stat.ctimeMs);
@@ -786,6 +969,19 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     await queue.enqueueDelete(sourceDoc);
   }
 
+  /**
+   * Deletes a document and records the retirement on the scan, so the
+   * partial-walk reconciliation knows this path no longer holds one. Every
+   * in-scan retirement goes through here or through
+   * deleteCachedSourceDocument, whose callers record it.
+   */
+  private async retireDocument(rootState: RootState, sourceDoc: string): Promise<void> {
+    await this.deleteSourceDocument(sourceDoc);
+    this.fileStates.delete(sourceDoc);
+    this.snapshotDirty = true;
+    rootState.retiredThisScan.add(sourceDoc);
+  }
+
   private async deleteCachedSourceDocument(sourceDoc: string): Promise<boolean> {
     if (!this.fileStates.has(sourceDoc)) {
       return false;
@@ -851,11 +1047,17 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
   }
 
-  private async safeStatWithCtime(filePath: string): Promise<{ size: number; mtimeMs: number; ctimeMs: number } | null> {
+  private async safeStatWithCtime(
+    filePath: string,
+  ): Promise<{ size: number; mtimeMs: number; ctimeMs: number } | "missing" | { failed: string }> {
     try {
       return await this.fsApi.stat(filePath);
-    } catch {
-      return null;
+    } catch (error) {
+      // Only a confirmed ENOENT means the file is gone. Any other failure is a
+      // transient condition that must never be treated as deletion evidence —
+      // and its detail (EINTR, EPERM, EIO...) is diagnostic gold, so it is
+      // carried along rather than collapsed into a bare sentinel.
+      return isEnoent(error) ? "missing" : { failed: formatError(error) };
     }
   }
 
@@ -887,8 +1089,11 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         text: chunks.join(""),
         fileHash: hash.toString(16).padStart(16, "0"),
       };
-    } catch {
-      return null;
+    } catch (error) {
+      // null (-> delete) only for a confirmed ENOENT; anything else is
+      // transient and must not retire the document. The detail rides along
+      // for diagnostics.
+      return isEnoent(error) ? null : { failed: formatError(error) };
     } finally {
       if (stream) {
         await stream.close().catch(() => {});
@@ -915,7 +1120,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     try {
       raw = await fsp.readFile(this.snapshotPath, "utf8");
     } catch (error) {
-      if (!formatError(error).includes("ENOENT")) {
+      if (!isEnoent(error)) {
         this.logger.warn?.(`[markdown-ingest] failed to read snapshot ${this.snapshotPath}: ${formatError(error)}`);
       }
       return;
@@ -1052,6 +1257,22 @@ function resolveMarkdownSnapshotPath(kind: string, configuredPath?: string): str
 
 function isMarkdownIngestionEnabled(cfg: PluginConfig, roots: string[]): boolean {
   return cfg.markdownIngestionEnabled === true && roots.length > 0;
+}
+
+/**
+ * True only for a confirmed ENOENT, checked via the error code through the
+ * cause chain. Never string-matches the message: a wrapped or localized error
+ * whose text merely mentions ENOENT must not count as proof of deletion.
+ */
+function isEnoent(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current; depth += 1) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "ENOENT") {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 function createRealFsApi(): FsApi {
