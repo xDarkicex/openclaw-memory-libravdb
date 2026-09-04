@@ -212,14 +212,6 @@ export function createDreamPromotionHandle(
 
     const text = textDecoder.decode(bytes);
     const candidates = parseDreamPromotionCandidates(text);
-    if (candidates.length === 0) {
-      lastFileState = {
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        fileHash,
-      };
-      return;
-    }
 
     const client = await getClient();
     await client.promoteDreamEntries({
