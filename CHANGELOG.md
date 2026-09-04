@@ -1,5 +1,84 @@
 # Changelog
 
+## v1.10.25 — 2026-09-03
+
+### Fixed
+
+- **Dream promotion source reconciliation (#320, #383).** When a diary file
+  no longer contains valid promotion candidates, the watcher now sends an
+  explicit empty source set to the daemon so stale dream promotions are
+  removed. File state is recorded only after a successful RPC, preserving
+  retry behavior when the daemon is temporarily unavailable.
+
+## v1.10.24 — 2026-09-03
+
+### Fixed
+
+- **Compound dream-query routing (#366, #367, #382).** Idiomatic phrases such
+  as “dream job” or “American dream” are removed before genuine dream-recall
+  intent is evaluated, so a query containing both forms still reaches dream
+  memory without routing idiom-only queries there.
+
+- **Dream and normal memory search are now additive.** Dream queries search the
+  dedicated dream collection alongside session, user, and global memory,
+  merge results by score, deduplicate them, and cap the final result set. Kind
+  and signal filters are forwarded to both search paths.
+
+- **Empty dream collections no longer suppress normal recall.** When a dream
+  search returns no hits, ordinary memory results continue to be returned.
+
+## v1.10.23 — 2026-09-03
+
+### Fixed
+
+- **Markdown ingestion readiness and pruning (#376, #381).** Added a
+  per-root walk watchdog with quarantine handling so an unresponsive or
+  unwalkable ingestion root cannot block gateway readiness.
+
+- **Safe markdown retirement.** Partial walks and transient read/stat failures
+  now preserve known files, while only confirmed `ENOENT` results retire
+  stored documents. Files retired during a complete scan are removed from the
+  next scan's tracking set, preventing duplicate deletion attempts.
+
+### Changed
+
+- **Markdown walk timeout configuration.** Added the
+  `markdownIngestionWalkTimeoutMs` setting to the plugin schema and runtime
+  configuration.
+
+## v1.10.22 — 2026-09-03
+
+### Fixed
+
+- **OpenClaw durable-turn compatibility (#372, #380).** Declared the
+  OpenClaw 2026.8 durable-turn contract and added atomic, idempotent
+  `commitTurn` handling so the context engine is selected for durable logical
+  turns and failed ingestion remains retryable.
+
+- **Durable after-turn ingestion (#375, #380).** Awaited the real daemon and
+  manifest durability outcome, repaired cursor gaps, and prevented
+  unconfirmed batches from being reported as successfully stored.
+
+- **Compacted projection lifecycle safety (#379, #380).** Preserved valid
+  compacted context across logical turns and engine replacement while fencing
+  stale, incomplete, reset-racing, and disposed-engine projections. When
+  compaction succeeds without usable compacted context, the engine now keeps
+  serving the uncompacted transcript and recall instead of blacking out the
+  session.
+
+- **OpenClaw plugin loading and CLI collisions (#373, #377, #380).** Removed
+  the redundant `cli-metadata` extension that caused bogus plugin IDs under
+  strict validation and renamed the plugin CLI root from `memory` to
+  `libravdb` so it no longer collides with OpenClaw core.
+
+- **Context-engine test isolation (#374, #380).** Kept unit-test manifests out
+  of live OpenClaw state so repeated test runs remain deterministic.
+
+### Changed
+
+- **OpenClaw compatibility baseline.** Development and lockfile dependencies
+  now exercise OpenClaw `2026.8.2`.
+
 ## v1.10.21 — 2026-08-01
 
 ### Fixed
@@ -439,4 +518,3 @@
 - Guarded against undefined `session_id` in continuity fallback text.
 - Reduced exact recall search breadth from 32 to 10.
 - Requires daemon v1.8.8.
-
