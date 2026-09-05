@@ -86,6 +86,35 @@ test("memory_grep defaults to the active session id", async () => {
   assert.equal(client.calls[0]?.params.collection, "session_summary:active-session");
 });
 
+test("memory_grep regex mode matches safe regex patterns", async () => {
+  const client = new FakeRecallClient();
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  const result = await tool.execute("call-1", { pattern: "need(le|les)", mode: "regex", scope: "summaries" });
+
+  assert.equal((result.details as { totalMatches: number }).totalMatches, 1);
+  assert.equal(client.calls[0]?.method, "searchText");
+});
+
+test("memory_grep rejects nested quantified regex before searching", async () => {
+  const client = new FakeRecallClient();
+  const tool = createMemoryGrepTool(
+    async () => client as unknown as LibravDBClient,
+    () => "active-session",
+    silentLogger,
+  );
+
+  await assert.rejects(
+    () => tool.execute("call-1", { pattern: "(a+)+$", mode: "regex", scope: "summaries" }),
+    /nested quantified groups/u,
+  );
+  assert.equal(client.calls.length, 0);
+});
+
 test("memory_expand defaults to the active session id", async () => {
   const client = new FakeRecallClient();
   const tool = createMemoryExpandTool(
