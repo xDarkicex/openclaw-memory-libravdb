@@ -727,8 +727,19 @@ function approximateTokenCount(text: unknown): number {
  * Approximates tokens for a single message including wrapper overhead.
  */
 function approximateMessageTokens(message: OpenClawCompatibleMessage): number {
-  // Approximate per-message wrapper overhead so trimming is conservative.
-  return approximateTokenCount(message.content) + 8;
+  // Measure replay content, not the ingestion normalizer's filtered view.
+  const content = Array.isArray(message.content)
+    ? message.content.map((block) => {
+        if (!block || typeof block !== "object") return "";
+        const value = block as Record<string, unknown>;
+        if (value.type === "toolCall") {
+          return stringifyKernelBlock(value);
+        }
+        return typeof value.text === "string" ? value.text
+          : typeof value.thinking === "string" ? value.thinking : "";
+      }).join("\n")
+    : message.content;
+  return approximateTokenCount(content) + 8;
 }
 
 /**
@@ -1127,9 +1138,20 @@ function enforceCompactedProjectionBudgetInvariant(
   }
 
   const lastUserIndex = findLastUserMessageIndex(result.messages);
-  const mandatoryMessages = lastUserIndex >= 0
-    ? result.messages.slice(lastUserIndex)
-    : result.messages;
+  // Without a user boundary, no live turn can be protected. Drop the entire
+  // oversized projection rather than orphaning calls/results by suffix trimming.
+  if (lastUserIndex < 0) {
+    const systemPromptAddition = truncateSystemPromptAdditionToTokenBudget(
+      result.systemPromptAddition, effectiveBudget,
+    );
+    return {
+      ...result,
+      messages: [],
+      systemPromptAddition,
+      estimatedTokens: approximateTokenCount(systemPromptAddition),
+    };
+  }
+  const mandatoryMessages = result.messages.slice(lastUserIndex);
   const mandatoryTokens = approximateMessagesTokens(mandatoryMessages);
   const systemPromptBudget = Math.max(0, effectiveBudget - mandatoryTokens);
   const systemPromptAddition = truncateSystemPromptAdditionToTokenBudget(
@@ -1971,10 +1993,14 @@ export function normalizeAssembleResult(
   const systemPromptAddition = typeof result.systemPromptAddition === "string"
     ? sanitizeDaemonSystemPromptAddition(result.systemPromptAddition)
     : "";
+  const messages = sourceMessages ?? [];
+  const reportedTokens = typeof result.estimatedTokens === "number" && Number.isFinite(result.estimatedTokens)
+    ? result.estimatedTokens : 0;
 
   return {
-    messages: sourceMessages ?? [],
-    estimatedTokens: typeof result.estimatedTokens === "number" ? result.estimatedTokens : 0,
+    messages,
+    estimatedTokens: Math.max(reportedTokens,
+      approximateMessagesTokens(messages) + approximateTokenCount(systemPromptAddition)),
     systemPromptAddition,
     promptAuthority,
     ...(result.debug != null ? { debug: result.debug } : {}),
@@ -2238,7 +2264,9 @@ export function buildContextEngineFactory(
     tokenBudget: number | undefined,
     compactionProjectionActive: boolean,
   ): OpenClawCompatibleAssembleResult {
-    return compactionProjectionActive
+    // Newly visible pressure must not orphan a live tool call or result.
+    return compactionProjectionActive || result.messages.some((message) =>
+      isToolResultRole(message.role) || hasKernelToolCallBlock(message.content))
       ? enforceCompactedProjectionBudgetInvariant(result, tokenBudget)
       : enforceTokenBudgetInvariant(result, tokenBudget);
 
@@ -3088,8 +3116,8 @@ export function buildContextEngineFactory(
         : RESERVED_CURRENT_TURN_TOKENS;
       const currentContextTokens = resolvePredictiveCompactionTokenCount({
         currentTokenCount: args.currentTokenCount,
-        messages,
-        prompt: strippedPrompt,
+        messages: projectedSourceMessages(),
+        prompt: strippedPrompt + (cachedCompactedProjection?.context ?? ""),
       });
       const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
       const predictiveTargetSize = resolvePredictiveCompactionTarget({

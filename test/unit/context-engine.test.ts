@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 
-import { buildContextEngineFactory, clearCompactedProjectionState, createCompactedProjectionState, FLUSH_ASYNC_INGESTION } from "../../src/context-engine.js";
+import { buildContextEngineFactory, clearCompactedProjectionState, createCompactedProjectionState, FLUSH_ASYNC_INGESTION, normalizeAssembleResult } from "../../src/context-engine.js";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import { resolveIdentity } from "../../src/identity.js";
@@ -118,6 +118,75 @@ function fakeRuntime(client: FakeClient): PluginRuntime {
     shutdown: async () => {},
   };
 }
+
+test("replay accounting includes reasoning and arguments without rewriting history", () => {
+  const messages = [
+    { role: "assistant", content: [
+      { type: "thinking", thinking: "reason ".repeat(1000) },
+      { type: "toolCall", id: "call-1", name: "write", arguments: { text: "x".repeat(40000) } },
+    ] },
+    { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "evidence ".repeat(1000) }] },
+  ];
+  for (const reported of [0, NaN, Infinity]) {
+    const result = normalizeAssembleResult({ estimatedTokens: reported, systemPromptAddition: "context ".repeat(1000) }, messages);
+    assert.equal(result.messages, messages);
+    assert.ok(Number.isFinite(result.estimatedTokens) && result.estimatedTokens >= 16000);
+  }
+  assert.equal(normalizeAssembleResult({ estimatedTokens: 100000 }, messages).estimatedTokens, 100000);
+});
+
+test("replay accounting tolerates non-JSON tool arguments without changing them", () => {
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  for (const args of [cyclic, { count: 1n }]) {
+    const messages = [{ role: "assistant", content: [{ type: "toolCall", id: "c", name: "lookup", arguments: args }] }];
+    const result = normalizeAssembleResult({ estimatedTokens: 0 }, messages);
+    assert.equal(result.messages, messages);
+    assert.ok(Number.isFinite(result.estimatedTokens) && result.estimatedTokens > 0);
+  }
+});
+
+test("pressure enforcement bounds tool-only projections without splitting protocol", async () => {
+  for (const shape of ["result", "call", "pair"]) {
+    const engine = buildContextEngineFactory(fakeRuntime(new FakeClient()), { userId: "fixed-user", compactThreshold: 100000 });
+    const messages = [
+      ...(shape !== "result" ? [{ role: "assistant", content: [{ type: "toolCall", id: "c", name: "lookup", arguments: { text: "x".repeat(18000) } }] }] : []),
+      ...(shape !== "call" ? [{ role: "toolResult", toolCallId: "c", content: "evidence ".repeat(2000) }] : []),
+    ];
+    const control = await engine.assemble({ sessionId: `no-user-control-${shape}`, messages, tokenBudget: 100000 });
+    assert.deepEqual(control.messages, messages, "no-user input is not unconditionally dropped");
+    const result = await engine.assemble({ sessionId: `no-user-${shape}`, messages, tokenBudget: 1000 });
+    assert.deepEqual(result.messages, []);
+    assert.ok(result.estimatedTokens <= 1000);
+  }
+});
+
+test("predictive pressure includes old tool evidence omitted from daemon ingestion", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user", compactThreshold: 1000 });
+  const messages = [
+    { role: "user", content: "Research" },
+    { role: "assistant", content: [{ type: "toolCall", id: "c", name: "lookup", arguments: {} }] },
+    { role: "toolResult", toolCallId: "c", content: [{ type: "text", text: "evidence ".repeat(2000) }] },
+    { role: "assistant", stopReason: "stop", content: "The research is complete." },
+    { role: "user", content: "hello" },
+  ];
+  await engine.assemble({ sessionId: "pressure-raw", messages, tokenBudget: 100000, currentTokenCount: 0 });
+  assert.ok(client.calls.some((call) => call.method === "compactSession"));
+});
+
+test("pressure enforcement keeps an oversized live tool exchange intact", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user", compactThreshold: 100000 });
+  const messages = [
+    { role: "user", content: "Continue the lookup" },
+    { role: "assistant", content: [{ type: "toolCall", id: "live", name: "lookup", arguments: {} }] },
+    { role: "toolResult", toolCallId: "live", content: "evidence ".repeat(2000) },
+  ];
+  const result = await engine.assemble({ sessionId: "live-pressure", messages, tokenBudget: 1000 });
+  assert.deepEqual(result.messages, messages);
+  assert.ok(result.estimatedTokens > 1000, "report overflow rather than silently dropping the result");
+});
 
 function installBeforeTurnKernel(
   client: FakeClient,
