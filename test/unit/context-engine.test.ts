@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 
-import { buildContextEngineFactory, clearCompactedProjectionState, createCompactedProjectionState, FLUSH_ASYNC_INGESTION } from "../../src/context-engine.js";
+import { buildContextEngineFactory, clearCompactedProjectionState, createCompactedProjectionState, FLUSH_ASYNC_INGESTION, projectHistoricalEvidenceForRecall } from "../../src/context-engine.js";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import { resolveIdentity } from "../../src/identity.js";
@@ -118,6 +118,62 @@ function fakeRuntime(client: FakeClient): PluginRuntime {
     shutdown: async () => {},
   };
 }
+
+test("recall-only history keeps final answers and exact live protocol without mutating storage", () => {
+  const history = [
+    { role: "user", content: "Research old topic" },
+    { role: "assistant", content: [{ type: "toolCall", id: "old", name: "lookup", arguments: {} }] },
+    { role: "toolResult", toolCallId: "old", content: "old evidence ".repeat(10000) },
+    { role: "assistant", stopReason: "stop", content: [{ type: "thinking", thinking: "old reasoning" }, { type: "text", text: "Useful final answer" }] },
+    { role: "user", content: "Look up a new topic" },
+    { role: "assistant", content: [{ type: "toolCall", id: "live", name: "lookup", arguments: {} }] },
+    { role: "toolResult", toolCallId: "live", content: "live evidence" },
+  ];
+  const before = structuredClone(history);
+  const result = projectHistoricalEvidenceForRecall(history);
+  assert.deepEqual(result, [history[0], { ...history[3], content: [{ type: "text", text: "Useful final answer" }] }, ...history.slice(4)]);
+  assert.deepEqual(history, before);
+  assert.equal(result.at(-1), history.at(-1));
+  assert.equal(projectHistoricalEvidenceForRecall(result), result, "idempotent");
+  for (const malformed of [
+    history.filter((_, i) => i !== 2),
+    history.map((m, i) => i === 2 ? { ...m, toolCallId: "unknown" } : m),
+    history.map((m, i) => i === 3 ? { ...m, stopReason: "error" } : m),
+    history.slice(0, 4),
+  ]) assert.equal(projectHistoricalEvidenceForRecall(malformed), malformed, "unresolved and current turns stay exact");
+});
+
+test("recall projection requires real terminal text and tolerates unknown content", () => {
+  for (const content of [undefined, null, {}, 42, false, [], [{ type: "thinking", thinking: "pending" }], "", "  "]) {
+    const messages = [
+      { role: "user", content: "Research" },
+      { role: "assistant", content: [{ type: "toolCall", id: "c", name: "lookup", arguments: {} }] },
+      { role: "toolResult", toolCallId: "c", content: "evidence" },
+      { role: "assistant", stopReason: "stop", content },
+      { role: "user", content: "hello" },
+    ];
+    assert.equal(projectHistoricalEvidenceForRecall(messages as Parameters<typeof projectHistoricalEvidenceForRecall>[0]), messages);
+  }
+});
+
+test("recall-only assembly retains retrieved memory and projects daemon-error fallbacks", async () => {
+  const messages = [
+    { role: "user", content: "Research" },
+    { role: "assistant", content: [{ type: "toolCall", id: "old", name: "lookup", arguments: {} }] },
+    { role: "toolResult", toolCallId: "old", content: "archived payload ".repeat(1000) },
+    { role: "assistant", stopReason: "stop", content: "Final answer" },
+    { role: "user", content: "hello" },
+  ];
+  for (const fail of [false, true]) {
+    const client = new FakeClient();
+    client.assembleResponse.systemPromptAddition = "Relevant recalled fact";
+    if (fail) client.assembleContextInternal = async () => { throw new Error("test unavailable"); };
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user", compactThreshold: 100000, historicalToolReplay: "recall", beforeTurnEnabled: false });
+    const result = await engine.assemble({ sessionId: `recall-projection-${fail}`, messages, tokenBudget: 100000 });
+    assert.deepEqual(result.messages, [messages[0], messages[3], messages[4]]);
+    if (!fail) assert.match(result.systemPromptAddition, /Relevant recalled fact/);
+  }
+});
 
 function installBeforeTurnKernel(
   client: FakeClient,

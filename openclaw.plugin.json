@@ -133,6 +133,12 @@
       "useSessionRecallProjection": {
         "type": "boolean"
       },
+      "historicalToolReplay": {
+        "type": "string",
+        "enum": ["full", "recall", "smart"],
+        "default": "full",
+        "description": "Recall mode omits completed historical tool exchanges and reasoning from replay, retaining final answers. Smart mode also indexes compact session descriptors asynchronously and retrieves bounded original transcript excerpts for relevant queries. Current and unresolved exchanges remain exact. Smart mode requires the host session-transcript-runtime SDK."
+      },
       "grpcEndpoint": {
         "type": "string",
         "description": "Optional gRPC kernel endpoint for hosts using the daemon kernel transport."

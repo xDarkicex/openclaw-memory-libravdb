@@ -26,6 +26,7 @@ export interface PluginConfig {
    *  durable recall is skipped entirely. Defaults to true. */
   crossSessionRecall?: boolean;
   useSessionRecallProjection?: boolean;
+  historicalToolReplay?: "full" | "recall" | "smart";
   useSessionSummarySearchExperiment?: boolean;
   /** Path to the daemon-visible ONNX Runtime library.
    * Required when embeddingBackend is "onnx-local". */

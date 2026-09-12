@@ -16,6 +16,21 @@ import {
 
 import type { AuthInterceptorState } from "../../src/libravdb-client.js";
 
+test("collection reads forward cancellation options to the RPC", async () => {
+  const client = new LibravDBClient({ endpoint: "http://localhost:1", secret: "test" });
+  const controller = new AbortController();
+  const opts = { signal: controller.signal };
+  const calls: unknown[] = [];
+  (client as any).client = Object.fromEntries(["listCollection", "listByMeta"].map(name => [name,
+    async (_req: unknown, options: typeof opts) => { calls.push(options); return {}; },
+  ]));
+  try {
+    await client.listCollection({ collection: "test" }, opts);
+    await client.listByMeta({ collection: "test", key: "frameId", value: "test" }, opts);
+    assert.deepEqual(calls, [opts, opts]);
+  } finally { client.close(); }
+});
+
 async function withLegacyJsonRpcSocket(run: (endpoint: string) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(path.join(tmpdir(), "libravdb-legacy-jsonrpc-"));
   const socketPath = path.join(dir, "libravdb.sock");

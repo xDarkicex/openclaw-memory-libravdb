@@ -46,7 +46,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/bundle-entrypoint.mjs && mkdir -p dist/proto && cp -rf api/proto/. dist/proto/",
-    "check": "tsc --noEmit && pnpm run test:ts && pnpm run test:integration",
+    "check": "tsc --noEmit && pnpm run test:ts && pnpm run test:integration && node --test scripts/hydration-probe.test.mjs",
     "clean:test": "node scripts/clean-test-build.mjs",
     "test:inspect": "pnpm run plugin:ci",
     "test:ts": "pnpm run test:inspect && pnpm run clean:test && tsc -p tsconfig.tests.json && node --test .ts-build/test/unit/*.test.js",

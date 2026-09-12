@@ -4,8 +4,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildRulesContext } from "./rules.js";
 import { resolveReadTenants } from "./identity.js";
+import { hydrationTurnKey, TranscriptHydration, type TranscriptReader } from "./hydration-transcript.js";
 
 import type { PluginRuntime } from "./plugin-runtime.js";
+
+const hydrationSessions = new WeakMap<PluginRuntime, Map<string, { adapter: TranscriptHydration; used: number; key?: string }>>();
 import type {
   LoggerLike,
   PluginConfig,
@@ -408,7 +411,7 @@ type KernelContentNormalizationOptions = {
 /**
  * Normalizes kernel content (string or block array) to a flat string.
  */
-function normalizeKernelContent(content: unknown, options: KernelContentNormalizationOptions = {}): string {
+export function normalizeKernelContent(content: unknown, options: KernelContentNormalizationOptions = {}): string {
   const text = typeof content === "string"
     ? content
     : Array.isArray(content)
@@ -734,6 +737,60 @@ function approximateMessageTokens(message: OpenClawCompatibleMessage): number {
 /**
  * Sums approximate tokens across an array of messages.
  */
+export function projectHistoricalEvidenceForRecall(messages: OpenClawCompatibleMessage[]): OpenClawCompatibleMessage[] {
+  const record = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+  const completed = new Set<number>();
+  let start = 0;
+  for (let end = 0; end < messages.length; end++) {
+    if (messages[end].role !== "user") continue;
+    const tail = messages[end - 1];
+    // A later user turn plus an explicit final answer closes the protocol.
+    if (tail?.role === "assistant" && tail.stopReason === "stop" &&
+        !hasKernelToolCallBlock(tail.content) &&
+        (typeof tail.content === "string" ? tail.content.trim() : Array.isArray(tail.content) && tail.content.some((value) => {
+          const b = record(value);
+          return b.type === "text" && typeof b.text === "string" && b.text.trim();
+        }))) {
+      const pending = new Set<string>();
+      const seen = new Set<string>();
+      let valid = messages[start]?.role === "user";
+      for (let i = start; i < end; i++) {
+        const message = messages[i];
+        if (message.role === "assistant" && Array.isArray(message.content)) {
+          for (const value of message.content) {
+            const block = record(value);
+            if (block?.type !== "toolCall") continue;
+            if (typeof block.id !== "string" || !block.id || seen.has(block.id)) valid = false;
+            else { seen.add(block.id); pending.add(block.id); }
+          }
+        } else if (isToolResultRole(message.role)) {
+          if (typeof message.toolCallId !== "string" || !pending.delete(message.toolCallId)) valid = false;
+        } else if (message.role !== "assistant" && message.role !== "user") valid = false;
+      }
+      if (valid && pending.size === 0) for (let i = start; i < end; i++) completed.add(i);
+    }
+    start = end;
+  }
+  let changed = false;
+  const result = messages.flatMap((message, i) => {
+    if (!completed.has(i)) return [message];
+    if (isToolResultRole(message.role) || hasKernelToolCallBlock(message.content)) {
+      changed = true;
+      return [];
+    }
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      const content = message.content.filter((block) => record(block).type !== "thinking");
+      if (content.length !== message.content.length) {
+        changed = true;
+        return content.length ? [{ ...message, content }] : [];
+      }
+    }
+    return [message];
+  });
+  return changed ? result : messages;
+}
+
 function approximateMessagesTokens(messages: OpenClawCompatibleMessage[]): number {
   return messages.reduce((sum, message) => sum + approximateMessageTokens(message), 0);
 }
@@ -3056,11 +3113,14 @@ export function buildContextEngineFactory(
       const normalizeWindow = 50;
       const recentMessages = selectTurnAlignedSourceSuffix(args.messages, normalizeWindow);
       const messages = normalizeKernelMessages(recentMessages);
-      const projectedSourceMessages = () => compactionProjectionActive
+      const rawProjectedSourceMessages = () => compactionProjectionActive
         ? cachedCompactedProjection
           ? args.messages.slice(cachedCompactedProjection.sourceStartIndex)
           : recentMessages
         : args.messages;
+      const projectedSourceMessages = () => cfg.historicalToolReplay === "recall" || cfg.historicalToolReplay === "smart"
+        ? projectHistoricalEvidenceForRecall(rawProjectedSourceMessages())
+        : rawProjectedSourceMessages();
       const buildAssembleFallback = (): OpenClawCompatibleAssembleResult => {
         if (!compactionProjectionActive) {
           return buildBudgetFallbackContext(args.messages, args.tokenBudget);
@@ -4135,5 +4195,68 @@ export function buildContextEngineFactory(
     },
   };
 
+  if (cfg.historicalToolReplay === "recall" || cfg.historicalToolReplay === "smart") {
+    const assemble = engine.assemble;
+    engine.assemble = async (args) => {
+      const result = await assemble(args);
+      if (isExcludedSession(args.sessionKey, args.sessionId)) return result;
+      // Apply at the return boundary too: daemon errors and budget fallbacks
+      // must not silently restore the historical payloads.
+      const messages = projectHistoricalEvidenceForRecall(result.messages);
+      let projected = {
+        ...result,
+        messages,
+        estimatedTokens: Math.max(
+          approximateMessagesTokens(messages) + approximateTokenCount(result.systemPromptAddition),
+          result.estimatedTokens - approximateMessagesTokens(result.messages) + approximateMessagesTokens(messages),
+        ),
+      };
+      if (cfg.historicalToolReplay === "smart" && args.sessionKey) {
+        try {
+          const userId = resolveUserId({ userIdOverride: args.userId, sessionKey: args.sessionKey });
+          const scope = { tenant: userId, session: args.sessionId, audience: args.sessionKey };
+          const id = JSON.stringify(scope);
+          let sessions = hydrationSessions.get(runtime);
+          if (!sessions) { sessions = new Map(); hydrationSessions.set(runtime, sessions); }
+          let state = sessions.get(id);
+          if (!state) {
+            for (const [key, value] of sessions) if (Date.now() - value.used > 30 * 60_000) {
+              sessions.delete(key); void value.adapter.close().catch(() => {});
+            }
+            if (sessions.size >= 64) return projected;
+            const sdkName = "openclaw/plugin-sdk/session-transcript-runtime";
+            const sdk = await import(sdkName);
+            if (typeof sdk.readSessionTranscriptVisibleMessageDelta !== "function") return projected;
+            const adapter = new TranscriptHydration(scope, await runtime.getClient(), sdk.readSessionTranscriptVisibleMessageDelta as TranscriptReader,
+              text => normalizeKernelContent(text, { retainOpenClawContext: false }));
+            state = { adapter, used: Date.now() }; sessions.set(id, state);
+          }
+          state.used = Date.now();
+          void state.adapter.refresh().catch(() => logger.warn?.("LibraVDB smart hydration background capture unavailable"));
+          const lastUser = findLastUserMessageIndex(args.messages);
+          if (lastUser < 0) return projected;
+          const key = hydrationTurnKey(args.messages[lastUser]);
+          const postTool = hasLiveToolProtocolAfterLastUser(args.messages, lastUser);
+          const remaining = args.tokenBudget - approximateMessagesTokens(projected.messages) - approximateTokenCount(projected.systemPromptAddition);
+          const budget = Math.min(16000, Math.max(0, Math.floor(remaining)));
+          let context = "";
+          if ((!postTool || state.key === key) && budget >= 1024) {
+            const query = normalizeKernelContent(args.prompt ?? args.messages[lastUser].content, { retainOpenClawContext: false });
+            state.key = key;
+            const packet = await state.adapter.hydrate(query, key, budget);
+            if (state.key !== key) return projected;
+            context = packet.context;
+            logger.info?.(`LibraVDB smart hydration status=${packet.status} frames=${packet.selectedIds.length} reads=${packet.hydratedIds.length} bytes=${Buffer.byteLength(context)} elapsedMs=${Math.round(packet.elapsedMs)}`);
+          }
+          if (context && Buffer.byteLength(context) <= budget) projected = { ...projected,
+            systemPromptAddition: appendSystemPromptAddition(projected.systemPromptAddition, context),
+            estimatedTokens: projected.estimatedTokens + approximateTokenCount(context) };
+        } catch {
+          logger.warn?.("LibraVDB smart hydration unavailable; using recall projection");
+        }
+      }
+      return projected;
+    };
+  }
   return engine;
 }

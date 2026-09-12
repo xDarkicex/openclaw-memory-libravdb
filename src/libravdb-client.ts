@@ -37,6 +37,9 @@ import type {
   IngestMarkdownDocumentResponse,
   IngestMessageKernelRequest,
   IngestMessageKernelResponse,
+  EnsureCollectionsRequest,
+  InsertTextRequest,
+  DeleteRequest,
   ListByMetaRequest,
   ListByMetaResponse,
   ListCollectionRequest,
@@ -434,9 +437,24 @@ export class LibravDBClient {
 
   // ── Search / query ───────────────────────────────────────────────
 
-  async searchText(req: PartialMessage<SearchTextRequest>): Promise<SearchTextResponse> {
+  async searchText(req: PartialMessage<SearchTextRequest>, opts?: CallOptions): Promise<SearchTextResponse> {
     this.guardOpen();
-    return this.client.searchText(req);
+    return this.client.searchText(req, opts);
+  }
+
+  async ensureCollections(req: PartialMessage<EnsureCollectionsRequest>, opts?: CallOptions) {
+    this.guardOpen();
+    return this.client.ensureCollections(req, opts);
+  }
+
+  async insertText(req: PartialMessage<InsertTextRequest>, opts?: CallOptions) {
+    this.guardOpen();
+    return this.client.insertText(req, opts);
+  }
+
+  async deleteText(req: PartialMessage<DeleteRequest>, opts?: CallOptions) {
+    this.guardOpen();
+    return this.client.delete(req, opts);
   }
 
   async searchTextCollections(
@@ -471,9 +489,9 @@ export class LibravDBClient {
     return { results: allResults } as SearchTextResponse;
   }
 
-  async listCollection(req: PartialMessage<ListCollectionRequest>): Promise<ListCollectionResponse> {
+  async listCollection(req: PartialMessage<ListCollectionRequest>, opts?: CallOptions): Promise<ListCollectionResponse> {
     this.guardOpen();
-    return this.client.listCollection(req);
+    return this.client.listCollection(req, opts);
   }
 
   // ── Memory ───────────────────────────────────────────────────────
@@ -582,9 +600,10 @@ export class LibravDBClient {
 
   async listByMeta(
     req: PartialMessage<ListByMetaRequest>,
+    opts?: CallOptions,
   ): Promise<ListByMetaResponse> {
     this.guardOpen();
-    return this.client.listByMeta(req);
+    return this.client.listByMeta(req, opts);
   }
 
   close(): void {
