@@ -1054,6 +1054,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         {
           onChunkFeedback: (feedback) => this.applyIngestFeedback(feedback),
         },
+        client,
       );
     }
     return this.ingestQueue;

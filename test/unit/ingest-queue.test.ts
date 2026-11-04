@@ -22,6 +22,54 @@ function baseParams() {
   };
 }
 
+test("shared-client queues order deletion after all chunks without blocking other documents", { timeout: 3000 }, async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const documents = new Map<string, string>();
+  let deleted = false;
+  let first = true;
+  const scope = {};
+  const makeQueue = () => new IngestQueue(async params => {
+    documents.set(params.sourceDoc, params.mode === IngestMode.APPEND
+      ? (documents.get(params.sourceDoc) ?? "") + params.text : params.text);
+    if (params.sourceDoc === "shared" && first) {
+      first = false;
+      started();
+      await blocked;
+    }
+    return { ok: true };
+  }, async ({ sourceDoc }) => { deleted = true; documents.delete(sourceDoc); },
+  { error() {} }, { chunkTokens: 4, maxRetries: 0 }, scope);
+  const firstQueue = makeQueue();
+  const secondQueue = makeQueue();
+  const ingest = firstQueue.enqueueIngest("shared", "x".repeat(100), baseParams());
+  await ready;
+  const deletion = secondQueue.enqueueDelete("shared");
+  try {
+    await secondQueue.enqueueIngest("other", "independent", baseParams());
+    assert.equal(documents.get("other"), "independent");
+    assert.equal(deleted, false, "deletion must wait for the entire replacement");
+  } finally { release(); }
+  await Promise.all([ingest, deletion]);
+  assert.equal(documents.has("shared"), false, "a late APPEND must not resurrect a deleted document");
+});
+
+test("a failed replacement does not poison the next queued update", async () => {
+  const calls: string[] = [];
+  const queue = new IngestQueue(async params => {
+    calls.push(params.text);
+    if (params.text === "failure") throw new Error("daemon disconnected");
+    return { ok: true };
+  }, async () => {}, { error() {} }, { maxRetries: 0 });
+  const failed = queue.enqueueIngest("shared", "failure", baseParams());
+  const next = queue.enqueueIngest("shared", "replacement", baseParams());
+  await assert.rejects(failed, /daemon disconnected/);
+  await next;
+  assert.deepEqual(calls, ["failure", "replacement"]);
+});
+
 function feedback(overrides: Partial<{
   queueDepth: number;
   queueCapacity: number;

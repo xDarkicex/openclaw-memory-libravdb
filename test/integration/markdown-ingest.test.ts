@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
+import { setImmediate as yieldImmediate } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { IngestMode } from "@xdarkicex/libravdb-contracts";
@@ -732,6 +733,65 @@ test("obsidian markdown ingestion skips untaged notes by default", async () => {
   assert.equal(rpc.documents.has(filePath), false);
 
   await handle.stop();
+});
+
+test("overlapping Markdown roots cannot interleave replacement chunks for one document", { timeout: 5000 }, async t => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-overlapping-roots-"));
+  const child = path.join(tempRoot, "notes");
+  const file = path.join(child, "shared.md");
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let firstWrite!: () => void;
+  const writeReady = new Promise<void>(resolve => { firstWrite = resolve; });
+  let bothScanned!: () => void;
+  const scanReady = new Promise<void>(resolve => { bothScanned = resolve; });
+  let scans = 0;
+  class ObservedFs extends FakeFsApi {
+    override async stat(filePath: string) {
+      const result = await super.stat(filePath);
+      if (++scans === 2) bothScanned();
+      return result;
+    }
+  }
+  const fsApi = new ObservedFs();
+  await fsApi.mkdir(child);
+  let stored = "";
+  let writes = 0;
+  const rpc = {
+    async ingestMarkdownDocument(params: { text: string; mode: IngestMode }) {
+      stored = params.mode === IngestMode.APPEND ? stored + params.text : params.text;
+      if (++writes === 1) { firstWrite(); await blocked; }
+      return { ok: true };
+    },
+    async deleteAuthoredDocument() { stored = ""; return { ok: true }; },
+  };
+  const handle = createMarkdownIngestionHandle({
+    markdownIngestionEnabled: true,
+    markdownIngestionRoots: [tempRoot, child],
+    markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+    markdownIngestionDebounceMs: 0,
+  }, async () => rpc as never, { warn() {}, error() {} }, fsApi as never);
+  t.after(async () => {
+    release();
+    await handle.stop();
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  });
+  await handle.start();
+  await fsApi.writeFile(file, "prefix" + "x".repeat(6000) + "suffix", 1000);
+  const callbacks = fsApi.callbacks.get(child)!;
+  assert.equal(callbacks.length, 2, "both configured roots watch the shared directory");
+  callbacks[0]!("change", "shared.md");
+  await writeReady;
+  const content = "prefix" + "y".repeat(6000) + "suffix";
+  await fsApi.writeFile(file, content, 2000);
+  callbacks[1]!("change", "shared.md");
+  await scanReady;
+  await yieldImmediate();
+  release();
+  await handle.stop();
+  assert.ok(writes > 2, "the document requires multiple RPC chunks");
+  assert.equal(stored.length, content.length, "old APPEND chunks must not corrupt the newer replacement");
+  assert.equal(stored, content);
 });
 
 test("markdown ingestion always includes MEMORY.md by filename even under narrow include globs", async () => {

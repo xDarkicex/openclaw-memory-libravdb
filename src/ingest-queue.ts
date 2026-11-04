@@ -56,27 +56,31 @@ interface IngestMarkdownDocumentResponse {
   feedback?: IngestFeedback;
 }
 
-interface QueuedIngest {
-  sourceDoc: string;
-  params: IngestMarkdownDocumentParams;
-  resolve: () => void;
-  reject: (err: Error) => void;
-}
+// Adapters sharing a client must also share document ordering, while unrelated
+// clients/tenants and different documents can still make progress independently.
+const documentQueues = new WeakMap<object, Map<string, Promise<void>>>();
 
 export class IngestQueue {
-  private readonly queue: QueuedIngest[] = [];
+  private readonly pendingByDocument: Map<string, Promise<void>>;
   private readonly ingestDocument: (params: IngestMarkdownDocumentParams) => Promise<IngestMarkdownDocumentResponse>;
   private readonly deleteDocument: (params: { sourceDoc: string }) => Promise<unknown>;
   private readonly logger: LoggerLike;
   private readonly options: IngestQueueOptions;
-  private running = false;
 
   constructor(
     ingestDocument: (params: IngestMarkdownDocumentParams) => Promise<IngestMarkdownDocumentResponse>,
     deleteDocument: (params: { sourceDoc: string }) => Promise<unknown>,
     logger: LoggerLike,
     options: Partial<IngestQueueOptions> = {},
+    coordinationScope?: object,
   ) {
+    const scope = coordinationScope ?? this;
+    let pending = documentQueues.get(scope);
+    if (!pending) {
+      pending = new Map();
+      documentQueues.set(scope, pending);
+    }
+    this.pendingByDocument = pending;
     this.ingestDocument = ingestDocument;
     this.deleteDocument = deleteDocument;
     this.logger = logger;
@@ -92,15 +96,24 @@ export class IngestQueue {
     text: string,
     baseParams: Omit<IngestMarkdownDocumentParams, "sourceDoc" | "text" | "mode">,
     maxChunkTokens?: number,
-  ): Promise<IngestFeedback | undefined> {
-    // An empty replacement must still clear the previously authored document.
-    // There are no chunks to submit, so use the deletion RPC and only let the
-    // caller record the empty-file snapshot after that operation succeeds.
-    if (text.length === 0) {
-      await this.enqueueDelete(sourceDoc);
-      return undefined;
-    }
+    return await this.runDocumentOperation(sourceDoc, async () => {
+      // An empty replacement must still clear the previously authored document.
+      // There are no chunks to submit, so use the deletion RPC and only let the
+      // caller record the empty-file snapshot after that operation succeeds.
+      if (text.length === 0) {
+        await this.deleteWithRetry(sourceDoc);
+        return undefined;
+      }
+      return this.ingestChunks(sourceDoc, text, baseParams, maxChunkTokens);
+    });
+  }
 
+  private async ingestChunks(
+    sourceDoc: string,
+    text: string,
+    baseParams: Omit<IngestMarkdownDocumentParams, "sourceDoc" | "text" | "mode">,
+    maxChunkTokens?: number,
+  ): Promise<IngestFeedback | undefined> {
     if (this.options.chunkTokens === Infinity) {
       const resp = await this.ingestWithRetry({
         ...baseParams,
@@ -186,6 +199,10 @@ export class IngestQueue {
   }
 
   async enqueueDelete(sourceDoc: string): Promise<void> {
+    await this.runDocumentOperation(sourceDoc, () => this.deleteWithRetry(sourceDoc));
+  }
+
+  private async deleteWithRetry(sourceDoc: string): Promise<void> {
     await withRetry(
       () => this.deleteDocument({ sourceDoc }) as Promise<void>,
       this.options.maxRetries,
@@ -193,6 +210,18 @@ export class IngestQueue {
       this.logger,
       `delete_authored_document(${sourceDoc})`,
     );
+  }
+
+  private runDocumentOperation<T>(sourceDoc: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.pendingByDocument.get(sourceDoc) ?? Promise.resolve();
+    const result = previous.then(task);
+    // Preserve the caller's failure, but don't poison later updates/deletes.
+    const settled = result.then(() => {}, () => {});
+    this.pendingByDocument.set(sourceDoc, settled);
+    void settled.then(() => {
+      if (this.pendingByDocument.get(sourceDoc) === settled) this.pendingByDocument.delete(sourceDoc);
+    });
+    return result;
   }
 }
 
