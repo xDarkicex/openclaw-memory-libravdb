@@ -110,6 +110,9 @@ export interface PluginConfig {
   continuityPriorContextTokens?: number;
   compactThreshold?: number;
   compactionThresholdFraction?: number;
+  /** Auto-compaction token budget. Set to 0 to disable automatic triggers
+   * unless a positive compactThreshold overrides it. Explicit host/manual
+   * compaction remains available. */
   compactSessionTokenBudget?: number;
   /** Token budget cap for subagent memory_expand calls. Default 8000.
    *  Prevents a subagent from blowing its context window via repeated
