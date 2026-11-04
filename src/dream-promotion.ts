@@ -97,6 +97,7 @@ interface DreamPromotionState {
   scanning: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   watcher: FsWatcherLike | null;
+  parentWatcher: FsWatcherLike | null;
 }
 
 export function createDreamPromotionHandle(
@@ -129,6 +130,7 @@ export function createDreamPromotionHandle(
     scanning: false,
     timer: null,
     watcher: null,
+    parentWatcher: null,
   };
   let lastFileState: DreamFileState | null = null;
   let activeScan: Promise<void> | null = null;
@@ -155,10 +157,9 @@ export function createDreamPromotionHandle(
         clearTimeout(state.timer);
         state.timer = null;
       }
-      if (state.watcher) {
-        state.watcher.close();
-        state.watcher = null;
-      }
+      closeDiaryWatcher();
+      state.parentWatcher?.close();
+      state.parentWatcher = null;
       await activeScan;
     },
   };
@@ -303,27 +304,84 @@ export function createDreamPromotionHandle(
     }
   }
 
-  async function ensureWatcher(): Promise<void> {
-    if (state.watcher) {
-      return;
+  function closeDiaryWatcher(): void {
+    state.watcher?.close();
+    state.watcher = null;
+  }
+
+  function ensureParentWatcher(parentDir: string): void {
+    let candidate = path.dirname(parentDir);
+    if (state.parentWatcher || candidate === parentDir) return;
+    while (true) {
+      const watchedDir = candidate;
+      const childName = path.relative(watchedDir, parentDir).split(path.sep)[0];
+      try {
+        const watcher = fsApi.watch(watchedDir, (event, filename) => {
+          if (!state.watching || state.parentWatcher !== watcher) return;
+          const name = filename?.toString();
+          const selfRename = event === "rename" && name === path.basename(watchedDir);
+          if (name && name !== childName && !selfRename) return;
+          if (event === "rename") {
+            state.parentWatcher = null;
+            watcher.close();
+            closeDiaryWatcher();
+          }
+          state.dirty = true;
+          void refreshDiary();
+        });
+        state.parentWatcher = watcher;
+        watcher.on("error", (error) => {
+          if (state.parentWatcher !== watcher) return;
+          state.parentWatcher = null;
+          watcher.close();
+          logger.warn?.(`[dream-promotion] parent watch error for ${watchedDir}: ${formatError(error)}`);
+          void refreshDiary();
+        });
+        return;
+      } catch (error) {
+        const parent = path.dirname(watchedDir);
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code === "ENOENT" || code === "ENOTDIR") && parent !== watchedDir) {
+          candidate = parent;
+          continue;
+        }
+        logger.warn?.(`[dream-promotion] parent watch unavailable for ${watchedDir}: ${formatError(error)}`);
+        return;
+      }
     }
+  }
+
+  async function ensureWatcher(): Promise<void> {
+    if (!state.watching) return;
     const parentDir = path.dirname(diaryPath);
+    // Keep observing the containing directory while the diary directory is
+    // missing. A watch on the old inode cannot see its later replacement.
+    ensureParentWatcher(parentDir);
+    if (state.watcher) return;
     try {
-      const watcher = fsApi.watch(parentDir, (_event, filename) => {
-        if (filename && path.basename(String(filename)) !== path.basename(diaryPath)) {
+      const watcher = fsApi.watch(parentDir, (event, filename) => {
+        if (!state.watching || state.watcher !== watcher) return;
+        const name = filename?.toString();
+        if (event === "rename" && (!name || name === path.basename(parentDir))) {
+          closeDiaryWatcher();
+        } else if (name && path.basename(name) !== path.basename(diaryPath)) {
           return;
         }
         state.dirty = true;
         void refreshDiary();
       });
-      watcher.on("error", (error) => {
-        logger.warn?.(`[dream-promotion] watch error for ${parentDir}: ${formatError(error)}`);
-      });
       state.watcher = watcher;
+      watcher.on("error", (error) => {
+        if (state.watcher !== watcher) return;
+        closeDiaryWatcher();
+        logger.warn?.(`[dream-promotion] watch error for ${parentDir}: ${formatError(error)}`);
+        void refreshDiary();
+      });
     } catch (error) {
       logger.warn?.(`[dream-promotion] watch unavailable for ${parentDir}: ${formatError(error)}`);
     }
   }
+
 }
 
 function isMissingFile(error: unknown): boolean {

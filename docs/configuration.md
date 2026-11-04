@@ -190,6 +190,11 @@ An explicit `identityPath` or `OPENCLAW_STATE_DIR` continues to take precedence.
 Unicode characters, including emoji and supplementary CJK ideographs, are
 preserved when large Markdown files are split into chunks for ingestion.
 
+Directory watches are renewed after a root or nested directory is replaced.
+A watch on the nearest existing ancestor also detects creation when a root or
+its parents are initially missing, and moves closer as directories appear.
+At least one ancestor must be present and watchable.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `markdownIngestionEnabled` | boolean | `false` | Watch markdown roots for changes |
@@ -267,6 +272,10 @@ and recency-adjusted scoring pass that runs after the initial vector search.
 
 Diary edits received during an in-flight promotion are scanned after it finishes,
 including when that promotion fails. Stopping the watcher cancels pending scans.
+
+The diary watcher also detects creation or replacement of its containing directory,
+including initially missing parent directories, provided an existing ancestor
+remains watchable.
 
 A confirmed missing dream diary reconciles that source with an empty entry list,
 including when it was deleted while the plugin was offline. Permission and other

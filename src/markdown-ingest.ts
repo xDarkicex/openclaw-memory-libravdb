@@ -96,6 +96,7 @@ interface RootState {
   };
   knownFiles: Set<string>;
   directoryWatchers: Map<string, FsWatcherLike>;
+  parentWatcher?: FsWatcherLike;
   /**
    * Incremented after each filesystem call of THIS root's walk returns. The
    * stall detector watches it rather than the scan stats, which count
@@ -419,6 +420,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         watcher.close();
       }
       state.directoryWatchers.clear();
+      state.parentWatcher?.close();
+      state.parentWatcher = undefined;
     }
     if (this.activeScans.size > 0) {
       await Promise.allSettled([...this.activeScans]);
@@ -481,6 +484,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         const stats = createScanStats();
         const startedAt = Date.now();
         try {
+          this.ensureRootParentWatcher(rootState);
           const currentFiles = new Set<string>();
           const candidates: FileCandidate[] = [];
           rootState.walkCompletions = 0;
@@ -651,6 +655,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     } catch (error) {
       rootState.walkCompletions += 1;
       if (isEnoent(error)) {
+        this.closeDirectoryWatchers(rootState, dir);
         // The directory really is gone; its files are legitimately absent from
         // the walk and the prune pass should retire their documents.
         return;
@@ -786,27 +791,92 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     return false;
   }
 
-  private async ensureDirectoryWatcher(rootState: RootState, dir: string): Promise<void> {
-    if (rootState.directoryWatchers.has(dir)) {
-      return;
+  private closeDirectoryWatchers(rootState: RootState, dir: string): void {
+    for (const [watched, watcher] of rootState.directoryWatchers) {
+      if (watched === dir || watched.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)) {
+        rootState.directoryWatchers.delete(watched);
+        watcher.close();
+      }
     }
+  }
 
-    try {
-      const watcher = this.fsApi.watch(dir, () => {
-        if (!this.stopping) {
-          rootState.scanState.resumeFromPath = null;
-          rootState.scanState.retryDelayMs = 0;
-          if (rootState.scanState.timer) {
-            clearTimeout(rootState.scanState.timer);
-            rootState.scanState.timer = null;
+  private scheduleWatcherScan(rootState: RootState): void {
+    rootState.scanState.resumeFromPath = null;
+    rootState.scanState.retryDelayMs = 0;
+    if (rootState.scanState.timer) {
+      clearTimeout(rootState.scanState.timer);
+      rootState.scanState.timer = null;
+    }
+    this.scheduleRootScan(rootState);
+  }
+
+  private ensureRootParentWatcher(rootState: RootState): void {
+    let candidate = path.dirname(rootState.root);
+    if (rootState.parentWatcher || candidate === rootState.root || this.stopping || rootState.quarantined) return;
+    while (true) {
+      const watchedDir = candidate;
+      const childName = path.relative(watchedDir, rootState.root).split(path.sep)[0];
+      try {
+        // Missing directory trees need a watch on their nearest existing
+        // ancestor. Re-evaluate that ancestor whenever its child changes.
+        const watcher = this.fsApi.watch(watchedDir, (event, filename) => {
+          if (this.stopping || rootState.parentWatcher !== watcher) return;
+          const name = filename?.toString();
+          const selfRename = event === "rename" && name === path.basename(watchedDir);
+          if (name && name !== childName && !selfRename) return;
+          if (event === "rename") {
+            rootState.parentWatcher = undefined;
+            watcher.close();
+            this.closeDirectoryWatchers(rootState, rootState.root);
           }
-          this.scheduleRootScan(rootState);
+          this.scheduleWatcherScan(rootState);
+        });
+        rootState.parentWatcher = watcher;
+        watcher.on("error", (error) => {
+          if (rootState.parentWatcher !== watcher) return;
+          rootState.parentWatcher = undefined;
+          watcher.close();
+          this.logger.warn?.(`[markdown-ingest] parent watch error for ${watchedDir}: ${formatError(error)}`);
+          this.scheduleWatcherScan(rootState);
+        });
+        return;
+      } catch (error) {
+        const parent = path.dirname(watchedDir);
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code === "ENOENT" || code === "ENOTDIR") && parent !== watchedDir) {
+          candidate = parent;
+          continue;
         }
-      });
-      watcher.on("error", (error) => {
-        this.logger.warn?.(`[markdown-ingest] watch error for ${dir}: ${formatError(error)}`);
+        this.logger.warn?.(`[markdown-ingest] parent watch unavailable for ${watchedDir}: ${formatError(error)}`);
+        return;
+      }
+    }
+  }
+
+  private async ensureDirectoryWatcher(rootState: RootState, dir: string): Promise<void> {
+    if (rootState.directoryWatchers.has(dir) || this.stopping || rootState.quarantined) return;
+    try {
+      const watcher = this.fsApi.watch(dir, (event, filename) => {
+        if (this.stopping || rootState.directoryWatchers.get(dir) !== watcher) return;
+        if (event === "rename") {
+          if (filename === null || filename.toString() === path.basename(dir)) {
+            this.closeDirectoryWatchers(rootState, dir);
+          } else {
+            // A child directory may have been replaced. Discard every watch
+            // below it before the next walk installs watches on the new tree.
+            this.closeDirectoryWatchers(rootState, path.join(dir, filename.toString()));
+          }
+        }
+        this.scheduleWatcherScan(rootState);
       });
       rootState.directoryWatchers.set(dir, watcher);
+      watcher.on("error", (error) => {
+        if (rootState.directoryWatchers.get(dir) !== watcher) return;
+        rootState.directoryWatchers.delete(dir);
+        watcher.close();
+        this.logger.warn?.(`[markdown-ingest] watch error for ${dir}: ${formatError(error)}`);
+        this.scheduleWatcherScan(rootState);
+      });
     } catch (error) {
       this.logger.warn?.(`[markdown-ingest] watch unavailable for ${dir}: ${formatError(error)}`);
     }
