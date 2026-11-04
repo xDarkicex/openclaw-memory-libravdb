@@ -86,6 +86,32 @@ test("memory_grep defaults to the active session id", async () => {
   assert.equal(client.calls[0]?.params.collection, "session_summary:active-session");
 });
 
+test("memory_grep applies limit across summaries and messages and reports omitted matches", async () => {
+  const client = new FakeRecallClient();
+  const tool = createMemoryGrepTool(async () => client as unknown as LibravDBClient, () => "active-session", silentLogger);
+
+  const result = await tool.execute("grep-global-limit", { pattern: "needle", scope: "both", limit: 1 });
+
+  assert.equal(result.details.summaries.length + result.details.turns.length, 1);
+  assert.equal(result.details.totalMatches, 1);
+  assert.equal(result.details.truncated, true);
+});
+
+test("memory_grep reports truncation when matching results exceed a single-corpus limit", async () => {
+  const client = new FakeRecallClient();
+  const originalSearch = client.searchText.bind(client);
+  client.searchText = async (params) => {
+    const response = await originalSearch(params);
+    return { results: [...response.results, { ...response.results[0]!, id: "sum-2" }] };
+  };
+  const tool = createMemoryGrepTool(async () => client as unknown as LibravDBClient, () => "active-session", silentLogger);
+
+  const result = await tool.execute("grep-truncation", { pattern: "needle", scope: "summaries", limit: 1 });
+
+  assert.equal(result.details.summaries.length, 1);
+  assert.equal(result.details.truncated, true);
+});
+
 test("memory_expand defaults to the active session id", async () => {
   const client = new FakeRecallClient();
   const tool = createMemoryExpandTool(
