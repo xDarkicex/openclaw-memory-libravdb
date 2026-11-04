@@ -371,17 +371,17 @@ export function register(api: OpenClawPluginApi) {
     return { prependSystemContext: rulesText };
   });
 
-  // Rule enforcement — scan agent replies against rule keywords.
-  // If a keyword match is found, the reply is replaced with a refusal.
+  // Rule enforcement belongs to outgoing delivery. before_agent_reply receives
+  // the incoming prompt and can short-circuit inference; it is not a reply filter.
   // @ts-expect-error: api.on types declare void return, runtime processes hook results.
-  api.on("before_agent_reply", async (event, _ctx) => {
+  api.on("message_sending", async (event, _ctx) => {
     const e = event as Record<string, unknown>;
-    const cleanedBody = typeof e.cleanedBody === "string" ? e.cleanedBody : "";
-    if (!cleanedBody) return;
-    const violated = scanReply(cleanedBody);
+    const content = typeof e.content === "string" ? e.content : "";
+    if (!content) return;
+    const violated = scanReply(content);
     if (violated) {
-      logger.warn?.(`LibraVDB reply blocked by rule "${violated.rule}" (${violated.id})`);
-      return { handled: true, reply: { text: "I cannot answer that." }, reason: `blocked by rule: ${violated.rule}` };
+      logger.warn?.(`LibraVDB outgoing message replaced by rule ${violated.id}`);
+      return { content: "I cannot answer that." };
     }
   });
 
