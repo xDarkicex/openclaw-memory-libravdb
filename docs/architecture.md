@@ -75,6 +75,11 @@ The context engine queries the relevant memory scopes, ranks the results, fits
 them to the current token budget, and injects the selected items as synthetic
 system messages.
 
+Recall reuse is limited to the same user-turn boundary and daemon client.
+Replacing a client does not reuse its cached recall or inherit its retrieval
+failure state. Predictions produced after ingestion are also discarded if a
+different client handles the next assembly.
+
 ### `compact`
 
 Compaction is explicit rather than background-only. The host can request a

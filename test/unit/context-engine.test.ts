@@ -1693,7 +1693,8 @@ test("daemon compacted projection survives engine replacement until session stat
   });
   assert.equal(
     client.calls.filter((call) => call.method === "assembleContextInternal").length,
-    callsBeforePostTool,
+    callsBeforePostTool + 1,
+    "message-74 is a new user turn, so recall must refresh while preserving the compacted projection",
   );
   assert.match(postTool.systemPromptAddition, /Durable daemon projection/u);
   assert.deepEqual(postTool.messages, postToolMessages.slice(20));
