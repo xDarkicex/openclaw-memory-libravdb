@@ -492,8 +492,8 @@ function parseTrailingMetadata(body: string): { bodyStart: number; score: number
   }
 
   const score = parseNumber(fields.get("score"));
-  const recallCount = parseInteger(fields.get("recall") ?? fields.get("recallcount"));
-  const uniqueQueries = parseInteger(fields.get("unique") ?? fields.get("uniquequeries"));
+  const recallCount = parseInt32(fields.get("recall") ?? fields.get("recallcount"));
+  const uniqueQueries = parseInt32(fields.get("unique") ?? fields.get("uniquequeries"));
   if (score == null || recallCount == null || uniqueQueries == null) {
     return null;
   }
@@ -521,13 +521,15 @@ function parseNumber(value: string | undefined): number | null {
   return parsed;
 }
 
-function parseInteger(value: string | undefined): number | null {
+function parseInt32(value: string | undefined): number | null {
   const trimmed = value?.trim();
   if (!trimmed || !INTEGER_PATTERN.test(trimmed)) {
     return null;
   }
   const parsed = Number(trimmed);
-  if (!Number.isSafeInteger(parsed)) {
+  // Both counts are int32 in DreamPromotionEntry. A larger JS-safe integer
+  // makes protobuf encoding reject the entire diary, including valid entries.
+  if (!Number.isInteger(parsed) || parsed < -2147483648 || parsed > 2147483647) {
     return null;
   }
   return parsed;

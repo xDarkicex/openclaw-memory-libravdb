@@ -226,6 +226,10 @@ including when it was deleted while the plugin was offline. Permission and other
 transient read errors retain existing entries. Failed reconciliation is retried on
 a subsequent refresh; recreating the diary promotes its entries again.
 
+Diary entries with malformed numeric metadata are skipped. The `recall` and
+`unique` counts must fit the RPC's signed 32-bit integer fields; an out-of-range
+entry is skipped so it cannot prevent valid entries in the diary from syncing.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `dreamPromotionEnabled` | boolean | `false` | Enable dream diary promotion |
