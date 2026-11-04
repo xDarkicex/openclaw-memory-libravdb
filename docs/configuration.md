@@ -202,7 +202,7 @@ preserved when large Markdown files are split into chunks for ingestion.
 | `markdownIngestionObsidianInclude` | string[] | — | Obsidian glob include patterns |
 | `markdownIngestionObsidianExclude` | string[] | same defaults as above | Obsidian glob exclude patterns; defaults to the same set as generic markdown ingestion |
 | `markdownIngestionObsidianDebounceMs` | number | `150` | Obsidian debounce window |
-| `markdownIngestionSnapshotPath` | string | — | Path to snapshot file for generic markdown ingestion state |
+| `markdownIngestionSnapshotPath` | string | — | Path to snapshot file for generic markdown ingestion state; updates from concurrent root scans are serialized so restart cleanup retains every tracked document |
 | `markdownIngestionObsidianSnapshotPath` | string | — | Path to snapshot file for Obsidian ingestion state |
 
 Updates and deletes for the same source document run in order across roots and

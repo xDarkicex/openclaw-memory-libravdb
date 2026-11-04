@@ -340,6 +340,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private lastWalCapacity = 0;
   private snapshotLoaded = false;
   private snapshotDirty = false;
+  private snapshotWrites: Promise<void> = Promise.resolve();
 
   constructor(kind: string, config: GenericMarkdownSourceConfig, getClient: ClientGetter, logger: LoggerLike, fsApi: FsApi) {
     this.kind = kind;
@@ -1170,10 +1171,21 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
   }
 
-  private async saveSnapshotIfDirty(): Promise<void> {
+  private saveSnapshotIfDirty(): Promise<void> {
+    // Watchers for different roots can finish together. Serialize the entire
+    // capture/write/rename sequence so an older snapshot cannot win last.
+    const save = this.snapshotWrites.then(() => this.writeSnapshotIfDirty());
+    this.snapshotWrites = save.catch(() => {});
+    return save;
+  }
+
+  private async writeSnapshotIfDirty(): Promise<void> {
     if (!this.snapshotDirty) {
       return;
     }
+    // Changes made while this write is pending must remain dirty for the next
+    // queued save. A failed write restores the dirty flag for a later retry.
+    this.snapshotDirty = false;
     const payload: MarkdownSnapshotFile = {
       version: 1,
       ingestVersion: MARKDOWN_INGEST_VERSION,
@@ -1185,8 +1197,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       const tmp = `${this.snapshotPath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
       await fsp.writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`);
       await fsp.rename(tmp, this.snapshotPath);
-      this.snapshotDirty = false;
     } catch (error) {
+      this.snapshotDirty = true;
       this.logger.warn?.(`[markdown-ingest] failed to write snapshot ${this.snapshotPath}: ${formatError(error)}`);
     }
   }

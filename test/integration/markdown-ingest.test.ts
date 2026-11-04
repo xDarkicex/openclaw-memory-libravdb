@@ -2052,3 +2052,102 @@ test("an obsidian note that stops qualifying is retired without being re-tracked
 
   await handle.stop();
 });
+
+
+for (const failFirst of [false, true]) {
+test(`overlapping root snapshots retain documents after restart (first rename fails: ${failFirst})`, async (t) => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-snapshot-order-"));
+  const roots = [path.join(tempRoot, "a"), path.join(tempRoot, "b")];
+  const files = roots.map((root) => path.join(root, "note.md"));
+  const checkpoint = snapshotPath(tempRoot);
+  const fsApi = new FakeFsApi();
+  const rpc = new FakeRpcClient();
+  for (const root of roots) await fsApi.mkdir(root);
+  const config = {
+    markdownIngestionEnabled: true,
+    markdownIngestionRoots: roots,
+    markdownIngestionDebounceMs: 0,
+    markdownIngestionSnapshotPath: checkpoint,
+  };
+  const logger = { error() {}, warn() {} };
+  const handle = createMarkdownIngestionHandle(config, async () => rpc as never, logger, fsApi);
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let firstStarted!: () => void;
+  const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
+  let secondIngested!: () => void;
+  const secondIngestedPromise = new Promise<void>((resolve) => { secondIngested = resolve; });
+  let savedSnapshot: string | undefined;
+  const temporarySnapshots = new Map<string, string>();
+  let renameCount = 0;
+  // Model independently delayed atomic renames without relying on disk timing.
+  const readFile = fsp.readFile.bind(fsp);
+  const writeFile = fsp.writeFile.bind(fsp);
+  const rename = fsp.rename.bind(fsp);
+  const mkdir = fsp.mkdir.bind(fsp);
+  t.mock.method(fsp, "readFile", async (...args: Parameters<typeof fsp.readFile>) => {
+    if (String(args[0]) === checkpoint) {
+      if (savedSnapshot === undefined) throw Object.assign(new Error("missing snapshot"), { code: "ENOENT" });
+      return savedSnapshot;
+    }
+    return readFile(...args);
+  });
+  t.mock.method(fsp, "mkdir", async (...args: Parameters<typeof fsp.mkdir>) => {
+    if (String(args[0]) === tempRoot) return undefined;
+    return mkdir(...args);
+  });
+  t.mock.method(fsp, "writeFile", async (...args: Parameters<typeof fsp.writeFile>) => {
+    if (String(args[0]).startsWith(`${checkpoint}.`)) {
+      temporarySnapshots.set(String(args[0]), String(args[1]));
+      return;
+    }
+    return writeFile(...args);
+  });
+  t.mock.method(fsp, "rename", async (...args: Parameters<typeof fsp.rename>) => {
+    if (String(args[1]) !== checkpoint) return rename(...args);
+    if (++renameCount === 1) {
+      firstStarted();
+      await firstBlocked;
+      if (failFirst) throw new Error("temporary snapshot rename failure");
+    }
+    savedSnapshot = temporarySnapshots.get(String(args[0]));
+  });
+  rpc.feedbackSupplier = (sourceDoc) => {
+    if (sourceDoc === files[1]) secondIngested();
+    return undefined;
+  };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await handle.start();
+    await fsApi.writeFile(files[0]!, "# First root\nPersistent first document.");
+    fsApi.callbacks.get(roots[0]!)![0]!("change", "note.md");
+    t.mock.timers.tick(0);
+    await firstStartedPromise;
+    await fsApi.writeFile(files[1]!, "# Second root\nPersistent second document.");
+    fsApi.callbacks.get(roots[1]!)![0]!("change", "note.md");
+    t.mock.timers.tick(0);
+    await secondIngestedPromise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseFirst();
+    await handle.stop();
+    assert.equal(rpc.documents.has(files[1]!), true);
+
+    // The second file disappears while the plugin is offline. Its snapshot is
+    // the only way the next instance knows it must retire the authored record.
+    await fsApi.rm(files[1]!);
+    const restarted = createMarkdownIngestionHandle(config, async () => rpc as never, logger, fsApi);
+    try {
+      await restarted.start();
+      assert.equal(rpc.documents.has(files[1]!), false, "the second root must remain tracked across restart");
+      assert.equal(rpc.documents.has(files[0]!), true);
+    } finally {
+      await restarted.stop();
+    }
+  } finally {
+    releaseFirst();
+    await handle.stop();
+    t.mock.restoreAll();
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+}
