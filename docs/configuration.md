@@ -232,6 +232,17 @@ until a successful retry replaces the document; a failed scan is not an atomic
 rollback. An asynchronous acknowledgment with zero accepted and zero rejected
 nodes remains a successful queue submission.
 
+Generic and Obsidian roots may overlap within one ingestion handle. They share
+the file's daemon document: removing an Obsidian tag or excluding it from one
+adapter does not delete it while the other adapter still manages it. Persisted
+ownership is loaded before startup pruning, and concurrent operations on the
+same file are serialized. This coordination does not span independent plugin
+instances or processes.
+
+Within an adapter, an unchanged file can transfer its checkpoint to another
+configured root that still accepts it. A stale scan from a different root does
+not prune a document that has since been validated through its current root.
+
 ## Continuity
 
 | Key | Type | Default | Notes |

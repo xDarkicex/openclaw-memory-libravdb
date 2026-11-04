@@ -237,7 +237,8 @@ export function createMarkdownIngestionHandle(
   logger: LoggerLike = console,
   fsApi: FsApi = createRealFsApi(),
 ): MarkdownIngestionHandle {
-  const adapters: MarkdownSourceAdapter[] = [];
+  const adapters: DirectoryMarkdownSourceAdapter[] = [];
+  const coordinator = new MarkdownSourceCoordinator();
 
   const genericRoots = normalizeMarkdownRoots(cfg.markdownIngestionRoots);
   if (isMarkdownIngestionEnabled(cfg, genericRoots)) {
@@ -258,6 +259,7 @@ export function createMarkdownIngestionHandle(
         getClient,
         logger,
         fsApi,
+        coordinator,
       ),
     );
   }
@@ -281,6 +283,7 @@ export function createMarkdownIngestionHandle(
         getClient,
         logger,
         fsApi,
+        coordinator,
       ),
     );
   }
@@ -304,9 +307,12 @@ export function createMarkdownIngestionHandle(
 
 class CompositeMarkdownSourceAdapter implements MarkdownSourceAdapter {
   kind = "composite";
-  constructor(private readonly adapters: MarkdownSourceAdapter[]) {}
+  constructor(private readonly adapters: DirectoryMarkdownSourceAdapter[]) {}
 
   async start(): Promise<void> {
+    // A first adapter's prune must see every persisted owner, including
+    // adapters whose initial scan has not started yet.
+    await Promise.all(this.adapters.map(adapter => adapter.prepare()));
     for (const adapter of this.adapters) {
       await adapter.start();
     }
@@ -321,6 +327,31 @@ class CompositeMarkdownSourceAdapter implements MarkdownSourceAdapter {
   async stop(): Promise<void> {
     for (const adapter of this.adapters) {
       await adapter.stop();
+    }
+    // Keep ownership visible until every adapter's in-flight scan has drained.
+    for (const adapter of this.adapters) adapter.releaseOwnership();
+  }
+}
+
+/** Coordinates adapters within one ingestion handle, not independent processes. */
+class MarkdownSourceCoordinator {
+  private readonly adapters = new Set<DirectoryMarkdownSourceAdapter>();
+  private readonly pending = new Map<string, Promise<unknown>>();
+
+  register(adapter: DirectoryMarkdownSourceAdapter): void { this.adapters.add(adapter); }
+
+  hasOtherOwner(owner: DirectoryMarkdownSourceAdapter, sourceDoc: string): boolean {
+    return [...this.adapters].some(adapter => adapter !== owner && adapter.ownsDocument(sourceDoc));
+  }
+
+  async run<T>(sourceDoc: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.pending.get(sourceDoc) ?? Promise.resolve();
+    const pending = previous.catch(() => {}).then(operation);
+    this.pending.set(sourceDoc, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.pending.get(sourceDoc) === pending) this.pending.delete(sourceDoc);
     }
   }
 }
@@ -363,7 +394,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private snapshotDirty = false;
   private snapshotWrites: Promise<void> = Promise.resolve();
 
-  constructor(kind: string, config: GenericMarkdownSourceConfig, getClient: ClientGetter, logger: LoggerLike, fsApi: FsApi) {
+  constructor(kind: string, config: GenericMarkdownSourceConfig, getClient: ClientGetter, logger: LoggerLike, fsApi: FsApi, private readonly coordinator: MarkdownSourceCoordinator) {
     this.kind = kind;
     this.destination = config.destination;
     this.roots = config.roots;
@@ -379,7 +410,14 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     this.maxTokensPerFile = Math.max(1, Math.trunc(config.maxTokensPerFile ?? 128_000));
     this.tokenizerId = DEFAULT_TOKENIZER_ID;
     this.coreDoc = true;
+    coordinator.register(this);
   }
+
+  prepare(): Promise<void> { return this.loadSnapshot(); }
+
+  ownsDocument(sourceDoc: string): boolean { return this.fileStates.has(sourceDoc); }
+
+  releaseOwnership(): void { this.fileStates.clear(); }
 
   async start(): Promise<void> {
     if (this.started) {
@@ -755,7 +793,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       const estimatedTokens = estimateTokens(candidate.size);
       if (estimatedTokens > this.maxTokensPerFile) {
         stats.filesDeferred++;
-        if (await this.deleteCachedSourceDocument(candidate.path)) {
+        if (await this.coordinator.run(candidate.path, () => this.deleteCachedSourceDocument(candidate.path))) {
           stats.filesDeleted++;
           rootState.retiredThisScan.add(candidate.path);
         }
@@ -916,14 +954,28 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       return;
     }
     for (const filePath of removed) {
-      await this.deleteSourceDocument(filePath);
-      this.fileStates.delete(filePath);
-      this.snapshotDirty = true;
-      stats.filesDeleted++;
+      await this.coordinator.run(filePath, async () => {
+        // Another overlapping root may have validated this file after our
+        // directory walk. Its current document must survive our stale absence.
+        const cached = this.fileStates.get(filePath);
+        if (cached && cached.root !== rootState.root) return;
+        await this.deleteSourceDocument(filePath);
+        this.fileStates.delete(filePath);
+        this.snapshotDirty = true;
+        stats.filesDeleted++;
+      });
     }
   }
 
   private async syncMarkdownFile(
+    rootState: RootState,
+    filePath: string,
+    initialStat?: { size: number; mtimeMs: number; ctimeMs: number },
+  ): Promise<SyncMarkdownResult> {
+    return this.coordinator.run(filePath, () => this.syncMarkdownFileLocked(rootState, filePath, initialStat));
+  }
+
+  private async syncMarkdownFileLocked(
     rootState: RootState,
     filePath: string,
     initialStat?: { size: number; mtimeMs: number; ctimeMs: number },
@@ -955,6 +1007,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       cached.mtimeMs === stat.mtimeMs &&
       cached.ctimeMs === stat.ctimeMs
     ) {
+      if (cached.root !== rootState.root) {
+        this.setFileState(sourceDoc, { ...cached, root: rootState.root, relativePath });
+      }
       return "unchanged";
     }
 
@@ -1085,6 +1140,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 
   private async deleteSourceDocument(sourceDoc: string): Promise<void> {
+    // Both adapters use the same daemon sourceDoc. Removing this adapter's
+    // snapshot must not erase a document still accepted by the other one.
+    if (this.coordinator.hasOtherOwner(this, sourceDoc)) return;
     const queue = await this.getIngestQueue();
     await queue.enqueueDelete(sourceDoc);
   }
