@@ -209,6 +209,12 @@ Updates and deletes for the same source document run in order across roots and
 adapters sharing a client. A replacement's APPEND chunks finish before another
 replacement or deletion begins; unrelated documents can still progress in parallel.
 
+Snapshots keep separate file checkpoints for each resolved daemon endpoint and write tenant.
+Changing either destination uploads unchanged files to the new destination; returning to a
+previous destination restores its cleanup history. Older snapshots are revalidated by
+re-uploading present files once. This does not detect a database erased behind an unchanged
+endpoint and tenant; remove the corresponding snapshot to force a full rescan in that case.
+
 Configured markdown roots are ignored unless the matching enable flag is set to
 `true`. Set `markdownIngestionEnabled: true` for generic roots and
 `markdownIngestionObsidianEnabled: true` for Obsidian vault roots.

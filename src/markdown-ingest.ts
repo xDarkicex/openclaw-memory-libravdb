@@ -2,6 +2,9 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { resolveClientEndpoint } from "./libravdb-client.js";
+import { resolveTenantKey } from "./identity.js";
 
 import type { PartialMessage } from "@bufbuild/protobuf";
 import type { MarkdownSourceMeta as ProtoSourceMeta } from "@xdarkicex/libravdb-contracts";
@@ -129,6 +132,7 @@ interface RootState {
 }
 
 interface FileState extends MarkdownIngestionSnapshot {
+  needsReingest?: boolean;
   root: string;
   sourceDoc: string;
   relativePath: string;
@@ -137,6 +141,7 @@ interface FileState extends MarkdownIngestionSnapshot {
 }
 
 interface GenericMarkdownSourceConfig {
+  destination: string;
   roots: string[];
   include?: string[];
   exclude?: string[];
@@ -172,6 +177,8 @@ type SyncMarkdownResult = "ingested" | "unchanged" | "deleted" | "skipped";
 type StreamReadResult = { text: string; fileHash: string } | "too_large" | { failed: string } | null;
 
 interface MarkdownSnapshotFile {
+  destination?: string;
+  otherDestinations?: Record<string, Record<string, FileState>>;
   version: number;
   ingestVersion: number;
   hashBackend: string;
@@ -214,6 +221,15 @@ interface DeleteAuthoredDocumentParams {
   sourceDoc: string;
 }
 
+function resolveSnapshotDestination(cfg: PluginConfig): string {
+  // Match the default client's write target without storing tenant identifiers
+  // or endpoint credentials in the checkpoint.
+  return createHash("sha256").update(JSON.stringify([
+    resolveClientEndpoint(cfg.grpcEndpoint || cfg.sidecarPath),
+    resolveTenantKey(cfg),
+  ])).digest("hex");
+}
+
 export function createMarkdownIngestionHandle(
   cfg: PluginConfig,
   getClient: ClientGetter,
@@ -229,6 +245,7 @@ export function createMarkdownIngestionHandle(
         "generic",
         {
           roots: genericRoots,
+          destination: resolveSnapshotDestination(cfg),
           include: cfg.markdownIngestionInclude,
           exclude: cfg.markdownIngestionExclude,
           debounceMs: cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
@@ -251,6 +268,7 @@ export function createMarkdownIngestionHandle(
         "obsidian",
         {
           roots: obsidianRoots,
+          destination: resolveSnapshotDestination(cfg),
           include: cfg.markdownIngestionObsidianInclude,
           exclude: cfg.markdownIngestionObsidianExclude,
           debounceMs: cfg.markdownIngestionObsidianDebounceMs ?? cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
@@ -316,6 +334,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly getClient: ClientGetter;
   private readonly logger: LoggerLike;
   private readonly snapshotPath: string;
+  private readonly destination: string;
+  private readonly otherDestinations = new Map<string, Record<string, FileState>>();
   private readonly priorityMode: "mtime" | "ctime" | "size" | "fifo";
   private readonly maxTokensPerFile: number;
   private readonly walkTimeoutMs: number;
@@ -344,6 +364,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
 
   constructor(kind: string, config: GenericMarkdownSourceConfig, getClient: ClientGetter, logger: LoggerLike, fsApi: FsApi) {
     this.kind = kind;
+    this.destination = config.destination;
     this.roots = config.roots;
     this.includePatterns = config.include?.length ? config.include : [];
     this.excludePatterns = config.exclude?.length ? config.exclude : DEFAULT_MARKDOWN_INGEST_EXCLUDES;
@@ -405,6 +426,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     await this.saveSnapshotIfDirty();
     this.states.clear();
     this.fileStates.clear();
+    this.otherDestinations.clear();
     this.snapshotLoaded = false;
     this.started = false;
   }
@@ -855,7 +877,14 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     const cached = this.fileStates.get(sourceDoc);
-    if (cached && !cached.needsRevalidation && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.ctimeMs === stat.ctimeMs) {
+    if (
+      cached &&
+      !cached.needsRevalidation &&
+      !cached.needsReingest &&
+      cached.size === stat.size &&
+      cached.mtimeMs === stat.mtimeMs &&
+      cached.ctimeMs === stat.ctimeMs
+    ) {
       return "unchanged";
     }
 
@@ -882,7 +911,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     const { text, fileHash } = streamed;
-    if (cached && !cached.needsRevalidation && cached.fileHash === fileHash) {
+    if (cached && !cached.needsRevalidation && !cached.needsReingest && cached.fileHash === fileHash) {
       this.setFileState(sourceDoc, {
         root: rootState.root,
         sourceDoc,
@@ -1154,14 +1183,36 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       if ((!migrateLegacy && parsed.ingestVersion !== MARKDOWN_INGEST_VERSION) || parsed.hashBackend !== HASH_BACKEND || !parsed.files) {
         return;
       }
+      for (const [destination, files] of Object.entries(parsed.otherDestinations ?? {})) {
+        if (files && typeof files === "object" && !Array.isArray(files)) {
+          this.otherDestinations.set(destination, files);
+        }
+      }
+      if (parsed.destination && parsed.destination !== this.destination) {
+        this.otherDestinations.set(parsed.destination, parsed.files);
+      }
+      const legacy = !parsed.destination;
+      const files = legacy || parsed.destination === this.destination
+        ? parsed.files
+        : this.otherDestinations.get(this.destination) ?? {};
+      this.otherDestinations.delete(this.destination);
       const configuredRoots = new Set(this.roots.map((root) => path.resolve(root)));
-      for (const [sourceDoc, state] of Object.entries(parsed.files)) {
+      for (const [sourceDoc, state] of Object.entries(files)) {
         if (isValidSnapshotState(sourceDoc, state) && configuredRoots.has(path.resolve(state.root))) {
           // Retain identities for missing/oversized sources while forcing both
           // metadata and hash sentinels to revalidate present legacy content.
           // Persist the marker so a transient failure and restart cannot turn
           // an unconfirmed legacy entry into a synchronized version-4 entry.
-          this.fileStates.set(sourceDoc, migrateLegacy ? { ...state, needsRevalidation: true } : state);
+          // Legacy snapshots also have no destination proof. Preserve their cleanup
+          // history, but re-upload present files once before trusting the cache.
+          const nextState: FileState = { ...state };
+          if (migrateLegacy) {
+            nextState.needsRevalidation = true;
+          }
+          if (legacy) {
+            nextState.needsReingest = true;
+          }
+          this.fileStates.set(sourceDoc, nextState);
         }
       }
       if (migrateLegacy) this.snapshotDirty = true;
@@ -1187,7 +1238,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     // queued save. A failed write restores the dirty flag for a later retry.
     this.snapshotDirty = false;
     const payload: MarkdownSnapshotFile = {
-      version: 1,
+      version: 2,
+      destination: this.destination,
+      otherDestinations: Object.fromEntries(this.otherDestinations),
       ingestVersion: MARKDOWN_INGEST_VERSION,
       hashBackend: HASH_BACKEND,
       files: Object.fromEntries([...this.fileStates.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -1459,6 +1512,7 @@ function isValidSnapshotState(sourceDoc: string, value: unknown): value is FileS
     typeof state.mtimeMs === "number" &&
     Number.isFinite(state.mtimeMs) &&
     (state.needsRevalidation === undefined || typeof state.needsRevalidation === "boolean") &&
+    (state.needsReingest === undefined || typeof state.needsReingest === "boolean") &&
     (state.ctimeMs === undefined || (typeof state.ctimeMs === "number" && Number.isFinite(state.ctimeMs)))
   );
 }

@@ -96,6 +96,7 @@ export class IngestQueue {
     text: string,
     baseParams: Omit<IngestMarkdownDocumentParams, "sourceDoc" | "text" | "mode">,
     maxChunkTokens?: number,
+  ): Promise<IngestFeedback | undefined> {
     return await this.runDocumentOperation(sourceDoc, async () => {
       // An empty replacement must still clear the previously authored document.
       // There are no chunks to submit, so use the deletion RPC and only let the

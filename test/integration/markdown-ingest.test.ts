@@ -1033,6 +1033,99 @@ test("markdown ingestion prunes excluded directories before recursion", async ()
   await handle.stop();
 });
 
+for (const change of ["tenant", "endpoint"] as const) {
+  test(`Markdown snapshots follow the ${change} destination and preserve earlier cleanup state`, async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-snapshot-target-"));
+    const filePath = path.join(tempRoot, "guide.md");
+    const fsApi = new FakeFsApi();
+    await fsApi.writeFile(filePath, "# Guide\nUnchanged content must reach the new destination.", 42);
+    const base = {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+      tenantId: "tenant-a",
+      grpcEndpoint: "tcp:127.0.0.1:37421",
+    };
+    const changed = { ...base, ...(change === "tenant"
+      ? { tenantId: "tenant-b" } : { grpcEndpoint: "tcp:127.0.0.1:37422" }) };
+    const firstRpc = new FakeRpcClient();
+    const secondRpc = new FakeRpcClient();
+    const run = async (config: typeof base, rpc: FakeRpcClient) => {
+      const handle = createMarkdownIngestionHandle(config, async () => rpc as never, { error() {}, warn() {} }, fsApi);
+      try { await handle.start(); } finally { await handle.stop(); }
+    };
+    try {
+      await run(base, firstRpc);
+      await run(changed, secondRpc);
+      assert.equal(secondRpc.documents.get(filePath)?.text, firstRpc.documents.get(filePath)?.text,
+        "a checkpoint from another destination must not suppress upload");
+      const callsBeforeRestart = secondRpc.calls.length;
+      await run(changed, secondRpc);
+      assert.equal(secondRpc.calls.length, callsBeforeRestart, "same-destination restart should reuse the checkpoint");
+      await fsApi.rm(filePath);
+      await run(base, firstRpc);
+      assert.equal(firstRpc.documents.has(filePath), false, "switching back must retain the original destination's cleanup state");
+      assert.equal(secondRpc.documents.has(filePath), true, "cleanup in the first destination must not affect the second");
+      await run(changed, secondRpc);
+      assert.equal(secondRpc.documents.has(filePath), false);
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+
+test("legacy destination snapshots retry unverified files across partial migration and restart", async (t) => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-snapshot-migrate-"));
+  const files = ["good.md", "retry.md", "removed.md"].map((name) => path.join(tempRoot, name));
+  const checkpoint = snapshotPath(tempRoot);
+  const fsApi = new FakeFsApi();
+  const rpc = new FakeRpcClient();
+  const config = {
+    markdownIngestionEnabled: true,
+    markdownIngestionRoots: [tempRoot],
+    markdownIngestionSnapshotPath: checkpoint,
+    tenantId: "migration-tenant",
+  };
+  for (const file of files) await fsApi.writeFile(file, `# ${path.basename(file)}\nSaved content.`, 42);
+  const run = async () => {
+    const handle = createMarkdownIngestionHandle(config, async () => rpc as never, { error() {}, warn() {} }, fsApi);
+    try { await handle.start(); } finally { await handle.stop(); }
+  };
+  try {
+    await run();
+    const legacy = JSON.parse(await fsp.readFile(checkpoint, "utf8"));
+    delete legacy.destination;
+    delete legacy.otherDestinations;
+    legacy.version = 1;
+    await fsp.writeFile(checkpoint, JSON.stringify(legacy));
+    await fsApi.rm(files[2]!);
+    const openReadStream = fsApi.openReadStream.bind(fsApi);
+    const failedRead = t.mock.method(fsApi, "openReadStream", async (file: string) => {
+      if (file === files[1]) throw Object.assign(new Error("temporary read failure"), { code: "EACCES" });
+      return openReadStream(file);
+    });
+    const callsBeforeMigration = rpc.calls.length;
+    await run();
+    failedRead.mock.restore();
+    const migrationCalls = rpc.calls.slice(callsBeforeMigration);
+    assert.equal(migrationCalls.filter((call) => call.method === "ingest_markdown_document").length, 1,
+      "legacy content hashes do not prove upload to the current destination");
+    assert.equal(rpc.documents.has(files[2]!), false, "legacy cleanup history is retained");
+    const callsBeforeRetry = rpc.calls.length;
+    await run();
+    const retryCalls = rpc.calls.slice(callsBeforeRetry);
+    assert.equal(retryCalls.length, 1);
+    assert.equal((retryCalls[0]!.params as { sourceDoc: string }).sourceDoc, files[1]);
+    const callsBeforeVerifiedRestart = rpc.calls.length;
+    await run();
+    assert.equal(rpc.calls.length, callsBeforeVerifiedRestart);
+  } finally {
+    t.mock.restoreAll();
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("markdown ingestion persists snapshots across adapter restarts", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-snapshot-"));
   const filePath = path.join(tempRoot, "guide.md");
