@@ -3348,21 +3348,31 @@ export function buildContextEngineFactory(
             cfg.tokenBudgetMax,
             cfg.tokenBudgetFraction,
           ) ?? args.tokenBudget;
-          const resp = await Promise.race([
-            client.assembleContextInternal({
-              sessionId,
-              sessionKey: args.sessionKey,
-              userId,
-              prompt: retrievalQuery,
-              messages: messages as any,
-              tokenBudget: cappedAssembleBudget,
-              config: buildAssemblyConfig(cappedAssembleBudget),
-              emitDebug: true,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`)), assembleTimeout)
-            ),
-          ]);
+          const assembleAbort = new AbortController();
+          let assembleTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+          let resp: AssembleContextInternalResponse;
+          try {
+            resp = await Promise.race([
+              client.assembleContextInternal({
+                sessionId,
+                sessionKey: args.sessionKey,
+                userId,
+                prompt: retrievalQuery,
+                messages: messages as any,
+                tokenBudget: cappedAssembleBudget,
+                config: buildAssemblyConfig(cappedAssembleBudget),
+                emitDebug: true,
+              }, { signal: assembleAbort.signal }),
+              new Promise<never>((_, reject) => {
+                assembleTimeoutHandle = setTimeout(() => {
+                  reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`));
+                  assembleAbort.abort();
+                }, assembleTimeout);
+              }),
+            ]);
+          } finally {
+            clearTimeout(assembleTimeoutHandle);
+          }
           const daemonCompactedProjectionContext =
             typeof resp.systemPromptAddition === "string"
               ? extractCompactedSessionContext(resp.systemPromptAddition)

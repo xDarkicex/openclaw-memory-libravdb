@@ -531,9 +531,10 @@ export class LibravDBClient {
 
   async assembleContextInternal(
     req: PartialMessage<AssembleContextInternalRequest>,
+    opts?: CallOptions,
   ): Promise<AssembleContextInternalResponse> {
     this.guardOpen();
-    return this.client.assembleContextInternal(req);
+    return this.client.assembleContextInternal(req, opts);
   }
 
   async compactSession(

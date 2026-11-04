@@ -406,6 +406,84 @@ test("context engine aborts BeforeTurnKernel transport on local timeout", async 
   assert.equal(client.calls.filter((call) => call.method === "assembleContextInternal").length, 1);
 });
 
+test("context engine clears assemble timeout after success and failure", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const scheduled = new Set<ReturnType<typeof setTimeout>>();
+  const cleared = new Set<ReturnType<typeof setTimeout>>();
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+    const handle = Reflect.apply(originalSetTimeout, globalThis, args) as ReturnType<typeof setTimeout>;
+    scheduled.add(handle);
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: Parameters<typeof clearTimeout>[0]) => {
+    if (handle) cleared.add(handle as ReturnType<typeof setTimeout>);
+    return Reflect.apply(originalClearTimeout, globalThis, [handle]);
+  }) as typeof clearTimeout;
+
+  try {
+    for (const fails of [false, true]) {
+      const client = new FakeClient();
+      if (fails) client.assembleContextInternal = async () => { throw new Error("daemon unavailable"); };
+      const engine = buildContextEngineFactory(fakeRuntime(client), {
+        userId: "fixed-user",
+        beforeTurnEnabled: false,
+        crossSessionRecall: false,
+        assembleTimeoutMs: 60_000,
+      });
+      await engine.assemble({
+        sessionId: `s1-assemble-clears-timeout-${fails}`,
+        messages: [makeMessage("user", "hello")],
+        tokenBudget: 4000,
+      });
+    }
+    assert.equal(scheduled.size, 2, "each assemble call schedules its deadline");
+    assert.ok([...scheduled].every((handle) => cleared.has(handle)), "settled RPCs must release every deadline timer");
+  } finally {
+    for (const handle of scheduled) originalClearTimeout(handle);
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("context engine aborts assemble transport on local timeout and returns source fallback", async () => {
+  class AbortableAssembleClient extends FakeClient {
+    public assembleSignal: AbortSignal | undefined;
+    public activeRequests = 0;
+
+    async assembleContextInternal(params: Record<string, unknown>, options?: { signal?: AbortSignal }) {
+      this.calls.push({ method: "assembleContextInternal", params });
+      this.assembleSignal = options?.signal;
+      this.activeRequests += 1;
+      return await new Promise<typeof this.assembleResponse>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          this.activeRequests -= 1;
+          reject(new Error("transport aborted"));
+        }, { once: true });
+      });
+    }
+  }
+  const client = new AbortableAssembleClient();
+  const warnings: string[] = [];
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    beforeTurnEnabled: false,
+    crossSessionRecall: false,
+    assembleTimeoutMs: 1,
+  }, { error: () => {}, warn: (message) => { warnings.push(message); } });
+  const messages = [makeMessage("user", "hello")];
+  const result = await engine.assemble({
+    sessionId: "s1-assemble-aborts-timeout",
+    messages,
+    tokenBudget: 4000,
+  });
+
+  assert.equal(client.assembleSignal?.aborted, true);
+  assert.equal(client.activeRequests, 0, "timed-out assembly must release the transport request");
+  assert.deepEqual(result.messages, messages);
+  assert.ok(warnings.some((message) => /AssembleContextInternal timed out after 1ms/.test(message)));
+});
+
 function openClawMetadataEnvelope(userText: string): string {
   return [
     "Conversation info (untrusted metadata):",
