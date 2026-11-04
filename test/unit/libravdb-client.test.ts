@@ -403,6 +403,35 @@ test("no auth headers without secret", async () => {
   assert.equal(sent.has("x-libravdb-auth"), false);
 });
 
+test("unauthenticated RPCs proceed independently while another RPC is pending", async () => {
+  const st = state({ secret: undefined });
+  const int = createAuthInterceptor(st);
+  let finishFirst!: () => void;
+  let firstStarted!: () => void;
+  const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+  const gate = new Promise<void>((resolve) => { finishFirst = resolve; });
+  const response = { header: { get: () => null }, trailer: { get: () => null } };
+  const first = (int as any)(async () => {
+    firstStarted();
+    await gate;
+    return response;
+  })({ method: { name: "AfterTurnKernel" }, header: { set: () => {} } });
+  await started;
+  let secondStarted = false;
+  const second = (int as any)(async () => {
+    secondStarted = true;
+    return response;
+  })({ method: { name: "BeforeTurnKernel" }, header: { set: () => {} } });
+
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(secondStarted, true, "unauthenticated calls have no shared nonce chain to serialize");
+  } finally {
+    finishFirst();
+    await Promise.all([first, second]);
+  }
+});
+
 test("loadSecretFromEnv returns undefined when no env vars are set", () => {
   const result = loadSecretFromEnv();
   assert.equal(result, undefined);

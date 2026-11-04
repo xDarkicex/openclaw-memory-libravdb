@@ -196,7 +196,7 @@ export function createAuthInterceptor(
   return (next) => async (req) => {
     // Health does not participate in the nonce chain — bypass the
     // mutex entirely so recovery can call Health without deadlocking.
-    if (req.method.name === "Health") {
+    if (req.method.name === "Health" || !state.secret) {
       return next(req);
     }
 
