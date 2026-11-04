@@ -187,6 +187,61 @@ test("memory_expand uses remaining subagent budget instead of dropping the first
   assert.equal(client.calls[0]?.method, "expandSummary");
 });
 
+test("memory_expand graph mode enforces maxTokens without returning oversized connected records", async () => {
+  const client = new FakeRecallClient();
+  client.expandSummary = async (params) => {
+    client.calls.push({ method: "expandSummary", params });
+    return {
+      text: "",
+      metadataJson: new Uint8Array(),
+      connected: [{ recordId: "large-record", text: "x".repeat(2000), depth: 1, edgeType: "why_ids", edgeWeight: 1 }],
+    };
+  };
+  const tool = createMemoryExpandTool(async () => client as unknown as LibravDBClient, () => undefined, silentLogger);
+
+  const result = await tool.execute("call-graph-budget", { record_id: "record-1", maxTokens: 100 });
+
+  assert.equal(result.details.exceededBudget, true);
+  assert.equal(result.details.truncated, true);
+  assert.equal(result.details.text, "");
+  assert.equal(result.details.connected?.length ?? 0, 0);
+  assert.ok(result.content[0]!.text.length < 400);
+});
+
+test("memory_expand graph mode consumes and respects the subagent expansion budget", async () => {
+  const client = new FakeRecallClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "u1", subagentTokenBudget: 100 }, silentLogger);
+  const childSessionKey = "child-graph-budget";
+  await engine.prepareSubagentSpawn({ parentSessionKey: "parent", childSessionKey });
+  const tool = createMemoryExpandTool(async () => client as unknown as LibravDBClient, () => childSessionKey, silentLogger);
+
+  try {
+    const first = await tool.execute("graph-1", { record_id: "record-1", maxTokens: 100 });
+    const second = await tool.execute("graph-2", { record_id: "record-2", maxTokens: 100 });
+
+    assert.equal(first.details.exceededBudget, false);
+    assert.equal(second.details.exceededBudget, true);
+    assert.match(second.content[0]!.text, /budget exhausted/);
+    assert.equal(client.calls.length, 1, "exhausted graph calls must not reach the daemon");
+  } finally {
+    await engine.onSubagentEnded({ childSessionKey, reason: "test" });
+  }
+});
+
+test("memory_expand counts summary headers in the token budget", async () => {
+  const client = new FakeRecallClient();
+  client.expandSummary = async (params) => {
+    client.calls.push({ method: "expandSummary", params });
+    return { text: "x".repeat(400), metadataJson: new Uint8Array() };
+  };
+  const tool = createMemoryExpandTool(async () => client as unknown as LibravDBClient, () => undefined, silentLogger);
+
+  const result = await tool.execute("summary-header-budget", { summaryIds: ["sum-1"], maxTokens: 100 });
+
+  assert.equal(result.details.exceededBudget, true);
+  assert.equal(result.details.text, "");
+});
+
 test("subagent spawn sanitizes invalid numeric expansion budgets", async () => {
   for (const [index, subagentTokenBudget] of [
     Number.NaN,
