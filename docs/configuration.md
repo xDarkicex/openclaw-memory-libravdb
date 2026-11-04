@@ -233,6 +233,13 @@ a subsequent refresh; recreating the diary promotes its entries again.
 | `dreamPromotionUserId` | string | — | User ID for dream collection scoping |
 | `dreamPromotionDebounceMs` | number | `150` | Debounce window for dream diary changes |
 
+If the daemon explicitly rejects ingestion nodes, promotion logs a failure and
+leaves the diary fingerprint retryable on a later refresh. The `dream-promote`
+CLI command exits unsuccessfully for the same response. Candidate eligibility
+rejections are normal results, and asynchronous admission with zero accepted
+and zero rejected nodes is also valid. A partially rejected batch is reported
+as a failure without immediately replaying it.
+
 ## Misc
 
 | Key | Type | Default | Notes |

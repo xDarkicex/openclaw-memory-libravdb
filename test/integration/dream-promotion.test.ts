@@ -49,6 +49,52 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+for (const nodesAccepted of [0, 1]) {
+  test(`dream diary remains retryable after daemon admission rejects nodes with accepted=${nodesAccepted}`, async t => {
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-dream-admission-"));
+    process.env.OPENCLAW_STATE_DIR = tempRoot;
+    const diaryPath = path.join(tempRoot, "DREAMS.md");
+    await fsp.writeFile(diaryPath, "## Deep Sleep\n- Preserve this fact {score=0.9 recall=3 unique=2}");
+    let calls = 0;
+    let firstDone!: () => void;
+    let retried!: () => void;
+    const firstCall = new Promise<void>(resolve => { firstDone = resolve; });
+    const retry = new Promise<void>(resolve => { retried = resolve; });
+    const warnings: string[] = [];
+    const client = { async promoteDreamEntries() {
+      calls++;
+      if (calls === 1) {
+        firstDone();
+        return { promoted: nodesAccepted, rejected: 0, feedback: { nodesAccepted, nodesRejected: 1 } };
+      }
+      retried();
+      return { promoted: 1, rejected: 0, feedback: { nodesAccepted: 1, nodesRejected: 0 } };
+    } };
+    const handle = createDreamPromotionHandle({
+      dreamPromotionEnabled: true, dreamPromotionDiaryPath: diaryPath,
+      dreamPromotionUserId: "tester", dreamPromotionDebounceMs: 0,
+    }, async () => client as never, { info() {}, error() {}, warn(message) { warnings.push(message); } }, new FakeFsApi() as never);
+    t.after(async () => {
+      await handle.stop();
+      if (previousStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+      else process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    });
+    await handle.start();
+    await firstCall;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await handle.refresh();
+    await Promise.race([retry, delay(1000)]);
+    assert.equal(calls, 2, "an unchanged diary must be retried after explicit ingestion rejection");
+    assert.match(warnings.join("\n"), /Dream promotion rejected.*nodesRejected=1/);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await handle.refresh();
+    await delay(25);
+    assert.equal(calls, 2, "successful admission records the fingerprint and avoids another RPC");
+  });
+}
+
 test("dream promotion handle reads diary bullets and forwards them to the sidecar", async () => {
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-dream-"));

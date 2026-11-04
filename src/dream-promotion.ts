@@ -15,7 +15,7 @@ const DREAM_PROMOTION_VERSION = 1;
 const DREAM_SOURCE_KIND = "dream";
 
 import type { PartialMessage } from "@bufbuild/protobuf";
-import type { DreamPromotionEntry as ProtoEntry } from "@xdarkicex/libravdb-contracts";
+import type { DreamPromotionEntry as ProtoEntry, DreamPromotionResponse } from "@xdarkicex/libravdb-contracts";
 import type { LibravDBClient } from "./libravdb-client.js";
 
 type Disposable = { close(): void };
@@ -68,6 +68,19 @@ interface DreamPromotionParams {
 interface DreamPromotionResult {
   promoted?: number;
   rejected?: number;
+}
+
+function assertDreamPromotionAccepted(result: DreamPromotionResponse): void {
+  // Eligibility rejection is reported separately by result.rejected. Queue
+  // admission can legitimately return 0 accepted / 0 rejected asynchronously;
+  // only an explicit node rejection means this response was not fully accepted.
+  const feedback = result.feedback;
+  if (feedback && feedback.nodesRejected > 0) {
+    throw new Error(
+      `Dream promotion rejected by daemon: nodesRejected=${feedback.nodesRejected}, ` +
+      `nodesAccepted=${feedback.nodesAccepted}`,
+    );
+  }
 }
 
 interface DreamFileState {
@@ -224,7 +237,7 @@ export function createDreamPromotionHandle(
     const candidates = parseDreamPromotionCandidates(text);
 
     const client = await getClient();
-    await client.promoteDreamEntries({
+    const result = await client.promoteDreamEntries({
       userId,
       sourceDoc: diaryPath,
       sourceRoot: path.dirname(diaryPath),
@@ -246,6 +259,7 @@ export function createDreamPromotionHandle(
       })) as unknown as ProtoEntry[],
     });
 
+    assertDreamPromotionAccepted(result);
     lastFileState = {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
@@ -345,7 +359,7 @@ export async function promoteDreamDiaryFile(
   }
 
   const candidates = parseDreamPromotionCandidates(text);
-  return await client.promoteDreamEntries({
+  const result = await client.promoteDreamEntries({
     userId,
     sourceDoc: diaryPath,
     sourceRoot: path.dirname(diaryPath),
@@ -366,6 +380,8 @@ export async function promoteDreamDiaryFile(
       sourceLine: candidate.line,
     })) as unknown as ProtoEntry[],
   });
+  assertDreamPromotionAccepted(result);
+  return result;
 }
 
 export function parseDreamPromotionCandidates(text: string): DreamPromotionCandidate[] {
