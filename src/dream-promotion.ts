@@ -117,6 +117,7 @@ export function createDreamPromotionHandle(
   };
   let lastFileState: DreamFileState | null = null;
   let activeScan: Promise<void> | null = null;
+  let missingSourceReconciled = false;
   const debounceMs = cfg.dreamPromotionDebounceMs ?? DEFAULT_DEBOUNCE_MS;
 
   return {
@@ -194,7 +195,7 @@ export function createDreamPromotionHandle(
 
     const stat = await safeStat(diaryPath);
     if (!stat) {
-      lastFileState = null;
+      await reconcileMissingSource();
       return;
     }
 
@@ -204,9 +205,10 @@ export function createDreamPromotionHandle(
 
     const bytes = await safeReadFile(diaryPath);
     if (!bytes) {
-      lastFileState = null;
+      await reconcileMissingSource();
       return;
     }
+    missingSourceReconciled = false;
 
     const fileHash = hashBytes(bytes);
     if (lastFileState && lastFileState.fileHash === fileHash) {
@@ -251,19 +253,34 @@ export function createDreamPromotionHandle(
     };
   }
 
+  async function reconcileMissingSource(): Promise<void> {
+    if (missingSourceReconciled) return;
+    const client = await getClient();
+    // Empty entries use the same source reconciliation as an emptied diary,
+    // including when the file disappeared while the plugin was offline.
+    await promoteDreamDiaryFile(client, {
+      userId, diaryPath, text: "", fileHash: hashBytes(new Uint8Array()),
+      sourceSize: 0, sourceMtimeMs: 0,
+    });
+    missingSourceReconciled = true;
+    lastFileState = null;
+  }
+
   async function safeStat(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
     try {
       return await fsApi.stat(filePath);
-    } catch {
-      return null;
+    } catch (error) {
+      if (isMissingFile(error)) return null;
+      throw error;
     }
   }
 
   async function safeReadFile(filePath: string): Promise<Uint8Array | null> {
     try {
       return await fsApi.readFile(filePath);
-    } catch {
-      return null;
+    } catch (error) {
+      if (isMissingFile(error)) return null;
+      throw error;
     }
   }
 
@@ -288,6 +305,10 @@ export function createDreamPromotionHandle(
       logger.warn?.(`[dream-promotion] watch unavailable for ${parentDir}: ${formatError(error)}`);
     }
   }
+}
+
+function isMissingFile(error: unknown): boolean {
+  return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
 }
 
 export async function promoteDreamDiaryFile(

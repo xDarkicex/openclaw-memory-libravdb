@@ -141,6 +141,17 @@ test("dream promotion handle reads diary bullets and forwards them to the sideca
     const promoteCalls = client.calls.filter((call) => call.method === "promoteDreamEntries");
     assert.equal(promoteCalls.length, 2);
     assert.deepEqual((promoteCalls[1]?.params as { entries: unknown[] }).entries, []);
+
+    await fsp.writeFile(diaryPath, "## Deep Sleep\n- Restored fact {score=0.9 recall=3 unique=2}\n");
+    fsApi.callbacks.get(path.dirname(diaryPath))?.[0]?.("change", path.basename(diaryPath));
+    await delay(25);
+    assert.equal(client.calls.length, 3);
+    assert.equal((client.calls[2]?.params as { entries: unknown[] }).entries.length, 1);
+    await fsp.rm(diaryPath);
+    fsApi.callbacks.get(path.dirname(diaryPath))?.[0]?.("rename", path.basename(diaryPath));
+    await delay(25);
+    assert.equal(client.calls.length, 4, "unlink must reconcile a previously promoted diary");
+    assert.deepEqual((client.calls[3]?.params as { entries: unknown[] }).entries, []);
   } finally {
     await handle?.stop();
     if (previousStateDir === undefined) {
