@@ -10,14 +10,14 @@ Before opening a PR:
 
 ```bash
 pnpm check
-npm run test:integration
+npm run build
 ```
 
-Integration tests require a running vector service or a prepared local vector service binary.
-Use:
+The current unit and integration suites use mocked service contracts. For an
+end-to-end test with a real vector service, prepare its binary with:
 
 ```bash
-bash scripts/build-vector service.sh
+bash scripts/build-daemon.sh
 ```
 
 ## Behavioral Changes

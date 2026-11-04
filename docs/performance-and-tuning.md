@@ -95,41 +95,33 @@ are advanced controls, not required install settings.
 Model-related fields live in [Embedding profiles](./embedding-profiles.md) and
 [Models](./models.md).
 
-## LongMemEval Harness
+## LongMemEval Report Tools
 
-The repository includes a local LongMemEval harness that runs the dataset
-through the plugin layer and checks whether the assembled prompt still contains
-the evidence turns.
+The repository includes tools to diagnose existing LongMemEval prompt reports
+and to score existing hypothesis files. It does not currently include a dataset
+runner or a `benchmark:longmemeval` script that generates those reports.
 
-The benchmark runner is committed, but the dataset and generated reports are
-not. Keep downloaded data and local outputs under `benchmarks/longmemeval/`,
+The dataset and generated reports are not committed. Keep downloaded data and
+local outputs under `benchmarks/longmemeval/`,
 which is ignored by default.
 
-Run it with:
+To diagnose an existing prompt report:
 
 ```bash
-LONGMEMEVAL_DATA_FILE=/path/to/longmemeval_oracle.json pnpm run benchmark:longmemeval
+LONGMEMEVAL_DATA_FILE=/path/to/longmemeval_oracle.json \
+LONGMEMEVAL_OUT_FILE=/path/to/prompt-report.jsonl \
+pnpm run benchmark:longmemeval:diagnose
 ```
 
-If you already have a vector service running and do not want the benchmark to spawn
-another one, set:
+The report must contain rows keyed by `question_id`, with `status: "ok"` and
+the assembled `prompt_text`. The diagnostic also displays optional hit metrics,
+evidence snippets, and recovery-candidate metadata when present. It does not
+contact the vector service or generate model answers.
 
-```bash
-LONGMEMEVAL_USE_EXISTING_DAEMON=1 \
-LONGMEMEVAL_SIDECAR_PATH=unix:/path/to/libravdb.sock \
-pnpm run benchmark:longmemeval
-```
+Optional diagnostic controls:
 
-Optional controls:
-
-- `LONGMEMEVAL_LIMIT` caps the number of questions
-- `LONGMEMEVAL_TOPK` changes the search budget
-- `LONGMEMEVAL_OUT_FILE` writes JSONL records for analysis
-
-The harness writes JSONL incrementally, so partial results survive if a
-transient vector service failure interrupts a long run. If the local test vector service drops
-mid-run, the benchmark restarts it and retries the current instance once before
-recording an error result.
+- `LONGMEMEVAL_LIMIT` caps the dataset questions considered
+- `LONGMEMEVAL_DIAGNOSE_ALL=1` includes hits as well as misses
 
 To score a hypothesis JSONL file with the official LongMemEval evaluator:
 
