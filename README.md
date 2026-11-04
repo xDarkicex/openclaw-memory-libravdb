@@ -147,6 +147,12 @@ To use the daemon's extractive summarization as a pluggable compaction backend (
 
 This works alongside the context engine's own compaction path — the provider is used when the framework's compaction safeguard runs without a context engine owning compaction.
 
+On subsequent compactions, the provider includes the previous summary as historical
+input alongside newer messages so the daemon can re-summarize both.
+
+Canceling host compaction stops its wait for startup and cancels an active
+summarization request. Shared client startup remains available to other memory operations.
+
 Then restart the gateway so the plugin loads:
 
 ```bash

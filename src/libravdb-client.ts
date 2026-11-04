@@ -546,9 +546,10 @@ export class LibravDBClient {
 
   async summarizeMessages(
     req: PartialMessage<SummarizeMessagesRequest>,
+    opts?: CallOptions,
   ): Promise<SummarizeMessagesResponse> {
     this.guardOpen();
-    return this.client.summarizeMessages(req);
+    return this.client.summarizeMessages(req, opts);
   }
 
   async expandSummary(
