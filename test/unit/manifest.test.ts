@@ -4,8 +4,33 @@ import fsp from "node:fs/promises";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { syncBuiltinESMExports } from "node:module";
 
 import { TurnManifestStore } from "../../src/manifest.js";
+
+test("failed destination migration remains retryable without donating the legacy ACK", async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-manifest-migration-"));
+  const legacy = new TurnManifestStore(root);
+  const original = legacy.appendACKedMessages(legacy.createEmpty("session"), [{ role: "user", content: "confirmed", id: "old" }], 0);
+  legacy.save(original);
+  const rename = fs.renameSync;
+  const mocked = t.mock.method(fs, "renameSync", (source: fs.PathLike, destination: fs.PathLike) => {
+    if (String(destination).includes(`${path.sep}destinations${path.sep}`)) throw new Error("disk unavailable");
+    rename(source, destination);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => new TurnManifestStore(root, "a").load("session"), /disk unavailable/);
+    assert.equal(new TurnManifestStore(root, "b").load("session").turns.length, 0);
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+    assert.deepEqual(new TurnManifestStore(root, "a").load("session").turns, original.turns);
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
 
 test("manifest store does not create its directory until save", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-manifest-lazy-"));
@@ -113,4 +138,35 @@ test("manifest overlap distinguishes single repeated content by message id", () 
   assert.equal(store.findOverlapIndex(manifest, [{ role: "user", content: "ok", id: "turn-1" }]), 1);
   assert.equal(store.findOverlapIndex(manifest, [{ role: "user", content: "ok", id: "turn-2" }]), 0);
   assert.equal(store.findOverlapIndex(manifest, [{ role: "user", content: "ok" }]), 0);
+});
+
+
+test("legacy manifests are adopted by one destination and scoped progress survives switching back", async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-manifest-destinations-"));
+  try {
+    const legacy = new TurnManifestStore(root);
+    const original = legacy.appendACKedMessages(legacy.createEmpty("session"), [
+      { role: "user", content: "old user", id: "user-1" },
+      { role: "assistant", content: "old assistant", id: "assistant-1" },
+    ], 0);
+    legacy.save(original);
+    const first = new TurnManifestStore(root, "destination-a");
+    const adopted = first.load("session");
+    assert.deepEqual(adopted.turns, original.turns);
+    assert.equal(adopted.tailHash, original.tailHash);
+    assert.equal(adopted.destination, "destination-a");
+    const second = new TurnManifestStore(root, "destination-b");
+    assert.equal(second.load("session").turns.length, 0, "another destination must not adopt the same legacy ACK");
+    first.save(first.appendACKedMessages(adopted, [{ role: "user", content: "new A", id: "a-next" }], 2));
+    second.save(second.appendACKedMessages(second.createEmpty("session"), [{ role: "user", content: "new B", id: "b-first" }], 0));
+    const firstReloaded = new TurnManifestStore(root, "destination-a").load("session");
+    const secondReloaded = new TurnManifestStore(root, "destination-b").load("session");
+    assert.equal(firstReloaded.turns.length, 3);
+    assert.equal(first.deriveStartingIndex(firstReloaded), 3);
+    assert.equal(firstReloaded.turns.at(-1)?.contentHash, first.hashString("new A"));
+    assert.equal(secondReloaded.turns.length, 1);
+    assert.equal(secondReloaded.turns[0]?.contentHash, second.hashString("new B"));
+    assert.equal(first.verifyChain(firstReloaded), true);
+    assert.equal(second.verifyChain(secondReloaded), true);
+  } finally { await fsp.rm(root, { recursive: true, force: true }); }
 });

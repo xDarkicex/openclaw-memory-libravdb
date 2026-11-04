@@ -14,6 +14,7 @@ export interface TurnEntry {
 
 export interface TurnManifest {
   sessionId: string;
+  destination?: string;
   version: number;
   turns: TurnEntry[];
   tailHash: string;
@@ -31,13 +32,16 @@ export interface KernelCompatibleMessage {
 export class TurnManifestStore {
   private readonly manifestDirOverride?: string;
 
-  constructor(manifestDir?: string) {
+  constructor(manifestDir?: string, private readonly destination?: string) {
     this.manifestDirOverride = manifestDir;
   }
 
   private getManifestPath(sessionId: string): string {
     const digest = this.hashString(sessionId);
-    return path.join(this.getManifestDir(), `${digest}.manifest.json`);
+    const directory = this.destination
+      ? path.join(this.getManifestDir(), "destinations", this.hashString(this.destination))
+      : this.getManifestDir();
+    return path.join(directory, `${digest}.manifest.json`);
   }
 
   private getManifestDir(): string {
@@ -46,10 +50,6 @@ export class TurnManifestStore {
     }
     const stateRoot = process.env.OPENCLAW_STATE_DIR?.trim();
     return path.join(stateRoot || path.join(os.homedir(), ".openclaw"), "libravdb-manifests");
-  }
-
-  private ensureManifestDir(): void {
-    fs.mkdirSync(this.getManifestDir(), { recursive: true });
   }
 
   public hashString(data: string): string {
@@ -69,7 +69,31 @@ export class TurnManifestStore {
     const filePath = this.getManifestPath(sessionId);
 
     if (!fs.existsSync(filePath)) {
-      return this.createEmpty(sessionId);
+      if (!this.destination) return this.createEmpty(sessionId);
+      // Adopt a legacy checkpoint once, without re-sending an already-ACKed
+      // transcript. Keep the claim in the old file so a different destination
+      // cannot adopt the same acknowledgment on its first use.
+      const legacyPath = path.join(this.getManifestDir(), `${this.hashString(sessionId)}.manifest.json`);
+      if (!fs.existsSync(legacyPath)) return this.createEmpty(sessionId);
+      let legacy: TurnManifest;
+      const raw = fs.readFileSync(legacyPath, "utf8");
+      try {
+        legacy = JSON.parse(raw) as TurnManifest;
+        if (legacy.sessionId !== sessionId || !this.verifyChain(legacy)) return this.createEmpty(sessionId);
+        if (legacy.destination && legacy.destination !== this.destination) return this.createEmpty(sessionId);
+      } catch (error) {
+        logger?.error?.(`[LibraVDB] Invalid legacy manifest for ${sessionId}. Forcing re-sync:`, error);
+        return this.createEmpty(sessionId);
+      }
+      try {
+        const claimed = { ...legacy, destination: this.destination };
+        if (!legacy.destination) this.writeManifest(legacyPath, claimed);
+        this.save(claimed);
+        return claimed;
+      } catch (error) {
+        logger?.error?.(`[LibraVDB] Failed to migrate manifest for ${sessionId}:`, error);
+        throw error;
+      }
     }
 
     try {
@@ -78,6 +102,11 @@ export class TurnManifestStore {
 
       if (manifest.sessionId !== sessionId) {
         logger?.warn?.(`[LibraVDB] Manifest session mismatch for ${sessionId}. Forcing re-sync.`);
+        return this.createEmpty(sessionId);
+      }
+
+      if (this.destination && manifest.destination !== this.destination) {
+        logger?.warn?.(`[LibraVDB] Manifest destination mismatch for ${sessionId}. Forcing re-sync.`);
         return this.createEmpty(sessionId);
       }
 
@@ -94,12 +123,21 @@ export class TurnManifestStore {
   }
 
   public save(manifest: TurnManifest): void {
-    this.ensureManifestDir();
-    const filePath = this.getManifestPath(manifest.sessionId);
-    const tempPath = `${filePath}.${process.pid}.tmp`;
+    this.writeManifest(this.getManifestPath(manifest.sessionId), {
+      ...manifest,
+      ...(this.destination ? { destination: this.destination } : {}),
+    });
+  }
 
-    fs.writeFileSync(tempPath, JSON.stringify(manifest, null, 2), "utf8");
-    fs.renameSync(tempPath, filePath);
+  private writeManifest(filePath: string, manifest: TurnManifest): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tempPath = `${filePath}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(manifest, null, 2), "utf8");
+      fs.renameSync(tempPath, filePath);
+    } finally {
+      try { fs.unlinkSync(tempPath); } catch { /* rename succeeded or no staging file was created */ }
+    }
   }
 
   public verifyChain(manifest: TurnManifest): boolean {

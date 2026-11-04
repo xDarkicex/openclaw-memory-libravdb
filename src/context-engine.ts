@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildRulesContext } from "./rules.js";
-import { resolveReadTenants } from "./identity.js";
+import { resolveReadTenants, resolveTenantKey } from "./identity.js";
+import { resolveClientEndpoint } from "./libravdb-client.js";
 
 import type { PluginRuntime } from "./plugin-runtime.js";
 import type { LibravDBClient } from "./libravdb-client.js";
@@ -23,8 +24,15 @@ import {
 } from "@xdarkicex/libravdb-contracts";
 import { resolveIdentity, type ResolvedIdentity } from "./identity.js";
 import { resolveUserCollection } from "./memory-scopes.js";
-import { manifestStore, type TurnManifest } from "./manifest.js";
+import { TurnManifestStore, type TurnManifest } from "./manifest.js";
 import { TurnMemoryCache, extractQueryHint, isNewUserTurn } from "./turn-cache.js";
+
+function sessionDestination(cfg: PluginConfig, runtime: PluginRuntime, scope: { sessionId: string; sessionKey?: string }): string {
+  return createHash("sha256").update(JSON.stringify([
+    resolveClientEndpoint(cfg.grpcEndpoint || cfg.sidecarPath),
+    runtime.resolveWriteTenantKey?.(scope) ?? resolveTenantKey(cfg),
+  ])).digest("hex");
+}
 
 /** Host advancement keys whose turn is durably ingested, so an exact retry answers "duplicate". */
 const committedAdvancementKeys = new Set<string>();
@@ -2036,6 +2044,7 @@ function extractCursorFromResult(result: unknown): CursorFromDaemon | undefined 
 
 /** Persist the confirmed prefix, but keep the logical turn retryable until complete. */
 function persistAcknowledgedBatch(
+  manifestStore: TurnManifestStore,
   manifest: TurnManifest,
   messages: KernelCompatibleMessage[],
   startIndex: number,
@@ -3816,7 +3825,9 @@ export function buildContextEngineFactory(
       isHeartbeat?: boolean;
       runtimeContext?: Record<string, unknown>;
     }): Promise<{ status: "committed" | "duplicate" }> {
-      const key = args.advancementKey;
+      const key = args.advancementKey && !isExcludedSession(args.sessionKey, args.sessionId)
+        ? JSON.stringify([sessionDestination(cfg, runtime, args), args.sessionId, args.advancementKey])
+        : "";
 
       // Run the turn and wait for the durable part of the ingest to finish.
       // Errors propagate: a caller that is told nothing must be free to retry.
@@ -3928,6 +3939,7 @@ export function buildContextEngineFactory(
         sessionKey: args.sessionKey,
       });
 
+      const manifestStore = new TurnManifestStore(undefined, sessionDestination(cfg, runtime, args));
       const preflightManifest = manifestStore.load(sessionId, logger);
       const selectMessages = (recoveryPending: boolean): KernelCompatibleMessage[] => {
         const source = recoveryPending
@@ -4057,12 +4069,12 @@ export function buildContextEngineFactory(
               isHeartbeat: args.isHeartbeat,
             } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
             if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
-            persistAcknowledgedBatch(emptyManifest, seedMessages, 0, result);
+            persistAcknowledgedBatch(manifestStore, emptyManifest, seedMessages, 0, result);
             logger.info?.(
               `[LibraVDB] Re-seeded daemon session ${sessionId} with ${seedMessages.length} source messages after cursor gap.`,
             );
           } else {
-            persistAcknowledgedBatch(manifest, ingestMessages, startIndex, result);
+            persistAcknowledgedBatch(manifestStore, manifest, ingestMessages, startIndex, result);
           }
 
           // Everything above is the durable part of the turn: the daemon has

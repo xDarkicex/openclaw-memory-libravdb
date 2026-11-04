@@ -135,6 +135,17 @@ tenant clients refreshes context instead of reusing the previous client's recall
 | `useSessionRecallProjection` | boolean | — | Use `session_recall` collection instead of `session` |
 | `useSessionSummarySearchExperiment` | boolean | — | Use `session_summary` collection for search |
 
+## Session checkpoints
+
+Acknowledged session transcripts are stored separately for each resolved daemon
+endpoint and write tenant. Reusing a host advancement key at another destination
+does not skip ingestion there. Switching back resumes that destination's checkpoint.
+
+On upgrade, an older checkpoint without destination information is assigned to the
+first destination that uses it. Start with the existing endpoint and tenant before
+switching destinations, since the older file cannot identify where it was written.
+This does not detect a database reset behind an unchanged endpoint and tenant.
+
 ## Ingestion gating
 
 With `excludeSubagents: true`, a child marked by `prepareSubagentSpawn` remains
