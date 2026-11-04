@@ -108,6 +108,7 @@ export class IngestQueue {
         text,
         mode: IngestMode.REPLACE,
       });
+      assertNoRejectedNodes(sourceDoc, resp.feedback, 0);
       return resp.feedback;
     }
 
@@ -141,16 +142,13 @@ export class IngestQueue {
       if (lastFeedback && lastFeedback.nodesRejected > 0) {
         // A real rejection. If the daemon reported a lower per-chunk token
         // limit, shrink and retry the same offset before giving up.
-        if (lastFeedback.tokenBurstLimit > 0 && lastFeedback.tokenBurstLimit < currentLimit) {
+        if (lastFeedback.nodesAccepted === 0 && lastFeedback.tokenBurstLimit > 0 && lastFeedback.tokenBurstLimit < currentLimit) {
           currentLimit = lastFeedback.tokenBurstLimit;
           continue;
         }
-        this.logger.warn?.(
-          `[ingest-queue] Chunk rejected for ${sourceDoc} ` +
-          `at offset=${offset} length=${chunkText.length} ` +
-          `nodesRejected=${lastFeedback.nodesRejected} ` +
-          `tokenBurstLimit=${lastFeedback.tokenBurstLimit ?? "unset"}`,
-        );
+        // Do not skip missing content or retry a partially accepted APPEND.
+        // Reject so the caller cannot checkpoint the whole file as indexed.
+        assertNoRejectedNodes(sourceDoc, lastFeedback, offset);
       }
 
       if (this.options.onChunkFeedback && lastFeedback) {
@@ -194,6 +192,15 @@ export class IngestQueue {
       this.options.retryBaseDelayMs,
       this.logger,
       `delete_authored_document(${sourceDoc})`,
+    );
+  }
+}
+
+function assertNoRejectedNodes(sourceDoc: string, feedback: IngestFeedback | undefined, offset: number): void {
+  if (feedback && feedback.nodesRejected > 0) {
+    throw new Error(
+      `[ingest-queue] Chunk rejected for ${sourceDoc} at offset=${offset} ` +
+      `nodesRejected=${feedback.nodesRejected} tokenBurstLimit=${feedback.tokenBurstLimit ?? "unset"}`,
     );
   }
 }

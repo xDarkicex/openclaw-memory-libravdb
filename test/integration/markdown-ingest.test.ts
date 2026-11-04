@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { IngestMode } from "@xdarkicex/libravdb-contracts";
 
 import { createMarkdownIngestionHandle, type FsDirentLike } from "../../src/markdown-ingest.js";
 import { hashBytes } from "../../src/markdown-hash.js";
@@ -479,6 +480,44 @@ test("obsidian ingestion ignores tags inside fences with embedded shorter or mis
     await handle.start();
     assert.equal(rpc.documents.has(filePath), false);
     assert.equal(rpc.calls.filter((call) => call.method === "ingest_markdown_document").length, 0);
+  } finally {
+    await handle.stop();
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("a rejected Markdown chunk is retried after restart without editing the file", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-rejected-chunk-"));
+  const filePath = path.join(tempRoot, "memory.md");
+  const text = "x".repeat(40000);
+  await fsp.writeFile(filePath, text);
+  let rejectFirst = true;
+  let storedText = "";
+  const rpc = {
+    async ingestMarkdownDocument(params: { text: string; mode?: IngestMode }) {
+      if (rejectFirst) {
+        rejectFirst = false;
+        return { ok: true, feedback: { acceptMore: true, nodesAccepted: 0, nodesRejected: 1, tokenBurstLimit: 0 } };
+      }
+      storedText = params.mode === IngestMode.APPEND ? storedText + params.text : params.text;
+      return { ok: true };
+    },
+    async deleteAuthoredDocument() { return { ok: true }; },
+  };
+  const cfg = {
+    markdownIngestionEnabled: true,
+    markdownIngestionRoots: [tempRoot],
+    markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+  };
+  const logger = { error() {}, warn() {}, info() {} };
+  let handle = createMarkdownIngestionHandle(cfg, async () => rpc as never, logger);
+  try {
+    await handle.start();
+    await handle.stop();
+    // Keep file content, timestamps, and the persisted scan snapshot unchanged.
+    handle = createMarkdownIngestionHandle(cfg, async () => rpc as never, logger);
+    await handle.start();
+    assert.equal(storedText, text, "failed indexing must not poison the unchanged-file snapshot");
   } finally {
     await handle.stop();
     await fsp.rm(tempRoot, { recursive: true, force: true });

@@ -206,6 +206,14 @@ Configured markdown roots are ignored unless the matching enable flag is set to
 `true`. Set `markdownIngestionEnabled: true` for generic roots and
 `markdownIngestionObsidianEnabled: true` for Obsidian vault roots.
 
+If the daemon explicitly rejects content, the scan reports an ingestion error
+and leaves the file eligible for a later scan or restart. A rejected chunk is
+retried at a smaller size only when none of its nodes were accepted and the
+daemon supplies a lower burst limit. Already accepted chunks may remain indexed
+until a successful retry replaces the document; a failed scan is not an atomic
+rollback. An asynchronous acknowledgment with zero accepted and zero rejected
+nodes remains a successful queue submission.
+
 ## Continuity
 
 | Key | Type | Default | Notes |

@@ -260,3 +260,55 @@ test("a real rejection (nodesRejected>0) with a lower burst limit shrinks and re
   assert.ok(calls[1].length < calls[0].length, "the retry shrinks the chunk");
   assert.equal(calls[0].slice(0, calls[1].length), calls[1], "the retry is the same offset, just smaller");
 });
+
+for (const chunkTokens of [4, Infinity]) {
+  test(`explicit rejected nodes fail ingestion with chunkTokens=${chunkTokens}`, async () => {
+    const calls: string[] = [];
+    const acceptedFeedback: unknown[] = [];
+    const queue = new IngestQueue(
+      async (params) => {
+        calls.push(params.text);
+        return { ok: true, feedback: feedback({ nodesAccepted: 0, nodesRejected: 1, tokenBurstLimit: 0 }) };
+      },
+      async () => {},
+      { error() {}, warn() {} },
+      { chunkTokens, maxRetries: 0, onChunkFeedback: (value) => acceptedFeedback.push(value) },
+    );
+    await assert.rejects(
+      queue.enqueueIngest("/vault/rejected.md", "x".repeat(40), baseParams()),
+      /rejected.*nodesRejected=1/i,
+    );
+    assert.equal(calls.length, 1, "must not advance beyond a rejected chunk");
+    assert.deepEqual(acceptedFeedback, [], "rejected feedback must not be reported as an accepted chunk");
+  });
+}
+
+test("a rejected append stops the document instead of continuing past a missing section", async () => {
+  const calls: Array<{ mode?: IngestMode; text: string }> = [];
+  const queue = new IngestQueue(
+    async (params) => {
+      calls.push(params);
+      return { ok: true, feedback: feedback({ nodesRejected: calls.length === 2 ? 1 : 0, tokenBurstLimit: 4 }) };
+    },
+    async () => {},
+    { error() {}, warn() {} },
+    { chunkTokens: 4, maxRetries: 0 },
+  );
+  await assert.rejects(queue.enqueueIngest("/vault/rejected.md", "x".repeat(60), baseParams()), /rejected/i);
+  assert.deepEqual(calls.map((call) => call.mode), [IngestMode.REPLACE, IngestMode.APPEND]);
+});
+
+test("partial acceptance fails without replaying accepted nodes at a smaller burst limit", async () => {
+  let calls = 0;
+  const queue = new IngestQueue(
+    async () => {
+      calls++;
+      return { ok: true, feedback: feedback({ nodesAccepted: 1, nodesRejected: 1, tokenBurstLimit: 2 }) };
+    },
+    async () => {},
+    { error() {}, warn() {} },
+    { chunkTokens: 4, maxRetries: 0 },
+  );
+  await assert.rejects(queue.enqueueIngest("/vault/partial.md", "x".repeat(40), baseParams()), /rejected/i);
+  assert.equal(calls, 1, "a partially accepted chunk must not be replayed as an append");
+});
