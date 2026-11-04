@@ -13,8 +13,8 @@ CPU when a provider is unavailable.
 |---|---|---|---|
 | `sidecarPath` | string | `auto` | `"auto"` probes standard socket paths; set `unix:/path` or `tcp:host:port` to override |
 | `grpcEndpoint` | string | — | gRPC kernel endpoint. See `grpcEndpointTlsMode` for credential control. |
-| `grpcEndpointTlsCa` | string | — | Path to CA certificate PEM file. Only needed for self-signed or private CA certs. Omit when using Let's Encrypt or cert-manager. |
-| `grpcEndpointTlsMode` | string | `"auto"` | gRPC credential mode. `"auto"`: loopback/unix → plaintext, remote → TLS. `"tls"`: always TLS. `"insecure"`: always plaintext. |
+| `grpcEndpointTlsCa` | string | — | PEM trust anchor for a self-signed or private-CA service. cert-manager private issuers also need this; public issuers trusted by Node do not. |
+| `grpcEndpointTlsMode` | string | `"auto"` | gRPC credential mode. `"auto"`: loopback/unix → plaintext, remote → TLS. `"tls"`: TCP uses TLS, including loopback. `"insecure"`: plaintext. Unix sockets always use plaintext. |
 | `grpcEndpointTlsClientCert` | string | — | Path to client certificate PEM for mTLS. Must be paired with `grpcEndpointTlsClientKey`. |
 | `grpcEndpointTlsClientKey` | string | — | Path to client private key PEM for mTLS. Must be paired with `grpcEndpointTlsClientCert`. |
 | `rpcTimeoutMs` | number | `30000` | Per-call timeout for service RPC (ms) |
@@ -34,18 +34,18 @@ Use `grpcEndpointTlsMode` to override the default behavior:
 
 | Value | When to use |
 |---|---|
-| `"auto"` (default) | Standard operation — plugin heuristic matches vector service TLS setting automatically. |
-| `"tls"` | Daemon has TLS enabled on loopback or unix socket (rare; use when the vector service's `LIBRAVDB_GRPC_TLS_*` env vars are set on a local address). |
+| `"auto"` (default) | Address-based selection above; the plugin does not detect the service's TLS settings. |
+| `"tls"` | Daemon has TLS enabled on a loopback TCP address. Unix sockets remain plaintext. |
 | `"insecure"` | Service mesh or TLS-terminating tunnel handles encryption externally; both sides are plaintext. |
 
 **Default (local vector service):** No TLS configuration needed.
-Unix socket and loopback endpoints are always plaintext regardless
-of any TLS settings.
+Unix sockets are always plaintext. Loopback TCP endpoints use plaintext in
+`"auto"` mode and TLS when `grpcEndpointTlsMode` is `"tls"`.
 
 **K8 / remote vector service with CA-issued cert:**
-No extra configuration needed. The plugin uses the system CA pool,
-which trusts certs issued by Let's Encrypt, cert-manager, and
-other public CAs automatically.
+No extra plugin configuration is needed when the issuer is in Node's default
+trusted roots, such as Let's Encrypt. cert-manager may use public or private
+issuers; a private issuer needs `grpcEndpointTlsCa`.
 
 **Remote vector service with self-signed or private CA cert:**
 Set `grpcEndpointTlsCa` to the path of the CA certificate PEM file:

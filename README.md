@@ -52,14 +52,17 @@ openclaw libravdb status
 
 ```bash
 # Docker
-cd deploy && docker compose up -d
+(cd deploy && docker compose up -d)
 
 # K8s with Helm
 helm install libravdbd ./deploy/helm/libravdbd
 
 # K8s with mTLS
 helm install libravdbd ./deploy/helm/libravdbd \
-  --set tls.enabled=true --set tls.cert=$(base64 -i server.crt) --set tls.key=$(base64 -i server.key)
+  --set tls.enabled=true \
+  --set-string tls.cert="$(base64 < server.crt | tr -d '\n')" \
+  --set-string tls.key="$(base64 < server.key | tr -d '\n')" \
+  --set-string tls.ca="$(base64 < ca.crt | tr -d '\n')"
 ```
 
 Terraform modules for EKS/GKE/AKS: [`deploy/terraform/`](deploy/terraform/)
@@ -210,7 +213,7 @@ The daemon is K8-ready. Deployment files live in [`deploy/`](deploy/):
 
 ```bash
 # Quick start with Docker
-cd deploy && docker compose up -d
+(cd deploy && docker compose up -d)
 
 # K8s with Helm
 helm install libravdbd ./deploy/helm/libravdbd
@@ -218,9 +221,16 @@ helm install libravdbd ./deploy/helm/libravdbd
 # K8s with mTLS
 helm install libravdbd ./deploy/helm/libravdbd \
   --set tls.enabled=true \
-  --set tls.cert=$(base64 -i server.crt) \
-  --set tls.key=$(base64 -i server.key)
+  --set-string tls.cert="$(base64 < server.crt | tr -d '\n')" \
+  --set-string tls.key="$(base64 < server.key | tr -d '\n')" \
+  --set-string tls.ca="$(base64 < ca.crt | tr -d '\n')"
 ```
+
+`tls.ca` enables client certificate verification. Without it, cert/key enable
+server TLS only. Configure the plugin's CA, client certificate, and client key
+as described in [mTLS configuration](./docs/mTLS_configuration.md). Server
+certificates must identify the hostname or IP used by the client; issue them
+with matching Subject Alternative Names for your service address.
 
 The image pulls pre-built binaries from [GitHub Releases](https://github.com/zephyr-systems/libravdbd/releases) — no build step needed. Supports `linux/amd64` and `linux/arm64`.
 

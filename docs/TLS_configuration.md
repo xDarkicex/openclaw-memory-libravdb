@@ -1,6 +1,6 @@
 # TLS Configuration
 
-The plugin selects the right credentials automatically based on which address it connects to. Unix sockets and loopback addresses (localhost, 127.0.0.1, ::1) always use plaintext. All other addresses use TLS. In most deployments no TLS configuration is needed at all. The only time manual configuration is required is when the vector service serves TLS on a loopback address, when the vector service uses a self-signed or private-CA certificate, or when infrastructure such as a service mesh handles TLS outside the plugin.
+In the default `"auto"` mode, Unix sockets and loopback addresses (localhost, 127.0.0.1, ::1) use plaintext, and other TCP addresses use TLS. Set `grpcEndpointTlsMode: "tls"` for a loopback TCP service that requires TLS. Unix sockets use plaintext even with this override. Configure a CA for a self-signed or private-CA service, and client credentials when the service requires mTLS.
 
 ## Default behavior
 
@@ -12,7 +12,7 @@ The plugin applies the following rules automatically:
 | Loopback (`tcp:127.0.0.1:port`, `tcp:localhost:port`, `[::1]:port`) | Plaintext |
 | Any other TCP or DNS address | TLS |
 
-Because these rules are automatic, most users do not set any TLS-related fields. Plaintext is used where it is safe (local transport) and TLS is used where it is needed (network transport).
+These defaults select the transport; they do not detect the service's actual TLS configuration. Loopback connections are unencrypted, so local service access still needs an appropriate trust boundary.
 
 ## Configuration fields
 
@@ -20,12 +20,12 @@ Because these rules are automatic, most users do not set any TLS-related fields.
 |---|---|---|---|
 | `grpcEndpoint` | string | — | The vector service address. Set to a unix socket path, a loopback address, or a remote host. |
 | `grpcEndpointTlsCa` | string | — | Path to a CA certificate PEM file. Required only when the vector service certificate is self-signed or signed by a private CA not in the system certificate store. |
-| `grpcEndpointTlsMode` | `"auto"` \| `"tls"` \| `"insecure"` | `"auto"` | Override the automatic selection. `"auto"` applies the default rules above. `"tls"` forces TLS regardless of address. `"insecure"` forces plaintext regardless of address. |
+| `grpcEndpointTlsMode` | `"auto"` \| `"tls"` \| `"insecure"` | `"auto"` | Override automatic TCP credential selection. `"tls"` forces TLS for TCP; `"insecure"` forces plaintext. Unix sockets always use plaintext. |
 
 `grpcEndpointTlsMode` values explained:
 
 - **`"auto"`** (default) — apply the automatic rules. Unix sockets and loopback use plaintext; all other addresses use TLS.
-- **`"tls"`** — always use TLS, even for loopback addresses. Use this when the vector service has TLS enabled on a loopback address.
+- **`"tls"`** — use TLS for TCP, including loopback addresses. Use this when the vector service has TLS enabled on a loopback address. Unix sockets remain plaintext.
 - **`"insecure"`** — always use plaintext, even for remote addresses. Use this only when a service mesh or TLS-terminating tunnel handles encryption externally.
 
 ## Deployment scenarios
@@ -52,7 +52,7 @@ The plugin automatically uses plaintext. No TLS fields are needed.
 
 ### Remote vector service with a trusted certificate
 
-The vector service runs on a remote host and presents a certificate issued by a public CA such as Let's Encrypt or cert-manager.
+The vector service runs on a remote host and presents a certificate issued by a public CA such as Let's Encrypt. cert-manager can provision these certificates, but it can also use a private CA; trust depends on the configured issuer.
 
 ```json
 {
@@ -60,7 +60,7 @@ The vector service runs on a remote host and presents a certificate issued by a 
 }
 ```
 
-TLS is automatic. The plugin uses the system certificate store to verify the vector service's certificate, so no additional configuration is needed.
+TLS is automatic. The plugin uses Node's default trusted roots to verify the vector service's certificate, so no additional plugin configuration is needed when that issuer is trusted. A private cert-manager issuer requires `grpcEndpointTlsCa`.
 
 ### Remote vector service with a self-signed or private CA certificate
 
@@ -73,7 +73,7 @@ The vector service runs on a remote host and uses a self-signed certificate or a
 }
 ```
 
-The CA certificate must be the certificate of the CA that signed the vector service's server certificate — not the server certificate itself. The plugin uses this CA to verify the vector service's certificate during the TLS handshake. Without it, the plugin will reject the vector service's certificate as untrusted.
+For a private CA, provide the CA certificate that signed the server certificate. For a self-signed server certificate, provide that certificate as the trust anchor. The plugin verifies the server certificate and the hostname or IP in the endpoint. Issue the server certificate with matching Subject Alternative Names; changing the CA does not fix a hostname mismatch.
 
 ### TLS on a loopback address
 
