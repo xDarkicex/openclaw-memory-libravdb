@@ -140,7 +140,6 @@ test("manifest overlap distinguishes single repeated content by message id", () 
   assert.equal(store.findOverlapIndex(manifest, [{ role: "user", content: "ok" }]), 0);
 });
 
-
 test("legacy manifests are adopted by one destination and scoped progress survives switching back", async () => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-manifest-destinations-"));
   try {
@@ -169,4 +168,24 @@ test("legacy manifests are adopted by one destination and scoped progress surviv
     assert.equal(first.verifyChain(firstReloaded), true);
     assert.equal(second.verifyChain(secondReloaded), true);
   } finally { await fsp.rm(root, { recursive: true, force: true }); }
+});
+
+test("known host identities disambiguate multi-message exchanges without changing legacy overlap", () => {
+  const store = new TurnManifestStore("/tmp/unused-manifest-test");
+  const first = [
+    { role: "user", content: "ping", id: "user-one" },
+    { role: "assistant", content: "pong", id: "assistant-one" },
+  ];
+  const repeated = first.map(message => ({ ...message, id: message.id.replace("one", "two") }));
+  const allIds = new Set([...first, ...repeated].map(message => message.id));
+  const manifest = store.appendACKedMessages(store.createEmpty("session-a"), first, 0, allIds);
+  assert.equal(store.findOverlapIndex(manifest, first, allIds), 2);
+  assert.equal(store.findOverlapIndex(manifest, repeated, allIds), 0);
+  assert.equal(store.findOverlapIndex(manifest, [first[0], repeated[1]], allIds), 0);
+  assert.equal(store.findOverlapIndex(manifest, [repeated[0], first[1]], allIds), 0);
+
+  const legacy = store.appendACKedMessages(store.createEmpty("session-a"), first, 0);
+  assert.equal(store.findOverlapIndex(legacy, repeated, allIds), 2);
+  assert.equal(store.findOverlapIndex(manifest, repeated), 2);
+  assert.ok(legacy.turns.every(turn => turn.idSource === undefined));
 });

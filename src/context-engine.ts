@@ -2047,6 +2047,7 @@ function persistAcknowledgedBatch(
   messages: KernelCompatibleMessage[],
   startIndex: number,
   result: unknown,
+  hostMessageIds?: ReadonlySet<string>,
 ): void {
   if (result && typeof result === "object" && "ok" in result && result.ok === false) {
     throw new Error(`[LibraVDB] afterTurnKernel returned ok=false for session ${manifest.sessionId}; ingestion must be retried.`);
@@ -2064,7 +2065,7 @@ function persistAcknowledgedBatch(
       `(lastProcessedIndex=${cursor?.lastProcessedIndex}, batch started at ${startIndex}).`,
     );
   }
-  const updated = manifestStore.appendACKedMessages(manifest, ackedMessages, startIndex);
+  const updated = manifestStore.appendACKedMessages(manifest, ackedMessages, startIndex, hostMessageIds);
   if (manifest.recoveryPending && ackedMessages.length < messages.length) {
     updated.recoveryPending = true;
   }
@@ -3773,9 +3774,9 @@ export function buildContextEngineFactory(
      * named a commit.
      *
      * Known limitations, inherited from afterTurn and not introduced here:
-     * - Overlap detection compares message id hashes where it has them, but a
-     *   multi-message overlap still matches on role and content alone, so two distinct
-     *   turns whose messages are byte-identical dedupe against each other and the
+     * - Without known host-supplied message identities on both sides, legacy
+     *   multi-message overlap still matches on role and content alone, so distinct
+     *   turns whose messages are byte-identical can dedupe against each other and the
      *   second is not ingested. It is reported as committed anyway, since replaying it
      *   would dedupe identically. The stored content is the same either way; what is
      *   lost is the repeat occurrence.
@@ -3916,6 +3917,9 @@ export function buildContextEngineFactory(
         sessionKey: args.sessionKey,
       });
 
+      const hostMessageIds = new Set(args.messages
+        .map(message => message.id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0));
       const manifestStore = new TurnManifestStore(undefined, sessionDestination(cfg, runtime, args));
       const preflightManifest = manifestStore.load(sessionId, logger);
       const selectMessages = (recoveryPending: boolean): KernelCompatibleMessage[] => {
@@ -3951,7 +3955,7 @@ export function buildContextEngineFactory(
 
       // Sync preflight: return skipped immediately when no new messages exist,
       // preserving the original afterTurn completion contract for idempotency.
-      const preflightOverlap = manifestStore.findOverlapIndex(preflightManifest, messages);
+      const preflightOverlap = manifestStore.findOverlapIndex(preflightManifest, messages, hostMessageIds);
       const preflightNewCount = messages.slice(preflightOverlap).length;
 
       logger.info?.(
@@ -3977,7 +3981,7 @@ export function buildContextEngineFactory(
           // after any preceding queued tasks have completed.
           const manifest = manifestStore.load(sessionId, logger);
           const queuedMessages = manifest.recoveryPending ? selectMessages(true) : messages;
-          const overlapIndex = manifestStore.findOverlapIndex(manifest, queuedMessages);
+          const overlapIndex = manifestStore.findOverlapIndex(manifest, queuedMessages, hostMessageIds);
           const newMessages = queuedMessages.slice(overlapIndex);
 
           if (newMessages.length === 0) {
@@ -4046,12 +4050,12 @@ export function buildContextEngineFactory(
               isHeartbeat: args.isHeartbeat,
             } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
             if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
-            persistAcknowledgedBatch(manifestStore, emptyManifest, seedMessages, 0, result);
+            persistAcknowledgedBatch(manifestStore, emptyManifest, seedMessages, 0, result, hostMessageIds);
             logger.info?.(
               `[LibraVDB] Re-seeded daemon session ${sessionId} with ${seedMessages.length} source messages after cursor gap.`,
             );
           } else {
-            persistAcknowledgedBatch(manifestStore, manifest, ingestMessages, startIndex, result);
+            persistAcknowledgedBatch(manifestStore, manifest, ingestMessages, startIndex, result, hostMessageIds);
           }
 
           // Everything above is the durable part of the turn: the daemon has

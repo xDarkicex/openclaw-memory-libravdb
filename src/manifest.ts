@@ -8,6 +8,8 @@ export interface TurnEntry {
   role: string;
   contentHash: string;
   idHash?: string;
+  /** Present only when the caller identified this ID as supplied by the host. */
+  idSource?: "host";
   turnHash: string;
   ingestedAt: number;
 }
@@ -162,6 +164,7 @@ export class TurnManifestStore {
   public findOverlapIndex(
     manifest: TurnManifest,
     incomingMessages: KernelCompatibleMessage[],
+    hostMessageIds?: ReadonlySet<string>,
   ): number {
     if (manifest.turns.length === 0) {
       return 0;
@@ -169,7 +172,7 @@ export class TurnManifestStore {
 
     const maxOverlap = Math.min(manifest.turns.length, incomingMessages.length);
     for (let overlapLength = maxOverlap; overlapLength > 0; overlapLength--) {
-      if (this.matchesManifestTail(manifest.turns, incomingMessages, overlapLength)) {
+      if (this.matchesManifestTail(manifest.turns, incomingMessages, overlapLength, hostMessageIds)) {
         return overlapLength;
       }
     }
@@ -182,6 +185,7 @@ export class TurnManifestStore {
     turns: TurnEntry[],
     incomingMessages: KernelCompatibleMessage[],
     overlapLength: number,
+    hostMessageIds?: ReadonlySet<string>,
   ): boolean {
     const manifestStart = turns.length - overlapLength;
     let hasMessageIdentity = false;
@@ -193,6 +197,12 @@ export class TurnManifestStore {
         return false;
       }
       const incomingIdHash = msg.id ? this.hashString(msg.id) : undefined;
+      // Content-only matching remains necessary for legacy manifests and
+      // generated/rotated IDs. Two known host identities, however, must agree.
+      if (turn.idSource === "host" && turn.idHash && msg.id && hostMessageIds?.has(msg.id)
+        && turn.idHash !== incomingIdHash) {
+        return false;
+      }
       if (turn.idHash || incomingIdHash) {
         if (turn.idHash === incomingIdHash) {
           hasMessageIdentity = true;
@@ -209,6 +219,7 @@ export class TurnManifestStore {
     manifest: TurnManifest,
     newMessages: KernelCompatibleMessage[],
     startingIndex: number,
+    hostMessageIds?: ReadonlySet<string>,
   ): TurnManifest {
     let currentHash = manifest.tailHash;
     const newTurns: TurnEntry[] = [];
@@ -226,6 +237,7 @@ export class TurnManifestStore {
         role: msg.role,
         contentHash,
         ...(idHash ? { idHash } : {}),
+        ...(idHash && msg.id && hostMessageIds?.has(msg.id) ? { idSource: "host" as const } : {}),
         turnHash: currentHash,
         ingestedAt: Date.now(),
       });

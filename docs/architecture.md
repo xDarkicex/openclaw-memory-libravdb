@@ -69,6 +69,12 @@ Messages without host IDs use stable advancement IDs and source positions in
 both normal ingestion and recovery, so an exact commit replay after restart
 still matches the persisted checkpoint.
 
+Ingestion checkpoints remember whether message IDs came from the host. When
+both sides of an overlap have host IDs, the IDs must agree: a new exchange with
+the same wording is still stored, while an exact replay is skipped. Legacy
+checkpoints and messages without host IDs retain the content-based overlap
+fallback for compatibility with regenerated IDs.
+
 ### `assemble`
 
 The context engine queries the relevant memory scopes, ranks the results, fits
