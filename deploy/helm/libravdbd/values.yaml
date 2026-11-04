@@ -10,6 +10,7 @@ replicaCount: 1
 # ── gRPC transport ──
 service:
   type: ClusterIP
+  # Exposed Service port; the target port follows config.grpcEndpoint.
   port: 50051
   annotations: {}
 

@@ -22,7 +22,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: grpc
-              containerPort: {{ .Values.service.port }}
+              containerPort: {{ include "libravdbd.grpcPort" . }}
               protocol: TCP
           env:
             - name: LIBRAVDB_CONFIG
@@ -65,8 +65,12 @@ spec:
           configMap:
             name: {{ include "libravdbd.fullname" . }}-config
         - name: data
+          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "libravdbd.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         {{- if .Values.tls.enabled }}
         - name: tls
           secret:
