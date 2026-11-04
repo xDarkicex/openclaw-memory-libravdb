@@ -10,10 +10,11 @@ export interface Rule {
   created_at: number;
 }
 
-let maxRules = 20;
+const DEFAULT_MAX_RULES = 20;
+let maxRules = DEFAULT_MAX_RULES;
 
 export function setMaxRules(n: number): void {
-  maxRules = Math.max(0, n);
+  maxRules = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : DEFAULT_MAX_RULES;
 }
 
 type ToolContent = { type: "text"; text: string };
@@ -30,6 +31,7 @@ let rulesPath: string | null = null;
 let nextId = 1;
 
 export function initRuleStore(cacheDir: string, logger?: LoggerLike): void {
+  maxRules = DEFAULT_MAX_RULES;
   rulesPath = cacheDir + "/rules.json";
   try {
     const raw = readFileSync(rulesPath, "utf8");
@@ -54,7 +56,7 @@ function persist(): void {
 }
 
 export function getRules(): Rule[] {
-  return rules;
+  return maxRules === 0 ? [] : rules;
 }
 
 export function getRule(id: string): Rule | undefined {
@@ -62,6 +64,7 @@ export function getRule(id: string): Rule | undefined {
 }
 
 export function setRule(ruleText: string, keywords: string[], priority: number): { rule: Rule; replaced: boolean } {
+  if (maxRules === 0) throw new Error("Hard constraint rules are disabled (maxRules=0)");
   let replaced = false;
   if (maxRules > 0 && rules.length >= maxRules) {
     let minIdx = 0;
@@ -88,7 +91,7 @@ export function setRule(ruleText: string, keywords: string[], priority: number):
 // violating rule, or null if clean.
 export function scanReply(replyText: string): Rule | null {
   const lower = replyText.toLowerCase();
-  for (const rule of rules) {
+  for (const rule of getRules()) {
     for (const kw of rule.keywords) {
       if (kw && lower.includes(kw)) {
         return rule;
@@ -135,8 +138,12 @@ export function createSetRuleTool(logger: LoggerLike = console) {
       const kwRaw = typeof params?.keywords === "string" ? params.keywords : "";
       const keywords = kwRaw.split(",").map(k => k.trim()).filter(k => k.length > 0);
       const priority = typeof params?.priority === "number" ? params.priority : 5;
-      const result = setRule(ruleText, keywords, priority);
-      return jsonResult({ ok: true, rule: result.rule, replaced: result.replaced });
+      try {
+        const result = setRule(ruleText, keywords, priority);
+        return jsonResult({ ok: true, rule: result.rule, replaced: result.replaced });
+      } catch (error) {
+        return jsonResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
     },
   };
 }
@@ -173,7 +180,8 @@ export function createListRulesTool(logger: LoggerLike = console) {
       "asks what their rules are.",
     parameters: { type: "object", additionalProperties: false, properties: {} } as const,
     execute: async (): Promise<ToolResult<{ rules: Rule[]; count: number }>> => {
-      return jsonResult({ rules: getRules(), count: rules.length });
+      const active = getRules();
+      return jsonResult({ rules: active, count: active.length });
     },
   };
 }
