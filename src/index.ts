@@ -243,6 +243,11 @@ export function register(api: OpenClawPluginApi) {
 
   const markdownIngestion = createMarkdownIngestionHandle(cfg, runtime.getClient, logger);
   const dreamPromotion = createDreamPromotionHandle(cfg, runtime.getClient, logger);
+  // Terminal runtime cleanup may precede the host's service.stop callbacks.
+  // Stop scheduling new work and drain active scans before flushing the client.
+  runtime.onShutdown(async () => {
+    await Promise.all([markdownIngestion.stop(), dreamPromotion.stop()]);
+  });
 
   api.registerService?.({
     id: "libravdb-markdown-ingestion",

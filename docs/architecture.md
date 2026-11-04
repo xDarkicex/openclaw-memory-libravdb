@@ -45,6 +45,13 @@ flowchart LR
 The memory prompt hook returns a small static capability header. It is not the
 main retrieval path.
 
+### Background service shutdown
+
+Terminal runtime cleanup stops Markdown and dream watchers and waits for active
+scans before flushing and closing the shared client. This also applies when a
+Gateway stop or plugin deletion arrives before the host's service-stop callbacks.
+Concurrent shutdown callers wait for the same drain, flush, and close operation.
+
 ### `ingest`
 
 Session messages are written into the vector service-backed store. User turns may also

@@ -116,6 +116,7 @@ export function createDreamPromotionHandle(
     watcher: null,
   };
   let lastFileState: DreamFileState | null = null;
+  let activeScan: Promise<void> | null = null;
   const debounceMs = cfg.dreamPromotionDebounceMs ?? DEFAULT_DEBOUNCE_MS;
 
   return {
@@ -133,6 +134,7 @@ export function createDreamPromotionHandle(
 
     async stop(): Promise<void> {
       state.watching = false;
+      state.dirty = false;
       if (state.timer) {
         clearTimeout(state.timer);
         state.timer = null;
@@ -141,6 +143,7 @@ export function createDreamPromotionHandle(
         state.watcher.close();
         state.watcher = null;
       }
+      await activeScan;
     },
   };
 
@@ -158,8 +161,12 @@ export function createDreamPromotionHandle(
     }
     state.timer = setTimeout(() => {
       state.timer = null;
-      void scanDiary().catch((error) => {
+      const scan = scanDiary().catch((error) => {
         logger.warn?.(`[dream-promotion] refresh failed for ${diaryPath}: ${formatError(error)}`);
+      });
+      activeScan = scan;
+      void scan.then(() => {
+        if (activeScan === scan) activeScan = null;
       });
     }, debounceMs);
   }

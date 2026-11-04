@@ -89,6 +89,7 @@ export function createPluginRuntime(
   let started: Promise<LibravDBClient> | null = null;
   let stopped = false;
   let shuttingDown = false;
+  let shutdownPromise: Promise<void> | null = null;
   const shutdownTasks: RuntimeShutdownTask[] = [];
 
   const ensureStarted = async (): Promise<LibravDBClient> => {
@@ -140,38 +141,39 @@ export function createPluginRuntime(
       }
       shutdownTasks.push(task);
     },
-    async shutdown() {
-      if (stopped || shuttingDown) {
-        return;
-      }
-      shuttingDown = true;
+    shutdown() {
+      if (shutdownPromise) return shutdownPromise;
+      shutdownPromise = (async () => {
+        shuttingDown = true;
 
-      for (const task of shutdownTasks.splice(0).reverse()) {
-        try {
-          await task();
-        } catch (error) {
-          logger.warn?.(`LibraVDB shutdown task failed: ${formatError(error)}`);
+        for (const task of shutdownTasks.splice(0).reverse()) {
+          try {
+            await task();
+          } catch (error) {
+            logger.warn?.(`LibraVDB shutdown task failed: ${formatError(error)}`);
+          }
         }
-      }
 
-      stopped = true;
-      if (!started) {
-        return;
-      }
-      const client = started;
-      started = null;
-      try {
-        const resolved = await client;
-        try {
-          await resolved.flush({});
-        } catch (error) {
-          logger.warn?.(`LibraVDB flush failed during shutdown: ${formatError(error)}`);
-        } finally {
-          resolved.close();
+        stopped = true;
+        if (!started) {
+          return;
         }
-      } catch {
-        // startup may have failed before client resolution; nothing to flush or close
-      }
+        const client = started;
+        started = null;
+        try {
+          const resolved = await client;
+          try {
+            await resolved.flush({});
+          } catch (error) {
+            logger.warn?.(`LibraVDB flush failed during shutdown: ${formatError(error)}`);
+          } finally {
+            resolved.close();
+          }
+        } catch {
+          // startup may have failed before client resolution; nothing to flush or close
+        }
+      })();
+      return shutdownPromise;
     },
   };
 }
