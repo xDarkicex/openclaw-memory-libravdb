@@ -148,6 +148,11 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 | `userId` | string | auto-derived | Stable user identity for cross-session durable memory |
 | `identityPath` | string | `$OPENCLAW_STATE_DIR/libravdb-identity.json` | Custom path for the auto-derived identity file |
 
+If OS account lookup fails, identity derivation still uses its environment fallback.
+The default identity-file path falls back to the OS home-directory resolver; when
+neither home lookup succeeds, derivation continues without persisting a file.
+An explicit `identityPath` or `OPENCLAW_STATE_DIR` continues to take precedence.
+
 ## Markdown ingestion
 
 | Key | Type | Default | Notes |
