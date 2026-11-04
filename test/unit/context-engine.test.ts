@@ -2052,6 +2052,70 @@ test("empty successful compaction keeps the uncompacted source and recall inject
   assert.match(assembled.systemPromptAddition, new RegExp(marker));
 });
 
+test("manual compaction waits for an assembled marker before replacing the session projection", async () => {
+  const client = new FakeClient();
+  const marker = "MANUAL_COMPACTION_RECALL_MARKER_1234567890";
+  // This mirrors the broken live response: the daemon says it compacted, but
+  // provides no usable summary or token accounting for the projection.
+  client.compactResponse = {
+    ok: true,
+    didCompact: true,
+    clustersFormed: 1,
+    turnsRemoved: 3,
+    summaryMethod: "guidance_shard",
+    tokenAccumulatorAfter: 0,
+    totalTurns: 3n,
+  };
+  client.assembleResponse = {
+    messages: [],
+    estimatedTokens: 0,
+    systemPromptAddition: "",
+  };
+  client.searchResults = [{
+    id: "manual-compaction-recall",
+    score: 1,
+    text: `${marker} means recall remains available when a compacted projection is absent.`,
+    metadata: { collection: "user:fixed-user" },
+  }];
+  const sourceMessages = Array.from({ length: 70 }, (_, index) =>
+    makeMessage(index % 2 === 0 ? "user" : "assistant", `message ${index}`, `message-${index}`)
+  );
+  const state = createCompactedProjectionState();
+  const engine = buildContextEngineFactory(
+    fakeRuntime(client),
+    { userId: "fixed-user" },
+    console,
+    state,
+  );
+
+  const compacted = await engine.compact({
+    sessionId: "s1-manual-compaction-without-marker",
+    force: true,
+    tokenBudget: 100_000,
+    currentTokenCount: 0,
+  });
+
+  assert.equal(compacted.ok, true);
+  assert.equal(compacted.compacted, true);
+  assert.equal(state.activeSessions.has("s1-manual-compaction-without-marker"), false);
+  assert.equal(state.snapshots.has("s1-manual-compaction-without-marker"), false);
+
+  const assembled = await engine.assemble({
+    sessionId: "s1-manual-compaction-without-marker",
+    sessionKey: "sk1",
+    messages: sourceMessages,
+    prompt: `Please recall ${marker}`,
+    tokenBudget: 100_000,
+  });
+
+  assert.equal(assembled.promptAuthority, "preassembly_may_overflow");
+  assert.equal(assembled.messages.length, sourceMessages.length);
+  assert.match(assembled.systemPromptAddition, /<context_memory>/u);
+  assert.match(assembled.systemPromptAddition, new RegExp(marker));
+  assert.equal(state.activeSessions.has("s1-manual-compaction-without-marker"), false);
+  assert.equal(state.snapshots.has("s1-manual-compaction-without-marker"), false);
+});
+
 test("successful compaction fences an overlapping assembly holding an older marker", async () => {
   const client = new FakeClient();
   const state = createCompactedProjectionState();
