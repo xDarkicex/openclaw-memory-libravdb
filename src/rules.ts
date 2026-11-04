@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { LoggerLike } from "./types.js";
 
@@ -47,12 +48,20 @@ export function initRuleStore(cacheDir: string, logger?: LoggerLike): void {
   }
 }
 
-function persist(): void {
-  if (!rulesPath) return;
+function persist(nextRules: Rule[], nextRuleId: number): void {
+  if (!rulesPath) throw new Error("Rule store is not initialized");
+  mkdirSync(dirname(rulesPath), { recursive: true });
+  const temporaryPath = `${rulesPath}.${randomUUID()}.tmp`;
   try {
-    mkdirSync(dirname(rulesPath), { recursive: true });
-    writeFileSync(rulesPath, JSON.stringify({ rules, nextId }));
-  } catch { /* best-effort disk write */ }
+    // Write beside the destination so a failed write cannot truncate the old store.
+    writeFileSync(temporaryPath, JSON.stringify({ rules: nextRules, nextId: nextRuleId }), {
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, rulesPath);
+  } finally {
+    try { rmSync(temporaryPath, { force: true }); } catch { /* preserve the persistence error */ }
+  }
 }
 
 export function getRules(): Rule[] {
@@ -66,24 +75,27 @@ export function getRule(id: string): Rule | undefined {
 export function setRule(ruleText: string, keywords: string[], priority: number): { rule: Rule; replaced: boolean } {
   if (maxRules === 0) throw new Error("Hard constraint rules are disabled (maxRules=0)");
   let replaced = false;
+  const nextRules = [...rules];
   if (maxRules > 0 && rules.length >= maxRules) {
     let minIdx = 0;
     for (let i = 1; i < rules.length; i++) {
       if (rules[i].priority < rules[minIdx].priority) minIdx = i;
     }
-    rules.splice(minIdx, 1);
+    nextRules.splice(minIdx, 1);
     replaced = true;
   }
   const rule: Rule = {
-    id: String(nextId++),
+    id: String(nextId),
     rule: ruleText,
     keywords: keywords.map(k => k.toLowerCase().trim()).filter(k => k.length > 0),
     priority: Math.max(1, Math.min(10, priority || 5)),
     created_at: Date.now(),
   };
-  rules.push(rule);
-  rules.sort((a, b) => b.priority - a.priority);
-  persist();
+  nextRules.push(rule);
+  nextRules.sort((a, b) => b.priority - a.priority);
+  persist(nextRules, nextId + 1);
+  rules = nextRules;
+  nextId++;
   return { rule, replaced };
 }
 
@@ -104,8 +116,9 @@ export function scanReply(replyText: string): Rule | null {
 export function deleteRule(id: string): boolean {
   const idx = rules.findIndex((r) => r.id === id);
   if (idx < 0) return false;
-  rules.splice(idx, 1);
-  persist();
+  const nextRules = rules.filter((_, i) => i !== idx);
+  persist(nextRules, nextId);
+  rules = nextRules;
   return true;
 }
 
@@ -203,8 +216,12 @@ export function createDeleteRuleTool(logger: LoggerLike = console) {
       const params = rawParams as Record<string, unknown> | undefined;
       const id = typeof params?.rule_id === "string" ? params.rule_id.trim() : "";
       if (!id) return jsonResult({ ok: false, error: "delete_rule requires rule_id" });
-      const ok = deleteRule(id);
-      return jsonResult({ ok });
+      try {
+        const ok = deleteRule(id);
+        return jsonResult({ ok });
+      } catch (error) {
+        return jsonResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
     },
   };
 }

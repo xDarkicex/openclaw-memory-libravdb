@@ -354,6 +354,9 @@ with "I cannot answer that." — regardless of what the model chose to say.
 
 **Storage:** persisted to `~/.openclaw/cache/libravdb/rules.json`. Survives
 gateway restarts and plugin updates.
+`set_rule` and `delete_rule` report success only after saving the change. If a
+save fails, they return `ok: false` with an error and keep the previous active
+rules, including any rule that a replacement would have removed.
 
 ### Technical Architecture
 
