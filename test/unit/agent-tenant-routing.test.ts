@@ -88,9 +88,10 @@ test("queued agent writes and tools retain their tenant across another agent's p
   }
   assert.deepEqual(calls.filter(c => c.method === "GetUserCard").map(c => c.tenant), ["tenant-a", "tenant-b", "tenant-a"]);
 
-  // Managers have an agent scope even when the search itself omits it.
   const managerA = (await bridge.getMemorySearchManager({ agentId: "a" })).manager;
   const managerB = (await bridge.getMemorySearchManager({ agentId: "b" })).manager;
+  assert.ok(managerA);
+  assert.ok(managerB);
   const searchStart = calls.length;
   await managerA.search({ query: "private fact" });
   await managerB.search({ query: "private fact" });
