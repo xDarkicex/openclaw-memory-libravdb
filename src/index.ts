@@ -1,4 +1,5 @@
-import { resolveIdentity } from "./identity.js";
+import { createAgentExclusionGuard } from "./agent-exclusion.js";
+import { resolveIdentity, resolveTenantKey, resolveReadTenants } from "./identity.js";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { registerMemoryCli } from "./cli.js";
 import { registerMemoryCliMetadata } from "./cli-descriptors.js";
@@ -46,6 +47,7 @@ export function register(api: OpenClawPluginApi) {
   }
 
   const cfg = api.pluginConfig as PluginConfig;
+  const agentExclusions = createAgentExclusionGuard(cfg);
   const isLightweight = LIGHTWEIGHT_MODES.has(registrationMode);
   const isDiscovery = registrationMode === "discovery";
 
@@ -98,10 +100,11 @@ export function register(api: OpenClawPluginApi) {
     : createPluginRuntime(cfg, logger);
 
   const subagentExclusions = createSubagentExclusionGuard(runtimeOrNull, cfg.excludeSubagents === true);
+  const isExcluded = (ctx: unknown) => agentExclusions.isExcluded(ctx) || subagentExclusions.isExcluded(ctx);
   const registerMemoryTool: OpenClawPluginApi["registerTool"] = (tool, opts) => {
-    api.registerTool?.(typeof tool === "function"
-      ? ctx => subagentExclusions.isExcluded(ctx) ? null : tool(ctx)
-      : tool, opts);
+    api.registerTool?.(ctx => isExcluded(ctx)
+      ? null
+      : typeof tool === "function" ? tool(ctx) : tool, opts);
   };
 
   // Rule store init — persists to plugin cache directory.
@@ -190,6 +193,7 @@ export function register(api: OpenClawPluginApi) {
   const runtime = runtimeOrNull;
   if (!runtime) return; // unreachable but satisfies the type checker
   const compactedProjectionState = createCompactedProjectionState();
+  runtime.onShutdown(() => agentExclusions.clear());
 
   if (!memSlot) {
     logger.warn?.("[libravdb-memory] plugins.slots.memory is unset; set it to \"libravdb-memory\" for memory to work.");
@@ -205,7 +209,7 @@ export function register(api: OpenClawPluginApi) {
     runtime: {
       ...memoryBridge,
       async getMemorySearchManager(params: { agentId?: string; purpose?: string; sessionKey?: string; sessionId?: string } = {}) {
-        if (subagentExclusions.isExcluded(params)) return { manager: null, error: "LibraVDB memory is disabled for this subagent" };
+        if (isExcluded(params)) return { manager: null, error: "LibraVDB memory is disabled for this agent" };
         return memoryBridge.getMemorySearchManager(params);
       },
     },
@@ -311,7 +315,7 @@ export function register(api: OpenClawPluginApi) {
   // (heartbeat, cron, memory, overflow) skip semantic retrieval to save
   // an embedding call and RPC round trip on non-interactive turns.
   api.on("before_prompt_build", async (_event, ctx) => {
-    if (subagentExclusions.isExcluded(ctx)) return;
+    if (isExcluded(ctx)) return;
     const c = ctx as Record<string, unknown> | undefined;
     const sessionId = c?.sessionId as string | undefined;
     const trigger = c?.trigger as string | undefined;
@@ -333,7 +337,7 @@ export function register(api: OpenClawPluginApi) {
   // @ts-expect-error: api.on types declare void return, but the runtime
   // processes PluginHookBeforePromptBuildResult from before_prompt_build handlers.
   api.on("before_prompt_build", async (event: unknown, ctx: unknown) => {
-    if (subagentExclusions.isExcluded(ctx)) return;
+    if (isExcluded(ctx)) return;
     const c = ctx as Record<string, unknown>;
     const provider = c.messageProvider as string | undefined;
     if (!provider || !MULTI_SPEAKER_PROVIDERS.has(provider.toLowerCase())) return;
@@ -383,7 +387,7 @@ export function register(api: OpenClawPluginApi) {
   // prompt level (AGENTS.md equivalent) so the model treats them as hard rules.
   // @ts-expect-error: api.on types declare void return, runtime processes hook results.
   api.on("before_prompt_build", async (_event, ctx) => {
-    if (subagentExclusions.isExcluded(ctx)) return;
+    if (isExcluded(ctx)) return;
     const rulesText = buildRulesContext();
     if (!rulesText) return;
     return { prependSystemContext: rulesText };
@@ -418,19 +422,18 @@ export function register(api: OpenClawPluginApi) {
   api.on("before_reset", async (event, ctx) => {
     const sessionId = (ctx as Record<string, unknown> | undefined)?.sessionId as string | undefined;
     if (sessionId) clearCompactedProjectionState(compactedProjectionState, sessionId);
-    if (!subagentExclusions.isExcluded(ctx)) await beforeResetHook(event, ctx);
+    if (!isExcluded(ctx)) await beforeResetHook(event, ctx);
   });
   const sessionEndHook = createSessionEndHook(runtime, logger);
   api.on("session_end", async (event, ctx) => {
-    const context = {
-      ...(ctx as Record<string, unknown> | undefined),
-      sessionId: (event as Record<string, unknown> | undefined)?.sessionId ?? (ctx as Record<string, unknown> | undefined)?.sessionId,
-      sessionKey: (event as Record<string, unknown> | undefined)?.sessionKey ?? (ctx as Record<string, unknown> | undefined)?.sessionKey,
-    };
+    const e = event as Record<string, unknown> | undefined;
+    const c = ctx as Record<string, unknown> | undefined;
+    const scope = { ...c, sessionId: e?.sessionId ?? c?.sessionId, sessionKey: e?.sessionKey ?? c?.sessionKey };
     try {
-      if (!subagentExclusions.isExcluded(context)) await sessionEndHook(event, ctx);
+      if (!isExcluded(scope)) await sessionEndHook(event, ctx);
     } finally {
-      subagentExclusions.forget(context);
+      agentExclusions.forget(scope);
+      subagentExclusions.forget(scope);
     }
   });
   api.on("gateway_stop", async () => {

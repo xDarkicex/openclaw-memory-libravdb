@@ -1,4 +1,5 @@
 import type { ClientGetter, ClientScope } from "./plugin-runtime.js";
+import { createAgentExclusionGuard } from "./agent-exclusion.js";
 import type { LibravDBClient } from "./libravdb-client.js";
 import { resolveDurableNamespace, resolveUserCollection } from "./memory-scopes.js";
 import { resolveIdentity } from "./identity.js";
@@ -42,8 +43,12 @@ type MemoryRuntimeStatus = {
 };
 
 export function buildMemoryRuntimeBridge(getClient: ClientGetter, cfg: PluginConfig) {
+  const agentExclusions = createAgentExclusionGuard(cfg);
   return {
-    async getMemorySearchManager(params: { agentId?: string; purpose?: string } = {}) {
+    async getMemorySearchManager(params: { agentId?: string; sessionKey?: string; purpose?: string } = {}) {
+      if (agentExclusions.isExcluded(params)) {
+        return { manager: null, error: "LibraVDB memory is disabled for this agent by excludeAgents" };
+      }
       const status = await readStatus(getClient, params.purpose, params);
       return {
         manager: createMemorySearchManager(getClient, cfg, params, status),

@@ -5,7 +5,7 @@ import type { LoggerLike, PluginConfig } from "./types.js";
 
 type MemoryRuntimeBridge = ReturnType<typeof buildMemoryRuntimeBridge>;
 type MemoryManagerContext = Awaited<ReturnType<MemoryRuntimeBridge["getMemorySearchManager"]>>;
-type MemorySearchManager = MemoryManagerContext["manager"];
+type MemorySearchManager = NonNullable<MemoryManagerContext["manager"]>;
 
 type MemoryToolContext = {
   agentId?: string;
@@ -177,9 +177,13 @@ export function createLibraVdbMemoryTools(
       manager = bridge
         .getMemorySearchManager({
           agentId: normalizeOptionalString(ctx.agentId),
+          sessionKey: normalizeOptionalString(ctx.sessionKey),
           purpose,
         })
-        .then((result) => result.manager)
+        .then((result) => {
+          if (!result.manager) throw new Error(result.error ?? "LibraVDB memory is unavailable");
+          return result.manager;
+        })
         .catch((error) => {
           managers.delete(key);
           throw error;
