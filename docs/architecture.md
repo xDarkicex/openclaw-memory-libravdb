@@ -80,6 +80,13 @@ Replacing a client does not reuse its cached recall or inherit its retrieval
 failure state. Predictions produced after ingestion are also discarded if a
 different client handles the next assembly.
 
+For conversation continuity, the plugin also keeps a best-effort local copy of
+the last user and assistant messages per session key. Each entry is replaced
+atomically and read when needed, so separate engine instances preserve one
+another's entries and observe current saved context. The vector service remains
+the source of truth; failure to update this cache does not reject an acknowledged
+turn.
+
 ### `compact`
 
 Compaction is explicit rather than background-only. The host can request a

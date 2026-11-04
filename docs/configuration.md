@@ -125,6 +125,12 @@ refreshes recall even when the transcript has the same length or query prefix.
 Post-tool continuations also require the same daemon client; changing runtime or
 tenant clients refreshes context instead of reusing the previous client's recall.
 
+Recent conversation continuity is saved separately for each session key under
+`OPENCLAW_STATE_DIR/libravdb-continuity` (or `~/.openclaw/libravdb-continuity`).
+Separate engine instances read the latest saved value and cannot overwrite other
+sessions' entries. Existing `libravdb-continuity-cache.json` entries remain a
+read-only fallback until each session gets a newer individual entry.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `topK` | number | — | Max results per search |

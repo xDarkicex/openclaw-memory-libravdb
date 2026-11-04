@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { homedir } from "node:os";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { ContinuityCache } from "./continuity-cache.js";
 import { buildRulesContext } from "./rules.js";
 import { resolveReadTenants, resolveTenantKey } from "./identity.js";
 import { resolveClientEndpoint } from "./libravdb-client.js";
@@ -2789,35 +2787,14 @@ export function buildContextEngineFactory(
     };
   }
 
-  const continuityCache = new Map<string, string>(); // sessionKey -> raw context block
-  const continuityCachePath = (() => {
-    const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
-    const dir = stateDir || join(homedir(), '.openclaw');
-    return join(dir, 'libravdb-continuity-cache.json');
-  })();
-
-  // Load persisted cache on startup.
-  try {
-    if (existsSync(continuityCachePath)) {
-      const raw = JSON.parse(readFileSync(continuityCachePath, 'utf8'));
-      for (const [k, v] of Object.entries(raw)) {
-        if (typeof v === 'string') continuityCache.set(k, v);
-      }
-    }
-  } catch { /* best-effort */ }
-
-  function persistContinuityCache() {
-    try {
-      mkdirSync(join(continuityCachePath, '..'), { recursive: true });
-      writeFileSync(continuityCachePath, JSON.stringify(Object.fromEntries(continuityCache)));
-    } catch { /* best-effort */ }
-  }
+  const continuityCache = new ContinuityCache();
 
   function updateContinuityCache(sessionKey: string, messages: KernelCompatibleMessage[]) {
     const lastTurns = messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-2);
     if (lastTurns.length > 0) {
-      continuityCache.set(sessionKey, lastTurns.map(m => `${m.role}: ${m.content}`).join('\n'));
-      persistContinuityCache();
+      try {
+        continuityCache.write(sessionKey, lastTurns.map(m => `${m.role}: ${m.content}`).join('\n'));
+      } catch { /* continuity is best-effort; the daemon already acknowledged the turn */ }
     }
   }
 
@@ -2831,7 +2808,7 @@ export function buildContextEngineFactory(
     systemPromptAddition: string;
   }): Promise<string | null> {
     try {
-      const cached = continuityCache.get(params.sessionKey);
+      const cached = continuityCache.read(params.sessionKey);
       if (cached) {
         return `<continuity_context>\nRecent conversation:\n${cached}\n</continuity_context>`;
       }
