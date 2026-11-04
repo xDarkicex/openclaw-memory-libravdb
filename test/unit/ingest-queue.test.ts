@@ -47,6 +47,34 @@ function feedback(overrides: Partial<{
   };
 }
 
+test("empty ingest deletes the previous authored document in every chunking mode", async () => {
+  for (const chunkTokens of [4, Infinity]) {
+    const deleted: string[] = [];
+    let ingested = false;
+    const queue = new IngestQueue(
+      async () => { ingested = true; return { ok: true }; },
+      async ({ sourceDoc }) => { deleted.push(sourceDoc); },
+      { error() {}, warn() {} },
+      { chunkTokens, maxRetries: 0 },
+    );
+
+    assert.equal(await queue.enqueueIngest("/vault/daily.md", "", baseParams()), undefined);
+    assert.deepEqual(deleted, ["/vault/daily.md"]);
+    assert.equal(ingested, false);
+  }
+});
+
+test("empty ingest fails when clearing the previous document fails", async () => {
+  const queue = new IngestQueue(
+    async () => ({ ok: true }),
+    async () => { throw new Error("delete unavailable"); },
+    { error() {}, warn() {} },
+    { maxRetries: 0 },
+  );
+
+  await assert.rejects(queue.enqueueIngest("/vault/daily.md", "", baseParams()), /delete unavailable/);
+});
+
 test("chunked ingest replaces first chunk then appends remaining chunks", async () => {
   const calls: Array<{ mode?: IngestMode; text: string }> = [];
   const queue = new IngestQueue(

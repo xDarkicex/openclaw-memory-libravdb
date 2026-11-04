@@ -93,6 +93,14 @@ export class IngestQueue {
     baseParams: Omit<IngestMarkdownDocumentParams, "sourceDoc" | "text" | "mode">,
     maxChunkTokens?: number,
   ): Promise<IngestFeedback | undefined> {
+    // An empty replacement must still clear the previously authored document.
+    // There are no chunks to submit, so use the deletion RPC and only let the
+    // caller record the empty-file snapshot after that operation succeeds.
+    if (text.length === 0) {
+      await this.enqueueDelete(sourceDoc);
+      return undefined;
+    }
+
     if (this.options.chunkTokens === Infinity) {
       const resp = await this.ingestWithRetry({
         ...baseParams,

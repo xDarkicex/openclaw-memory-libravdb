@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { getHashBackendName, hashBytes } from "./markdown-hash.js";
 import { formatError } from "./format-error.js";
+import { createMarkdownFenceTracker } from "./markdown-fence.js";
 import type { LoggerLike, PluginConfig } from "./types.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
@@ -387,22 +388,18 @@ export async function promoteDreamDiaryFile(
 export function parseDreamPromotionCandidates(text: string): DreamPromotionCandidate[] {
   const candidates: DreamPromotionCandidate[] = [];
   const lines = text.split("\n");
-  let inFence = false;
+  const isFencedLine = createMarkdownFenceTracker();
   let activeSection = "";
 
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index] ?? "";
     const trimmed = line.trimStart();
-    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) {
+    if (isFencedLine(line)) {
       continue;
     }
 
     const heading = parseHeading(trimmed);
-    if (heading) {
+    if (heading !== null) {
       activeSection = heading;
       continue;
     }
@@ -439,11 +436,11 @@ export function parseDreamPromotionCandidates(text: string): DreamPromotionCandi
 }
 
 function parseHeading(value: string): string | null {
-  const match = /^(#{2,6})\s+(.+)$/.exec(value);
+  const match = /^(#{1,6})(?:[ \t]+(.*)|[ \t]*)$/.exec(value.trimEnd());
   if (!match) {
     return null;
   }
-  return normalizeSectionName(match[2] ?? "");
+  return normalizeSectionName((match[2] ?? "").replace(/[ \t]+#+[ \t]*$/, ""));
 }
 
 function isPromotionSection(section: string): boolean {
