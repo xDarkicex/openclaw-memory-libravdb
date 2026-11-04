@@ -2036,13 +2036,16 @@ const triggerCache = new Map<string, string>();
 const TRIGGER_CACHE_MAX_SIZE = 200;
 
 export function setSessionTrigger(sessionId: string, trigger: string | undefined): void {
+  if (trigger == null) {
+    triggerCache.delete(sessionId);
+    return;
+  }
+  triggerCache.delete(sessionId);
   if (triggerCache.size >= TRIGGER_CACHE_MAX_SIZE) {
     const oldest = triggerCache.keys().next().value;
     if (oldest !== undefined) triggerCache.delete(oldest);
   }
-  if (trigger !== undefined && trigger !== null) {
-    triggerCache.set(sessionId, trigger);
-  }
+  triggerCache.set(sessionId, trigger);
 }
 
 export function clearSessionTrigger(sessionId: string): void {
@@ -2133,6 +2136,7 @@ export function buildContextEngineFactory(
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
   let engineDisposed = false;
+  const ownedIngestions = new Set<Promise<void>>();
 
   // --- Per-agent / per-subagent exclusion ---
   // Sessions belonging to an excluded agent (or, when excludeSubagents is set,
@@ -4073,9 +4077,13 @@ export function buildContextEngineFactory(
         }
       });
 
-      // afterTurn's own contract is fire-and-forget and the task already
-      // logged. commitTurn awaits the handle instead, so it sees real failures.
-      ingestion.catch(() => {});
+      // Keep ownership separate from the shared session queue: a replacement
+      // engine can already have queued later work in that same session.
+      ownedIngestions.add(ingestion);
+      const releaseOwnership = () => { ownedIngestions.delete(ingestion); };
+      // Handle both outcomes without creating an unhandled rejected promise.
+      // commitTurn still awaits the original handle and sees real failures.
+      void ingestion.then(releaseOwnership, releaseOwnership);
 
       args[CAPTURE_INGESTION]?.(ingestion);
 
@@ -4153,21 +4161,22 @@ export function buildContextEngineFactory(
       // Drain in-flight ingestion so writes are not lost during shutdown.
       // Apply a timeout so a stuck daemon doesn't block process exit.
       const DISPOSE_DRAIN_TIMEOUT_MS = 5000;
-      const pending = Array.from(asyncIngestionQueues.values());
+      const pending = Array.from(ownedIngestions);
       if (pending.length > 0) {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
-            Promise.all(pending),
-            new Promise<void>((resolve) => setTimeout(resolve, DISPOSE_DRAIN_TIMEOUT_MS)),
+            Promise.allSettled(pending),
+            new Promise<void>((resolve) => { timeout = setTimeout(resolve, DISPOSE_DRAIN_TIMEOUT_MS); }),
           ]);
-        } catch {
-          // Swallow — drain errors are already logged inside queued tasks.
+        } finally {
+          if (timeout) clearTimeout(timeout);
         }
-        const remaining = Array.from(asyncIngestionQueues.values()).length;
+        const remaining = ownedIngestions.size;
         if (remaining > 0) {
           logger.warn?.(
             `LibraVDB dispose timed out after ${DISPOSE_DRAIN_TIMEOUT_MS}ms ` +
-            `with ${remaining} queued ingestion task(s) still pending — clearing anyway`,
+            `with ${remaining} owned ingestion task(s) still pending`,
           );
         }
       }

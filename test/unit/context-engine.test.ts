@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 
-import { buildContextEngineFactory, clearCompactedProjectionState, createCompactedProjectionState, FLUSH_ASYNC_INGESTION } from "../../src/context-engine.js";
+import { buildContextEngineFactory, clearCompactedProjectionState, clearSessionTrigger, createCompactedProjectionState, FLUSH_ASYNC_INGESTION, setSessionTrigger } from "../../src/context-engine.js";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import { resolveIdentity } from "../../src/identity.js";
@@ -130,6 +130,46 @@ function installBeforeTurnKernel(
     return handler(params);
   };
 }
+
+test("disposing one engine preserves another session's trigger and post-tool recall", async () => {
+  const client = new FakeClient();
+  installBeforeTurnKernel(client, async () => ({ predictions: [] }));
+  const engineA = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const engineB = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const sessionId = "s1-dispose-preserves-shared-cache";
+  setSessionTrigger(sessionId, "cron");
+  const user = makeMessage("user", "scheduled question", "scheduled-user");
+  client.assembleResponse.systemPromptAddition = "Memory cached for the active session";
+  const first = await engineB.assemble({ sessionId, messages: [user], tokenBudget: 4000 });
+  await engineA.dispose();
+  try {
+    const messages = [user, makeMessage("toolResult", "tool output", "scheduled-tool")];
+    const second = await engineB.assemble({ sessionId, messages, tokenBudget: 4000 });
+    assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 0, "automated trigger must survive unrelated engine disposal");
+    assert.equal(client.calls.filter((call) => call.method === "assembleContextInternal").length, 1, "post-tool continuation must keep its cached recall");
+    assert.equal(second.systemPromptAddition, first.systemPromptAddition);
+    assert.deepEqual(second.messages, messages);
+    await engineB.assemble({ sessionId, messages: [makeMessage("user", "next scheduled question")], tokenBudget: 4000 });
+    assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 0, "the next automated question must retain its trigger gate");
+  } finally {
+    clearSessionTrigger(sessionId);
+  }
+});
+
+test("an unspecified new session trigger clears an earlier automated trigger", async () => {
+  const client = new FakeClient();
+  installBeforeTurnKernel(client, async () => ({ predictions: [] }));
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const sessionId = "s1-clear-stale-trigger";
+  setSessionTrigger(sessionId, "cron");
+  setSessionTrigger(sessionId, undefined);
+  try {
+    await engine.assemble({ sessionId, messages: [makeMessage("user", "interactive question")], tokenBudget: 4000 });
+    assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 1);
+  } finally {
+    clearSessionTrigger(sessionId);
+  }
+});
 
 test("context engine bootstraps session via client", async () => {
   const client = new FakeClient();

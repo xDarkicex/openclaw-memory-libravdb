@@ -80,6 +80,8 @@ thresholds, compaction declines instead of forcing a rewrite.
 - compaction is separate from prompt construction
 - lifecycle hints such as `before_reset` and `session_end` are advisory
 - the vector service is the source of truth for stored memory state
+- engine disposal drains only ingestion submitted by that engine, with a bounded
+  deadline; other engines retain their queues and shared session caches
 
 ## Failure Handling
 
