@@ -55,7 +55,7 @@ export class TurnMemoryCache {
   }
 
   private cacheKey(sessionId: string, queryHint: string): string {
-    return `${sessionId}:${this.normalize(queryHint)}`;
+    return `${JSON.stringify(sessionId)}:${this.normalize(queryHint)}`;
   }
 
   private normalize(text: string): string {
@@ -71,7 +71,7 @@ export class TurnMemoryCache {
   }
 
   invalidateSession(sessionId: string): void {
-    this.cache.invalidate(sessionId + ":");
+    this.cache.invalidate(`${JSON.stringify(sessionId)}:`);
   }
 
   get size(): number {
