@@ -187,6 +187,9 @@ An explicit `identityPath` or `OPENCLAW_STATE_DIR` continues to take precedence.
 
 ## Markdown ingestion
 
+Unicode characters, including emoji and supplementary CJK ideographs, are
+preserved when large Markdown files are split into chunks for ingestion.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `markdownIngestionEnabled` | boolean | `false` | Watch markdown roots for changes |

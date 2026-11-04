@@ -212,7 +212,9 @@ function splitIntoChunks(text: string, maxTokens: number): Array<{ text: string;
   if (!(maxTokens > 0)) {
     return [{ text, ordinal: 0 }];
   }
-  const maxChars = maxTokens * 4;
+  // A Unicode code point may need two UTF-16 code units. Even a fractional
+  // caller budget must leave enough room to consume one complete code point.
+  const maxChars = Math.max(2, Math.floor(maxTokens * 4));
   if (text.length <= maxChars) {
     return [{ text, ordinal: 0 }];
   }
@@ -223,6 +225,13 @@ function splitIntoChunks(text: string, maxTokens: number): Array<{ text: string;
 
   while (offset < text.length) {
     let end = Math.min(offset + maxChars, text.length);
+    const last = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      // Each chunk is encoded as a separate protobuf string. Splitting a pair
+      // would turn both halves into replacement characters on the wire.
+      end--;
+    }
 
     // Walk back up to 256 chars looking for a sentence boundary.
     // `end` is exclusive, so probes must stay inside [offset, end).
