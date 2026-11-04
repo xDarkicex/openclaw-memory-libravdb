@@ -173,11 +173,12 @@ export function createDreamPromotionHandle(
       await performScan();
     } finally {
       state.scanning = false;
-    }
-
-    if (state.dirty) {
-      state.dirty = false;
-      await refreshDiary();
+      // An edit received while promotion was in flight still needs a scan if
+      // that RPC fails. Scheduling outside finally strands the dirty marker.
+      if (state.dirty) {
+        state.dirty = false;
+        await refreshDiary();
+      }
     }
   }
 
