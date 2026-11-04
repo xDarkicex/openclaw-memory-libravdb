@@ -2547,6 +2547,7 @@ export function buildContextEngineFactory(
       queryText: string;
       userId: string;
       sessionId: string;
+      sessionKey?: string;
       tokenBudget?: number;
       reservedTokens?: number;
     },
@@ -2571,7 +2572,7 @@ export function buildContextEngineFactory(
 
     let client: Awaited<ReturnType<typeof runtime.getClient>>;
     try {
-      client = await runtime.getClient();
+      client = await runtime.getClient(args);
     } catch (error) {
       logger.warn?.(
         `LibraVDB exact recall skipped sessionId=${args.sessionId}: ` +
@@ -2815,6 +2816,7 @@ export function buildContextEngineFactory(
   async function runCompaction(
     args: {
       sessionId: string;
+      sessionKey?: string;
       force?: boolean;
       targetSize?: number;
       tokenBudget?: number;
@@ -2829,7 +2831,7 @@ export function buildContextEngineFactory(
     }
     const request = buildCompactSessionRequest(args);
     try {
-      const client = await runtime.getClient();
+      const client = await runtime.getClient(args);
       const threshold = getDynamicCompactThreshold(args.tokenBudget);
       const response = await client.compactSession(request);
       const result = normalizeCompactResult(response, {
@@ -2865,6 +2867,7 @@ export function buildContextEngineFactory(
 
   async function performAfterTurnPredictiveCompaction(args: {
     sessionId: string;
+    sessionKey?: string;
     messages: OpenClawCompatibleMessage[];
     tokenBudget?: number;
     currentTokenCount?: number;
@@ -2897,6 +2900,7 @@ export function buildContextEngineFactory(
     });
     const compactionResult = await runCompaction({
       sessionId: args.sessionId,
+      sessionKey: args.sessionKey,
       targetSize: predictiveTargetSize,
       tokenBudget: args.tokenBudget,
       force: true,
@@ -2959,7 +2963,7 @@ export function buildContextEngineFactory(
         `LibraVDB bootstrap sessionId=${sessionId} userId=${userId} ` +
         `sessionKey=${args.sessionKey ?? "(none)"}`,
       );
-      const client = await runtime.getClient();
+      const client = await runtime.getClient(args);
       return await client.bootstrapSessionKernel({
         sessionId,
         sessionKey: args.sessionKey,
@@ -2983,7 +2987,7 @@ export function buildContextEngineFactory(
         `contentLen=${message.content.length}`,
       );
       try {
-        const client = await runtime.getClient();
+        const client = await runtime.getClient(args);
         return await client.ingestMessageKernel({
           sessionId,
           sessionKey: args.sessionKey,
@@ -3109,6 +3113,7 @@ export function buildContextEngineFactory(
         const compactionResult = await runCompaction(
           {
             sessionId,
+            sessionKey: args.sessionKey,
             targetSize: predictiveTargetSize,
             tokenBudget: args.tokenBudget,
             force: true,
@@ -3212,7 +3217,7 @@ export function buildContextEngineFactory(
       }
 
       try {
-        const client = await runtime.getClient();
+        const client = await runtime.getClient(args);
 
 
 
@@ -3418,6 +3423,7 @@ export function buildContextEngineFactory(
               queryText: retrievalQuery,
               userId,
               sessionId,
+              sessionKey: args.sessionKey,
               tokenBudget: args.tokenBudget,
               reservedTokens: reservedCurrentTurnTokens,
             }),
@@ -3875,7 +3881,7 @@ export function buildContextEngineFactory(
               manifestTailHash: manifest.tailHash,
             };
 
-          const client = await runtime.getClient();
+          const client = await runtime.getClient(args);
           if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
           const currentTokenCount = normalizeCurrentTokenCount(
             typeof args.runtimeContext?.currentTokenCount === "number"
@@ -3985,6 +3991,7 @@ export function buildContextEngineFactory(
           try {
             await performAfterTurnPredictiveCompaction({
               sessionId,
+              sessionKey: args.sessionKey,
               messages,
               tokenBudget: args.tokenBudget,
               currentTokenCount,

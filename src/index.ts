@@ -1,4 +1,4 @@
-import { resolveIdentity, resolveTenantKey, resolveReadTenants } from "./identity.js";
+import { resolveIdentity } from "./identity.js";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { registerMemoryCli } from "./cli.js";
 import { registerMemoryCliMetadata } from "./cli-descriptors.js";
@@ -119,43 +119,43 @@ export function register(api: OpenClawPluginApi) {
   // Recall tools: describe, expand, grep — available when the runtime exists.
   if (runtimeOrNull) {
     api.registerTool?.((ctx) => {
-      const getClient = runtimeOrNull.getClient;
+      const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
       return createMemoryDescribeTool(getClient, getSessionId, logger);
     }, { names: ["memory_describe"] });
     api.registerTool?.((ctx) => {
-      const getClient = runtimeOrNull.getClient;
+      const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       const getSessionKey = () => (ctx as Record<string, unknown>).sessionKey as string | undefined;
       const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
       return createMemoryExpandTool(getClient, getSessionKey, logger, getSessionId);
     }, { names: ["memory_expand"] });
     api.registerTool?.((ctx) => {
-      const getClient = runtimeOrNull.getClient;
+      const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
       return createMemoryGrepTool(getClient, getSessionId, logger);
     }, { names: ["memory_grep"] });
     api.registerTool?.((ctx) => {
-      const getClient = runtimeOrNull.getClient;
+      const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createUpdateUserCardTool(getClient, logger);
     }, { names: ["update_user_card"] });
     api.registerTool?.((ctx) => {
-      const getClient = runtimeOrNull.getClient;
+      const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createGetUserCardTool(getClient, logger);
     }, { names: ["get_user_card"] });
     api.registerTool?.((ctx) => {
-      const getClient = runtimeOrNull.getClient;
+      const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createListUserCardsTool(getClient, logger);
     }, { names: ["list_user_cards"] });
     api.registerTool?.(() => createSetRuleTool(logger), { names: ["set_rule"] });
     api.registerTool?.(() => createGetRuleTool(logger), { names: ["get_rule"] });
     api.registerTool?.(() => createListRulesTool(logger), { names: ["list_rules"] });
     api.registerTool?.(() => createDeleteRuleTool(logger), { names: ["delete_rule"] });
-    api.registerTool?.(() => {
-      const getClient = runtimeOrNull.getClient;
+    api.registerTool?.((ctx) => {
+      const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createSetPersonaTool(getClient, logger);
     }, { names: ["set_persona"] });
-    api.registerTool?.(() => {
-      const getClient = runtimeOrNull.getClient;
+    api.registerTool?.((ctx) => {
+      const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createGetPersonaTool(getClient, logger);
     }, { names: ["get_persona"] });
   }
@@ -301,17 +301,11 @@ export function register(api: OpenClawPluginApi) {
     const trigger = c?.trigger as string | undefined;
     if (sessionId) setSessionTrigger(sessionId, trigger);
 
-    // Resolve per-agent tenant routing.
-    if (runtimeOrNull) {
-      const agentId = c?.agentId as string | undefined;
-      const tenantKey = resolveTenantKey(cfg, agentId);
-      const readTenants = resolveReadTenants(cfg, agentId);
-      try {
-        const client = await runtimeOrNull.getClient();
-        client.setTenantKey(tenantKey);
-        client.setReadTenants(readTenants ?? []);
-      } catch { /* best-effort — client may not be ready yet */ }
-    }
+    // Remember this session's explicit agent binding without retargeting any
+    // other agent's client. Tools also bind directly from their own context.
+    try { await runtime.getClient(c); }
+    catch { /* best-effort startup; actual operations report their own errors */ }
+
   });
 
   // Phase 2 — inject speaker cards for non-main users in multi-speaker channels.
@@ -344,7 +338,7 @@ export function register(api: OpenClawPluginApi) {
     if (otherSpeakers.length === 0) return;
 
     try {
-      const client = await runtime.getClient();
+      const client = await runtime.getClient(c);
       const results = await Promise.all(
         otherSpeakers.map(async (speaker) => {
           try {

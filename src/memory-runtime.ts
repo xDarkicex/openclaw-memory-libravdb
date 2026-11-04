@@ -1,4 +1,4 @@
-import type { ClientGetter } from "./plugin-runtime.js";
+import type { ClientGetter, ClientScope } from "./plugin-runtime.js";
 import type { LibravDBClient } from "./libravdb-client.js";
 import { resolveDurableNamespace, resolveUserCollection } from "./memory-scopes.js";
 import { resolveIdentity } from "./identity.js";
@@ -44,7 +44,7 @@ type MemoryRuntimeStatus = {
 export function buildMemoryRuntimeBridge(getClient: ClientGetter, cfg: PluginConfig) {
   return {
     async getMemorySearchManager(params: { agentId?: string; purpose?: string } = {}) {
-      const status = await readStatus(getClient, params.purpose);
+      const status = await readStatus(getClient, params.purpose, params);
       return {
         manager: createMemorySearchManager(getClient, cfg, params, status),
       };
@@ -114,7 +114,11 @@ function createMemorySearchManager(
       });
       const k = normalizePositiveInteger(params.k, params.limit, params.maxResults, params.topK, cfg.topK, 8);
       const minScore = normalizeNumber(params.minScore);
-      const client = await getClient();
+      const client = await getClient({
+        agentId: firstString(params.agentId, params.context?.agentId, defaults.agentId),
+        sessionKey: firstString(params.sessionKey, params.context?.sessionKey),
+        sessionId,
+      });
 
       const dreamCollection = dreamQuery.active && cfg.crossSessionRecall !== false && searchCorpus !== "sessions"
         ? resolveDreamCollection(userId)
@@ -190,7 +194,7 @@ function createMemorySearchManager(
       return { ingested: false, delegatedToContextEngine: true };
     },
     async sync(_params?: { reason?: string; force?: boolean }) {
-      cachedStatus = await readStatus(getClient, defaults.purpose);
+      cachedStatus = await readStatus(getClient, defaults.purpose, defaults);
       return { synced: true, delegatedToContextEngine: true };
     },
     status() {
@@ -366,9 +370,10 @@ function encodeSearchResultPath(collection: string, id: string): string {
 async function readStatus(
   getClient: ClientGetter,
   purpose: string | undefined,
+  scope: ClientScope,
 ): Promise<MemoryRuntimeStatus & Record<string, unknown>> {
   try {
-    const client = await getClient();
+    const client = await getClient(scope);
     const status = await client.status({});
     return {
       ...status,

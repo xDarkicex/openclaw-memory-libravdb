@@ -10,6 +10,14 @@ environment, rather than relying on the plugin's `onnxDevice` field.
 
 ## Connection
 
+Agent operations select `tenantIdByAgent` using the host's agent ID or the agent
+component of its session key. Each distinct primary tenant and read-access list
+uses a separate client, so another agent's prompt hook cannot redirect queued
+transcript ingestion or tools. Later callbacks that omit the session key retain
+the session's explicit agent binding until runtime shutdown. Background Markdown
+ingestion, dream promotion, CLI operations, and the standalone compaction provider
+(whose host API supplies no agent context) use the configured default tenant.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `sidecarPath` | string | `auto` | `"auto"` probes standard socket paths; set `unix:/path` or `tcp:host:port` to override |
