@@ -18,7 +18,6 @@ ASSUME_YES=0
 DRY_RUN=0
 DEBUG_MODE=0
 UNINSTALL_MODE=0
-DOWNLOADED_BIN_PATH=""
 LAST_CONFIG_BACKUP=""
 TMP_FILES=()
 
@@ -245,7 +244,7 @@ install_daemon_macos_brew() {
 install_daemon_manual() {
   local os="$1"
   local arch="$2"
-  local tag tag_norm asset url checksum_url expected_sha actual_sha bin_dir bin_path current current_norm
+  local tag tag_norm asset url bin_dir bin_path current current_norm
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     info "[dry-run] resolve latest release tag from ${REPO_OWNER_LOWER}/${TAP_REPO}"
@@ -276,26 +275,37 @@ install_daemon_manual() {
   fi
 
   info "Downloading daemon asset: ${url}"
-  DOWNLOADED_BIN_PATH="$bin_path"
-  curl -fL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 120 --progress-bar -o "$bin_path" "$url"
-  checksum_url="${url}.sha256"
-  if ! expected_sha="$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 30 "$checksum_url" | awk '{print $1}')"; then
-    die "Failed to fetch checksum from ${checksum_url}"
-  fi
-  [[ -n "$expected_sha" ]] || die "Failed to read checksum from ${checksum_url}"
-  actual_sha="$(sha256_file "$bin_path")"
-  if [[ "$actual_sha" != "$expected_sha" ]]; then
-    rm -f "$bin_path"
-    die "Checksum mismatch for downloaded daemon asset."
-  fi
-  info "Checksum verified for downloaded daemon binary."
-  chmod +x "$bin_path"
-  DOWNLOADED_BIN_PATH=""
+  install_daemon_asset "$url" "$bin_path"
   append_path_once
   export PATH="$bin_dir:$PATH"
 
   warn "Manual daemon install does not provision Homebrew-managed runtime/model assets."
   warn "If the daemon fails to start, prefer Homebrew on macOS or follow docs for manual provisioning."
+}
+
+install_daemon_asset() {
+  local url="$1"
+  local bin_path="$2"
+  local download_path checksum_url expected_sha actual_sha
+
+  # Stage beside the installed binary so only a verified download replaces it.
+  download_path="$(mktemp "${bin_path}.tmp.XXXXXX")"
+  TMP_FILES+=("$download_path")
+  if ! curl -fL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 120 --progress-bar -o "$download_path" "$url"; then
+    die "Failed to download daemon asset from ${url}"
+  fi
+  checksum_url="${url}.sha256"
+  if ! expected_sha="$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 30 "$checksum_url" | awk '{print $1}')"; then
+    die "Failed to fetch checksum from ${checksum_url}"
+  fi
+  [[ -n "$expected_sha" ]] || die "Failed to read checksum from ${checksum_url}"
+  actual_sha="$(sha256_file "$download_path")"
+  if [[ "$actual_sha" != "$expected_sha" ]]; then
+    die "Checksum mismatch for downloaded daemon asset."
+  fi
+  info "Checksum verified for downloaded daemon binary."
+  chmod +x "$download_path"
+  mv -f "$download_path" "$bin_path"
 }
 
 write_launchd_plist() {
@@ -539,15 +549,13 @@ EOF
 }
 
 cleanup_on_exit() {
-  local code=$?
   local tmp
   if [[ ${#TMP_FILES[@]} -gt 0 ]]; then
     for tmp in "${TMP_FILES[@]}"; do
-      [[ -f "$tmp" ]] && rm -f "$tmp"
+      if [[ -f "$tmp" ]]; then
+        rm -f "$tmp"
+      fi
     done
-  fi
-  if [[ $code -ne 0 && -n "$DOWNLOADED_BIN_PATH" && -f "$DOWNLOADED_BIN_PATH" ]]; then
-    rm -f "$DOWNLOADED_BIN_PATH"
   fi
 }
 
@@ -752,7 +760,9 @@ main() {
     warn "Running as root is not recommended for this user-level installer."
     warn "Prefer running as a normal user to avoid permission conflicts."
   fi
-  trap cleanup_on_exit EXIT INT TERM
+  trap cleanup_on_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   if [[ "$UNINSTALL_MODE" -eq 1 ]]; then
     run_uninstall_mode
     return 0
@@ -836,4 +846,6 @@ main() {
   fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  main "$@"
+fi
