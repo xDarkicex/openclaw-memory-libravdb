@@ -31,7 +31,7 @@ None of these problems are solved by choosing a different similarity metric or a
 ## Design Goals
 
 - **Local ONNX runtime with hardware acceleration support** — the embedding and summarization pipeline runs as an embedded binary and can use the runtime's available acceleration backend
-- **Single-process sidecar** — memory is managed by a Go daemon that the host plugin supervises; no cloud dependency, no network egress of session content
+- **Separate memory service** — memory is managed by an operator-supervised Go daemon. A local daemon with local model backends can operate offline; remote daemon and model endpoints are optional deployment choices.
 - **Deterministic recall guarantees** — certain classes of content are injected unconditionally, independent of query similarity scores
 - **Bounded token usage** — every memory tier has a hard budget fraction; the system cannot silently overflow the host context window
 - **Graceful degradation** — every failure path is defined; a dead daemon means no memory augmentation, not a crashed session
@@ -49,7 +49,7 @@ Host process (TypeScript)
   ├── Memory prompt section   static header injection
   └── Plugin runtime          lazy daemon connect + RPC client
            │
-           │  JSON-RPC over Unix socket (TCP on Windows)
+           │  gRPC over Unix socket or TCP (optional TLS/mTLS)
            ▼
 Sidecar daemon (Go)
   ├── ONNX embedding engine   Nomic embed-text-v1.5

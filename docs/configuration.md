@@ -2,10 +2,11 @@
 
 All configuration keys are optional.
 
-If you do not have a GPU available, setting `onnxDevice` to `"cpu"` is
-recommended to avoid startup failures from missing GPU/NPU providers,
-but this is also optional — the service auto-detects and falls back to
-CPU when a provider is unavailable.
+The plugin is connect-only. Configure the daemon's database, embedding backend,
+model paths, and execution provider in its YAML or service environment. Plugin
+model fields do not change an already-running daemon's settings. For example,
+select ONNX CPU execution with `LIBRAVDB_ONNX_DEVICE=cpu` in the daemon's
+environment, rather than relying on the plugin's `onnxDevice` field.
 
 ## Connection
 
@@ -17,8 +18,8 @@ CPU when a provider is unavailable.
 | `grpcEndpointTlsMode` | string | `"auto"` | gRPC credential mode. `"auto"`: loopback/unix → plaintext, remote → TLS. `"tls"`: TCP uses TLS, including loopback. `"insecure"`: plaintext. Unix sockets always use plaintext. |
 | `grpcEndpointTlsClientCert` | string | — | Path to client certificate PEM for mTLS. Must be paired with `grpcEndpointTlsClientKey`. |
 | `grpcEndpointTlsClientKey` | string | — | Path to client private key PEM for mTLS. Must be paired with `grpcEndpointTlsClientCert`. |
-| `rpcTimeoutMs` | number | `30000` | Per-call timeout for service RPC (ms) |
-| `dbPath` | string | auto-named | Explicit DB path; when set bypasses model-specific naming |
+| `rpcTimeoutMs` | number | `120000` | Per-call timeout for service RPC (ms); overrides `LIBRAVDB_RPC_TIMEOUT_MS` |
+| `dbPath` | string | — | Legacy accepted field; does not change the connected daemon's database. Set `db_path` or `LIBRAVDB_DB_PATH` on the daemon. |
 
 ### gRPC TLS behavior
 
@@ -83,14 +84,19 @@ address, explicitly set `grpcEndpointTlsMode: "tls"` to match:
 
 ## Embedding
 
+These fields remain in the plugin schema for metadata and local path validation.
+They are not sent as daemon configuration. `embeddingBackend: "onnx-local"`
+requires runtime/model paths and validates them on the plugin host for local
+endpoints; provisioning and backend selection still happen on the daemon.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `embeddingProfile` | string | `nomic-embed-text-v1.5` | Primary embedding model |
 | `fallbackProfile` | string | `bge-small-en-v1.5` | Fallback when primary model fails dimension checks |
 | `embeddingBackend` | string | — | `gguf` (recommended default), `bundled`, `onnx-local`, `custom-local`, or `remote` |
 | `onnxDevice` | string | `cpu` | ONNX execution provider: `auto`, `cpu`, `coreml` (macOS), `cuda` (Linux/Windows), `directml` (Windows), `openvino` (Linux) |
-| `embeddingRuntimePath` | string | — | Path to ONNX runtime library visible to the vector service (maps to `LIBRAVDB_ONNX_RUNTIME`; required with `embeddingBackend: "onnx-local"`) |
-| `embeddingModelPath` | string | — | Path to the model directory containing `embedding.json`, `model.onnx`, and `tokenizer.json` (maps to `LIBRAVDB_EMBEDDING_MODEL`; required with `embeddingBackend: "onnx-local"`) |
+| `embeddingRuntimePath` | string | — | Runtime library path used for plugin-side validation with `embeddingBackend: "onnx-local"`; configure `LIBRAVDB_ONNX_RUNTIME` separately on the daemon |
+| `embeddingModelPath` | string | — | Model directory containing `embedding.json`, used for plugin-side validation with `embeddingBackend: "onnx-local"`; configure `LIBRAVDB_EMBEDDING_MODEL` separately on the daemon |
 | `embeddingTokenizerPath` | string | — | Path to custom tokenizer file |
 | `embeddingDimensions` | number | — | Embedding dimension override |
 | `embeddingNormalize` | boolean | — | Enable embedding normalization |
@@ -124,7 +130,7 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 |---|---|---|---|
 | `compactThreshold` | number | — | Absolute token threshold for forced compaction |
 | `compactionThresholdFraction` | number | `0.8` | Dynamic trigger as fraction of active token budget |
-| `compactSessionTokenBudget` | number | `2000` | Auto-compact when session exceeds this many tokens since last compaction; `0` disables |
+| `compactSessionTokenBudget` | number | `2000` | Auto-compaction token budget; `0` disables implicit predictive compaction. A positive `compactThreshold` overrides this setting; explicit host/manual compaction remains available. |
 | `compactionQualityWeight` | number | `0.5` | How much summary confidence affects retrieval score (0 = ignore, 1 = full suppression) |
 
 ## Summarizer

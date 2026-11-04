@@ -34,7 +34,7 @@ How it works:
 - `onnx-local` still requires local model assets through `embeddingModelPath`, typically a directory containing `embedding.json`.
 - The manifest may override or refine the profile, but explicit dimension mismatches fail closed.
 - The vector service store persists an embedding fingerprint, so reopening an existing store with a different effective model profile will fail instead of silently mixing vector spaces.
-- `onnxDevice` is passed through as `LIBRAVDB_ONNX_DEVICE` for vector service versions that support execution-provider selection (`auto`, `cpu` (default), `cuda`, `coreml`, `directml`, `openvino`).
+- The connect-only plugin does not set `LIBRAVDB_ONNX_DEVICE`. Configure execution-provider selection on the daemon itself (`auto`, `cpu`, `cuda`, `coreml`, `directml`, `openvino`), through its service environment or YAML.
 
 ## Store Compatibility and Upgrades
 

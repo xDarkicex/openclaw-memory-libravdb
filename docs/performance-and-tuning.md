@@ -87,8 +87,8 @@ are advanced controls, not required install settings.
 | `tokenBudgetFraction` | Fraction of host context budget available to memory assembly. |
 | `compactThreshold` | Explicit compaction trigger threshold. |
 | `compactionThresholdFraction` | Dynamic trigger ratio when `compactThreshold` is unset, default `0.8`. |
-| `compactSessionTokenBudget` | Auto-compaction budget since the last compaction, default `2000`; set `0` to disable. |
-| `rpcTimeoutMs` | Sidecar RPC timeout, default `30000`. |
+| `compactSessionTokenBudget` | Auto-compaction token budget, default `2000`; `0` disables implicit predictive compaction. A positive `compactThreshold` overrides it; explicit host/manual compaction remains available. |
+| `rpcTimeoutMs` | Daemon RPC timeout, default `120000`; overrides `LIBRAVDB_RPC_TIMEOUT_MS`. |
 | `maxRetries` | Retry budget for vector service RPC calls. |
 | `logLevel` | Plugin log level. |
 
