@@ -274,7 +274,7 @@ export class LibravDBClient {
     if (!isInsecure && options.tlsCaPath) {
       rootCerts = fs.readFileSync(options.tlsCaPath);
     }
-    if (options.tlsClientCertPath && options.tlsClientKeyPath) {
+    if (!isInsecure && options.tlsClientCertPath && options.tlsClientKeyPath) {
       clientCert = fs.readFileSync(options.tlsClientCertPath);
       clientKey = fs.readFileSync(options.tlsClientKeyPath);
     }

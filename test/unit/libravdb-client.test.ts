@@ -163,6 +163,33 @@ test("detectLegacyJsonRpcDaemon probes legacy JSON-RPC unix health", { skip: pro
 // Client lifecycle
 // ---------------------------------------------------------------------------
 
+test("plaintext endpoints do not read unused TLS certificate files", () => {
+  const missingPath = path.join(tmpdir(), `libravdb-missing-cert-${process.pid}-${Date.now()}`);
+  for (const options of [
+    { endpoint: "tcp:127.0.0.1:9" },
+    { endpoint: "tcp:memory.internal:9", tlsMode: "insecure" as const },
+    { endpoint: `unix:${path.join(tmpdir(), "libravdb.sock")}` },
+  ]) {
+    const client = new LibravDBClient({
+      ...options,
+      tlsCaPath: missingPath,
+      tlsClientCertPath: missingPath,
+      tlsClientKeyPath: missingPath,
+    });
+    client.close();
+  }
+});
+
+test("TLS endpoints still require readable configured client certificates", () => {
+  const missingPath = path.join(tmpdir(), `libravdb-missing-cert-${process.pid}-${Date.now()}`);
+  assert.throws(() => new LibravDBClient({
+    endpoint: "tcp:127.0.0.1:9",
+    tlsMode: "tls",
+    tlsClientCertPath: missingPath,
+    tlsClientKeyPath: missingPath,
+  }), /ENOENT/);
+});
+
 test("close prevents RPC methods", async () => {
   const client = new LibravDBClient({ secret: "test" });
   client.close();
