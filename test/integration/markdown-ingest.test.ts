@@ -1132,6 +1132,72 @@ test("backpressure resume cursor skips already-processed files on retry scan", a
   }
 });
 
+test("markdown ingestion preserves daemon retry delays across the active scan", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-backpressure-delay-"));
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  await fsApi.writeFile(path.join(tempRoot, "first.md"), "First file", 2);
+  await fsApi.writeFile(path.join(tempRoot, "second.md"), "Second file", 1);
+  rpc.feedbackSupplier = (_sourceDoc, callIndex) => ({ acceptMore: callIndex > 0, retryAfterMs: 100 });
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+    },
+    async () => rpc as never,
+    { error() {}, warn() {}, info() {} },
+    fsApi as never,
+  );
+
+  try {
+    await handle.start();
+    assert.equal(rpc.documents.size, 1);
+    await delay(25);
+    assert.equal(rpc.documents.size, 1, "the daemon's retry delay must survive scheduling inside a scan");
+    await delay(150);
+    assert.equal(rpc.documents.size, 2);
+  } finally {
+    await handle.stop();
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("markdown ingestion probes again after WAL pressure instead of preserving stale feedback forever", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-wal-resume-"));
+  const rpc = new FakeRpcClient();
+  const fsApi = new FakeFsApi();
+  await fsApi.writeFile(path.join(tempRoot, "first.md"), "First file", 2);
+  await fsApi.writeFile(path.join(tempRoot, "second.md"), "Second file", 1);
+  rpc.feedbackSupplier = (_sourceDoc, callIndex) => ({
+    acceptMore: true,
+    walDepth: callIndex === 0 ? 90 : 0,
+    walCapacity: 100,
+  });
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionDebounceMs: 0,
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+    },
+    async () => rpc as never,
+    { error() {}, warn() {}, info() {} },
+    fsApi as never,
+  );
+
+  try {
+    await handle.start();
+    assert.equal(rpc.documents.size, 1);
+    await handle.refresh();
+    assert.equal(rpc.documents.size, 2, "a fresh scan must probe the daemon after the WAL drains");
+  } finally {
+    await handle.stop();
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("resume cursor invalidates when target file is deleted during pause", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-md-resume-deleted-"));
   const firstPath = path.join(tempRoot, "first.md");
@@ -1240,6 +1306,7 @@ test("watcher-triggered scan resets resume cursor for full re-scan", async () =>
 
     // Modify secondPath to trigger a watcher event; watcher clears cursor + timer
     await fsApi.writeFile(secondPath, "# Second\n\nModified to trigger watcher.");
+    fsApi.callbacks.get(tempRoot)?.[0]?.("change", path.basename(secondPath));
     await delay(50);
 
     // Watcher-triggered full scan: firstPath unchanged (skip), secondPath changed → ingest

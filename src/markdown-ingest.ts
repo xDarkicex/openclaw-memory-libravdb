@@ -87,6 +87,7 @@ interface RootState {
     dirty: boolean;
     timer: ReturnType<typeof setTimeout> | null;
     resumeFromPath: string | null;
+    retryDelayMs: number;
   };
   knownFiles: Set<string>;
   directoryWatchers: Map<string, FsWatcherLike>;
@@ -376,6 +377,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         state.scanState.timer = null;
       }
       state.scanState.dirty = false;
+      state.scanState.retryDelayMs = 0;
     }
     for (const root of this.roots) {
       await this.scanRoot(root);
@@ -417,6 +419,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         dirty: false,
         timer: null,
         resumeFromPath: null,
+        retryDelayMs: 0,
       },
       knownFiles: this.snapshotFilesForRoot(resolved),
       walkCompletions: 0,
@@ -445,6 +448,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     rootState.scanState.scanning = true;
     this.lastAcceptMore = true;
     this.lastRetryAfterMs = 0;
+    // Feedback is an observation from the previous RPC, not a live readiness
+    // signal. Permit a probe on the next scan so a drained WAL can recover.
+    this.lastWalDepth = 0;
+    this.lastWalCapacity = 0;
     const scan = (async () => {
         const stats = createScanStats();
         const startedAt = Date.now();
@@ -495,8 +502,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         rootState.scanState.scanning = false;
         if (rootState.scanState.dirty) {
           rootState.scanState.dirty = false;
+          const retryDelayMs = rootState.scanState.retryDelayMs;
+          rootState.scanState.retryDelayMs = 0;
           if (!this.stopping && !rootState.quarantined) {
-            this.scheduleRootScan(rootState);
+            this.scheduleRootScan(rootState, retryDelayMs);
           }
         }
       }
@@ -516,6 +525,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
     if (rootState.scanState.scanning) {
       rootState.scanState.dirty = true;
+      rootState.scanState.retryDelayMs = Math.max(rootState.scanState.retryDelayMs, delayMs ?? 0);
       return;
     }
     if (rootState.scanState.timer) {
@@ -760,6 +770,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       const watcher = this.fsApi.watch(dir, () => {
         if (!this.stopping) {
           rootState.scanState.resumeFromPath = null;
+          rootState.scanState.retryDelayMs = 0;
           if (rootState.scanState.timer) {
             clearTimeout(rootState.scanState.timer);
             rootState.scanState.timer = null;
