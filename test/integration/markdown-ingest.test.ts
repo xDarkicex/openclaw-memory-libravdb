@@ -195,6 +195,60 @@ function snapshotPath(tempRoot: string, kind: "generic" | "obsidian" = "generic"
   return path.join(tempRoot, `${kind}-snapshot.json`);
 }
 
+test("markdown ingestion detects equal-size rewrites with preserved mtime, including legacy snapshots", async () => {
+  class VersionedFsApi extends FakeFsApi {
+    private revision = 0;
+
+    override async writeFile(filePath: string, content: string | Buffer, mtimeMs?: number): Promise<void> {
+      await super.writeFile(filePath, content, mtimeMs);
+      this.files.get(path.resolve(filePath))!.ctimeMs = ++this.revision;
+    }
+  }
+
+  for (const restartWithLegacySnapshot of [false, true]) {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-ctime-"));
+    const filePath = path.join(tempRoot, "notes.md");
+    const rpc = new FakeRpcClient();
+    const fsApi = new VersionedFsApi();
+    await fsApi.writeFile(filePath, "Original fact", 42);
+    const createHandle = () => createMarkdownIngestionHandle(
+      {
+        markdownIngestionEnabled: true,
+        markdownIngestionRoots: [tempRoot],
+        markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+      },
+      async () => rpc as never,
+      { error() {}, warn() {}, info() {} },
+      fsApi as never,
+    );
+    let handle = createHandle();
+
+    try {
+      await handle.start();
+      if (restartWithLegacySnapshot) {
+        await handle.stop();
+        const legacySnapshot = JSON.parse(await fsp.readFile(snapshotPath(tempRoot), "utf8"));
+        delete legacySnapshot.files[filePath].ctimeMs;
+        await fsp.writeFile(snapshotPath(tempRoot), JSON.stringify(legacySnapshot));
+        handle = createHandle();
+      }
+      await fsApi.writeFile(filePath, "Replaced fact", 42);
+      if (restartWithLegacySnapshot) {
+        await handle.start();
+      } else {
+        await handle.refresh();
+      }
+
+      assert.equal(rpc.documents.get(filePath)?.text, "Replaced fact");
+      const snapshot = JSON.parse(await fsp.readFile(snapshotPath(tempRoot), "utf8"));
+      assert.equal(snapshot.files[filePath].ctimeMs, 2);
+    } finally {
+      await handle.stop();
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  }
+});
+
 for (const currentState of ["missing", "oversized"] as const) {
   test(`version-3 snapshot migration retains retirement tracking for ${currentState} files`, async () => {
     const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-migration-retire-"));

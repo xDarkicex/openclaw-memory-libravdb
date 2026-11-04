@@ -29,7 +29,7 @@ interface FsWatcherLike extends Disposable {
 
 interface FsApi {
   readFile(file: string): Promise<Uint8Array>;
-  stat(file: string): Promise<{ size: number; mtimeMs: number }>;
+  stat(file: string): Promise<{ size: number; mtimeMs: number; ctimeMs?: number }>;
   watch(dir: string, onChange: (event: string, filename: string | Buffer | null) => void): FsWatcherLike;
 }
 
@@ -87,6 +87,7 @@ function assertDreamPromotionAccepted(result: DreamPromotionResponse): void {
 interface DreamFileState {
   size: number;
   mtimeMs: number;
+  ctimeMs?: number;
   fileHash: string;
 }
 
@@ -213,7 +214,8 @@ export function createDreamPromotionHandle(
       return;
     }
 
-    if (lastFileState && lastFileState.size === stat.size && lastFileState.mtimeMs === stat.mtimeMs) {
+    if (lastFileState && lastFileState.size === stat.size && lastFileState.mtimeMs === stat.mtimeMs
+      && stat.ctimeMs !== undefined && lastFileState.ctimeMs === stat.ctimeMs) {
       return;
     }
 
@@ -229,6 +231,7 @@ export function createDreamPromotionHandle(
       lastFileState = {
         size: stat.size,
         mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
         fileHash,
       };
       return;
@@ -264,6 +267,7 @@ export function createDreamPromotionHandle(
     lastFileState = {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
+      ctimeMs: stat.ctimeMs,
       fileHash,
     };
   }
@@ -281,7 +285,7 @@ export function createDreamPromotionHandle(
     lastFileState = null;
   }
 
-  async function safeStat(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
+  async function safeStat(filePath: string): Promise<{ size: number; mtimeMs: number; ctimeMs?: number } | null> {
     try {
       return await fsApi.stat(filePath);
     } catch (error) {
@@ -585,7 +589,7 @@ function createRealFsApi(): FsApi {
     readFile: async (file: string) => fsp.readFile(file),
     stat: async (file: string) => {
       const stat = await fsp.stat(file);
-      return { size: stat.size, mtimeMs: stat.mtimeMs };
+      return { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
     },
     watch: (dir: string, onChange: (event: string, filename: string | Buffer | null) => void) => fs.watch(dir, onChange),
   };

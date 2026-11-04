@@ -78,6 +78,8 @@ export interface MarkdownIngestionSnapshot {
   fileHash: string;
   size: number;
   mtimeMs: number;
+  /** Optional for snapshots written by older plugin versions. */
+  ctimeMs?: number;
 }
 
 interface RootState {
@@ -852,7 +854,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     const cached = this.fileStates.get(sourceDoc);
-    if (cached && !cached.needsRevalidation && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    if (cached && !cached.needsRevalidation && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.ctimeMs === stat.ctimeMs) {
       return "unchanged";
     }
 
@@ -887,6 +889,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         fileHash,
         size: stat.size,
         mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
       });
       return "unchanged";
     }
@@ -906,6 +909,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       fileHash,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
+      ctimeMs: stat.ctimeMs,
     });
     return "ingested";
   }
@@ -1441,7 +1445,8 @@ function isValidSnapshotState(sourceDoc: string, value: unknown): value is FileS
     Number.isFinite(state.size) &&
     typeof state.mtimeMs === "number" &&
     Number.isFinite(state.mtimeMs) &&
-    (state.needsRevalidation === undefined || typeof state.needsRevalidation === "boolean")
+    (state.needsRevalidation === undefined || typeof state.needsRevalidation === "boolean") &&
+    (state.ctimeMs === undefined || (typeof state.ctimeMs === "number" && Number.isFinite(state.ctimeMs)))
   );
 }
 

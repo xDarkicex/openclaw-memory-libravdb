@@ -259,7 +259,7 @@ entry is skipped so it cannot prevent valid entries in the diary from syncing.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `dreamPromotionEnabled` | boolean | `false` | Enable dream diary promotion |
-| `dreamPromotionDiaryPath` | string | — | Path to dream diary markdown file under the operator home directory or `OPENCLAW_STATE_DIR` |
+| `dreamPromotionDiaryPath` | string | — | Path to dream diary markdown file under the operator home directory or `OPENCLAW_STATE_DIR`. Change time is checked so equal-size rewrites with preserved modification times are detected. |
 | `dreamPromotionUserId` | string | — | User ID for dream collection scoping |
 | `dreamPromotionDebounceMs` | number | `150` | Debounce window for dream diary changes |
 
