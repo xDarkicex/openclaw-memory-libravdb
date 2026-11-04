@@ -17,6 +17,9 @@ export interface TurnManifest {
   version: number;
   turns: TurnEntry[];
   tailHash: string;
+  /** Cursor-gap source reseeding is incomplete; retry the full host source
+   * instead of applying its new-turn prePromptMessageCount boundary. */
+  recoveryPending?: boolean;
 }
 
 export interface KernelCompatibleMessage {

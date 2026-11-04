@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import { AfterTurnKernelResponse } from "@xdarkicex/libravdb-contracts";
 
 import { buildContextEngineFactory, clearCompactedProjectionState, clearSessionTrigger, createCompactedProjectionState, FLUSH_ASYNC_INGESTION, setSessionTrigger } from "../../src/context-engine.js";
 import fs from "node:fs";
@@ -4617,6 +4618,102 @@ test("afterTurn fails loudly when the daemon confirms none of the batch", async 
     0,
     "post-ingest work ran for a turn the daemon did not confirm",
   );
+});
+
+function decodedTurnResponse(cursor: { lastProcessedIndex: number; sessionVersion: number; manifestTailHash: string }): Record<string, unknown> {
+  return AfterTurnKernelResponse.fromBinary(new AfterTurnKernelResponse({
+    ok: true,
+    cursor: {
+      ...cursor,
+      lastProcessedIndex: BigInt(cursor.lastProcessedIndex),
+      sessionVersion: BigInt(cursor.sessionVersion),
+    },
+  }).toBinary()) as unknown as Record<string, unknown>;
+}
+
+test("commitTurn retries the unconfirmed suffix after a partial daemon acknowledgment", async () => {
+  for (const identity of ["ids", "idless"] as const) {
+    const client = new FakeClient();
+    const sessionId = `s1-commit-partial-ack-${identity}`;
+    const messagesWithIds = [makeMessage("user", "question", "partial-u"), makeMessage("assistant", "reply", "partial-a")];
+    const messages = identity === "ids" ? messagesWithIds : messagesWithIds.map(({ role, content }) => ({ role, content }));
+    client.afterTurnResponses = [
+      decodedTurnResponse({ lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "partial" }),
+      decodedTurnResponse({ lastProcessedIndex: 1, sessionVersion: 2, manifestTailHash: "complete" }),
+    ];
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const args = { advancementKey: `adv-partial-ack-${identity}`, sessionId, messages };
+
+    await assert.rejects(engine.commitTurn(args), /confirmed only 1 of 2 messages/);
+    assert.equal(manifestStore.load(sessionId).turns.length, 1);
+    const replacement = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    assert.equal((await replacement.commitTurn(args)).status, "committed");
+    assert.equal(manifestStore.load(sessionId).turns.length, 2);
+    const outgoing = client.calls.filter((call) => call.method === "afterTurnKernel")[1]!.params.messages as Array<{ role: string; content: string }>;
+    assert.deepEqual(outgoing.map(({ role, content }) => ({ role, content })), [{ role: "assistant", content: "reply" }]);
+    assert.deepEqual(manifestStore.load(sessionId).turns.map((turn) => turn.contentHash), messages.map((message) => manifestStore.hashString(message.content)));
+    assert.equal((await replacement.commitTurn(args)).status, "duplicate");
+  }
+});
+
+test("cursor-gap repair persists only confirmed seed messages and leaves failed commits retryable", async () => {
+  for (const identity of ["ids", "idless"] as const) {
+    for (const confirmation of ["another-gap", "none", "partial", "partial-before-prompt", "rpc-error"] as const) {
+      const client = new FakeClient();
+      const sessionId = `s1-commit-gap-${confirmation}-${identity}`;
+      const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+      const messagesWithIds = [
+        makeMessage("user", "old question", `${confirmation}-u1`),
+        makeMessage("assistant", "old reply", `${confirmation}-a1`),
+        makeMessage("user", "new question", `${confirmation}-u2`),
+        makeMessage("assistant", "new reply", `${confirmation}-a2`),
+      ];
+      const messages = identity === "ids" ? messagesWithIds : messagesWithIds.map(({ role, content }) => ({ role, content }));
+      client.afterTurnResponses = [decodedTurnResponse({ lastProcessedIndex: 1, sessionVersion: 1, manifestTailHash: "old" })];
+      await engine.afterTurn({ sessionId, messages: messages.slice(0, 2) });
+      await flushIngestion(engine);
+
+      client.afterTurnResponses = [
+        decodedTurnResponse({ lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "" }),
+        decodedTurnResponse({
+          lastProcessedIndex: confirmation === "partial" ? 1 : confirmation === "partial-before-prompt" ? 0 : -1,
+          sessionVersion: 1,
+          manifestTailHash: confirmation === "another-gap" ? "" : "confirmed-tail",
+        }),
+      ];
+      if (confirmation === "rpc-error") {
+        const original = client.afterTurnKernel.bind(client);
+        let calls = 0;
+        client.afterTurnKernel = async (params) => {
+          calls += 1;
+          if (calls === 2) {
+            client.afterTurnResponses.length = 0;
+            throw new Error("reseed RPC unavailable");
+          }
+          return original(params);
+        };
+      }
+      const args = { advancementKey: `adv-gap-${confirmation}-${identity}`, sessionId, messages, prePromptMessageCount: 2 };
+      await assert.rejects(engine.commitTurn(args), /Daemon confirmed (?:no|only [12] of 4) messages|reseed RPC unavailable/);
+      const confirmedCount = confirmation === "partial" ? 2 : confirmation === "partial-before-prompt" ? 1 : 0;
+      assert.equal(manifestStore.load(sessionId).turns.length, confirmedCount);
+      assert.equal(manifestStore.load(sessionId).recoveryPending, true);
+
+      // A replacement engine must recover the unconfirmed historical suffix
+      // from persisted state, including messages before prePromptMessageCount.
+      const replacement = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+      client.afterTurnResponse = decodedTurnResponse({ lastProcessedIndex: 3, sessionVersion: 2, manifestTailHash: "recovered" });
+      assert.equal((await replacement.commitTurn(args)).status, "committed");
+      const retried = client.calls.filter((call) => call.method === "afterTurnKernel").at(-1)!;
+      const outgoing = retried.params.messages as Array<{ role: string; content: string; id?: string }>;
+      assert.deepEqual(outgoing.map(({ role, content }) => ({ role, content })), messages.slice(confirmedCount).map(({ role, content }) => ({ role, content })));
+      if (identity === "ids") assert.deepEqual(outgoing, messages.slice(confirmedCount));
+      assert.equal(manifestStore.load(sessionId).turns.length, messages.length);
+      assert.deepEqual(manifestStore.load(sessionId).turns.map((turn) => turn.contentHash), messages.map((message) => manifestStore.hashString(message.content)));
+      assert.equal(manifestStore.load(sessionId).recoveryPending, undefined);
+      assert.equal((await replacement.commitTurn(args)).status, "duplicate");
+    }
+  }
 });
 
 test("bootstrap does not orphan an ingestion that is still in flight", async () => {
