@@ -13,6 +13,7 @@ import type { ClientGetter } from "./plugin-runtime.js";
 import { buildMemoryRuntimeBridge } from "./memory-runtime.js";
 import { createLibraVdbMemoryTools } from "./memory-tools.js";
 import { createPluginRuntime } from "./plugin-runtime.js";
+import { createSubagentExclusionGuard } from "./subagent-exclusion.js";
 import type { PluginConfig } from "./types.js";
 import { levelFilteredLogger } from "./types.js";
 
@@ -96,6 +97,13 @@ export function register(api: OpenClawPluginApi) {
     ? null
     : createPluginRuntime(cfg, logger);
 
+  const subagentExclusions = createSubagentExclusionGuard(runtimeOrNull, cfg.excludeSubagents === true);
+  const registerMemoryTool: OpenClawPluginApi["registerTool"] = (tool, opts) => {
+    api.registerTool?.(typeof tool === "function"
+      ? ctx => subagentExclusions.isExcluded(ctx) ? null : tool(ctx)
+      : tool, opts);
+  };
+
   // Rule store init — persists to plugin cache directory.
   if (runtimeOrNull && !isLightweight) {
     const cacheDir = ((api as unknown as Record<string, unknown>).cacheDir as string | undefined)
@@ -112,49 +120,49 @@ export function register(api: OpenClawPluginApi) {
   const ownsMemorySlot = memSlot === MEMORY_ID;
   if (runtimeOrNull && ownsMemorySlot) {
     const memoryTools = createLibraVdbMemoryTools(runtimeOrNull.getClient, cfg, logger);
-    api.registerTool?.((ctx) => memoryTools.createSearchTool(ctx), { names: ["libravdb_memory_search"] });
-    api.registerTool?.((ctx) => memoryTools.createGetTool(ctx), { names: ["libravdb_memory_get"] });
+    registerMemoryTool((ctx) => memoryTools.createSearchTool(ctx), { names: ["libravdb_memory_search"] });
+    registerMemoryTool((ctx) => memoryTools.createGetTool(ctx), { names: ["libravdb_memory_get"] });
   }
 
   // Recall tools: describe, expand, grep — available when the runtime exists.
   if (runtimeOrNull) {
-    api.registerTool?.((ctx) => {
+    registerMemoryTool((ctx) => {
       const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
       return createMemoryDescribeTool(getClient, getSessionId, logger);
     }, { names: ["memory_describe"] });
-    api.registerTool?.((ctx) => {
+    registerMemoryTool((ctx) => {
       const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       const getSessionKey = () => (ctx as Record<string, unknown>).sessionKey as string | undefined;
       const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
       return createMemoryExpandTool(getClient, getSessionKey, logger, getSessionId);
     }, { names: ["memory_expand"] });
-    api.registerTool?.((ctx) => {
+    registerMemoryTool((ctx) => {
       const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       const getSessionId = () => (ctx as Record<string, unknown>).sessionId as string | undefined;
       return createMemoryGrepTool(getClient, getSessionId, logger);
     }, { names: ["memory_grep"] });
-    api.registerTool?.((ctx) => {
+    registerMemoryTool((ctx) => {
       const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createUpdateUserCardTool(getClient, logger);
     }, { names: ["update_user_card"] });
-    api.registerTool?.((ctx) => {
+    registerMemoryTool((ctx) => {
       const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createGetUserCardTool(getClient, logger);
     }, { names: ["get_user_card"] });
-    api.registerTool?.((ctx) => {
+    registerMemoryTool((ctx) => {
       const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createListUserCardsTool(getClient, logger);
     }, { names: ["list_user_cards"] });
-    api.registerTool?.(() => createSetRuleTool(logger), { names: ["set_rule"] });
-    api.registerTool?.(() => createGetRuleTool(logger), { names: ["get_rule"] });
-    api.registerTool?.(() => createListRulesTool(logger), { names: ["list_rules"] });
-    api.registerTool?.(() => createDeleteRuleTool(logger), { names: ["delete_rule"] });
-    api.registerTool?.((ctx) => {
+    registerMemoryTool(() => createSetRuleTool(logger), { names: ["set_rule"] });
+    registerMemoryTool(() => createGetRuleTool(logger), { names: ["get_rule"] });
+    registerMemoryTool(() => createListRulesTool(logger), { names: ["list_rules"] });
+    registerMemoryTool(() => createDeleteRuleTool(logger), { names: ["delete_rule"] });
+    registerMemoryTool((ctx) => {
       const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createSetPersonaTool(getClient, logger);
     }, { names: ["set_persona"] });
-    api.registerTool?.((ctx) => {
+    registerMemoryTool((ctx) => {
       const getClient: ClientGetter = () => runtimeOrNull.getClient(ctx);
       return createGetPersonaTool(getClient, logger);
     }, { names: ["get_persona"] });
@@ -191,9 +199,16 @@ export function register(api: OpenClawPluginApi) {
   }
 
   // Migrated from three legacy calls to a single registerMemoryCapability.
+  const memoryBridge = buildMemoryRuntimeBridge(runtime.getClient, cfg);
   api.registerMemoryCapability(MEMORY_ID, {
     promptBuilder: buildMemoryPromptSection(runtime.getClient, cfg),
-    runtime: buildMemoryRuntimeBridge(runtime.getClient, cfg),
+    runtime: {
+      ...memoryBridge,
+      async getMemorySearchManager(params: { agentId?: string; purpose?: string; sessionKey?: string; sessionId?: string } = {}) {
+        if (subagentExclusions.isExcluded(params)) return { manager: null, error: "LibraVDB memory is disabled for this subagent" };
+        return memoryBridge.getMemorySearchManager(params);
+      },
+    },
   });
 
   // Register embedding adapter IDs so OpenClaw can discover available
@@ -296,6 +311,7 @@ export function register(api: OpenClawPluginApi) {
   // (heartbeat, cron, memory, overflow) skip semantic retrieval to save
   // an embedding call and RPC round trip on non-interactive turns.
   api.on("before_prompt_build", async (_event, ctx) => {
+    if (subagentExclusions.isExcluded(ctx)) return;
     const c = ctx as Record<string, unknown> | undefined;
     const sessionId = c?.sessionId as string | undefined;
     const trigger = c?.trigger as string | undefined;
@@ -317,6 +333,7 @@ export function register(api: OpenClawPluginApi) {
   // @ts-expect-error: api.on types declare void return, but the runtime
   // processes PluginHookBeforePromptBuildResult from before_prompt_build handlers.
   api.on("before_prompt_build", async (event: unknown, ctx: unknown) => {
+    if (subagentExclusions.isExcluded(ctx)) return;
     const c = ctx as Record<string, unknown>;
     const provider = c.messageProvider as string | undefined;
     if (!provider || !MULTI_SPEAKER_PROVIDERS.has(provider.toLowerCase())) return;
@@ -365,7 +382,8 @@ export function register(api: OpenClawPluginApi) {
   // Hard constraint rules — injected as prependSystemContext at the system
   // prompt level (AGENTS.md equivalent) so the model treats them as hard rules.
   // @ts-expect-error: api.on types declare void return, runtime processes hook results.
-  api.on("before_prompt_build", async () => {
+  api.on("before_prompt_build", async (_event, ctx) => {
+    if (subagentExclusions.isExcluded(ctx)) return;
     const rulesText = buildRulesContext();
     if (!rulesText) return;
     return { prependSystemContext: rulesText };
@@ -400,9 +418,21 @@ export function register(api: OpenClawPluginApi) {
   api.on("before_reset", async (event, ctx) => {
     const sessionId = (ctx as Record<string, unknown> | undefined)?.sessionId as string | undefined;
     if (sessionId) clearCompactedProjectionState(compactedProjectionState, sessionId);
-    await beforeResetHook(event, ctx);
+    if (!subagentExclusions.isExcluded(ctx)) await beforeResetHook(event, ctx);
   });
-  api.on("session_end", createSessionEndHook(runtime, logger));
+  const sessionEndHook = createSessionEndHook(runtime, logger);
+  api.on("session_end", async (event, ctx) => {
+    const context = {
+      ...(ctx as Record<string, unknown> | undefined),
+      sessionId: (event as Record<string, unknown> | undefined)?.sessionId ?? (ctx as Record<string, unknown> | undefined)?.sessionId,
+      sessionKey: (event as Record<string, unknown> | undefined)?.sessionKey ?? (ctx as Record<string, unknown> | undefined)?.sessionKey,
+    };
+    try {
+      if (!subagentExclusions.isExcluded(context)) await sessionEndHook(event, ctx);
+    } finally {
+      subagentExclusions.forget(context);
+    }
+  });
   api.on("gateway_stop", async () => {
     await runtime.shutdown();
   });

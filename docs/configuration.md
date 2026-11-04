@@ -123,6 +123,16 @@ endpoints; provisioning and backend selection still happen on the daemon.
 
 ## Ingestion gating
 
+With `excludeSubagents: true`, a child marked by `prepareSubagentSpawn` remains
+excluded across context-engine replacement and parent disposal within the same
+plugin runtime. Spawn rollback, child completion, and runtime shutdown clear the
+marker. Independent runtimes do not share exclusion state.
+
+Tracked children also receive no LibraVDB tools or prompt-hook injection, and
+their reset/end advisory hooks skip daemon calls. Native memory access is
+blocked when the host supplies the child session key or a remembered session ID.
+An agent ID alone cannot distinguish a child from its parent.
+
 Gating thresholds and scoring weights are owned by the vector service and configured via
 service environment variables. See the service documentation for tuning details.
 

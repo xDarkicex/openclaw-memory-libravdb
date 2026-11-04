@@ -315,6 +315,25 @@ function isHistoricalToolControlText(normalizedContent: string): boolean {
 
 const asyncIngestionQueues = new Map<string, Promise<void>>();
 
+// Parent and child turns use different context-engine instances. Exclusion
+// belongs to their shared plugin runtime, not the engine that prepared a spawn.
+const excludedSubagentsByRuntime = new WeakMap<PluginRuntime, Set<string>>();
+
+export function isRuntimeSubagentExcluded(runtime: PluginRuntime, sessionKey: string): boolean {
+  return excludedSubagentsByRuntime.get(runtime)?.has(sessionKey.trim()) ?? false;
+}
+
+function runtimeSubagentExclusions(runtime: PluginRuntime): Set<string> {
+  let keys = excludedSubagentsByRuntime.get(runtime);
+  if (!keys) {
+    keys = new Set();
+    excludedSubagentsByRuntime.set(runtime, keys);
+    const ownedKeys = keys;
+    runtime.onShutdown(() => { ownedKeys.clear(); });
+  }
+  return keys;
+}
+
 class SessionLifecycleChangedError extends Error {
   constructor() {
     super("session lifecycle changed");
@@ -2125,7 +2144,7 @@ export function buildContextEngineFactory(
       .filter(Boolean),
   );
   const excludeSubagents = cfg?.excludeSubagents === true;
-  const excludedSubagentKeys = new Set<string>();
+  const excludedSubagentKeys = excludeSubagents ? runtimeSubagentExclusions(runtime) : new Set<string>();
   // Fallback exclusion marker for compact(). The host threads sessionKey through
   // on every compaction path (timeout/overflow recovery and the manual /compact
   // lane), so compact() resolves exclusion authoritatively from the agent id — but
@@ -4137,7 +4156,8 @@ export function buildContextEngineFactory(
       predictiveContextCache.clear();
       postToolRecallCache.clear();
       triggerCache.clear();
-      excludedSubagentKeys.clear();
+      // Spawn rollback, child completion, and runtime shutdown own exclusions.
+      // Disposing a parent turn must not re-enable memory for its live children.
       excludedSessionIds.clear();
     },
   };

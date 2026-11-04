@@ -127,8 +127,8 @@ test("source checklist invariants are present in host code", async () => {
   assert.match(indexTs, /export const MEMORY_ID = "libravdb-memory"/);
   assert.match(indexTs, /registerContextEngine\(\s*MEMORY_ID/s);
   assert.match(indexTs, /registerMemoryCapability\(MEMORY_ID/);
-  assert.match(indexTs, /registerTool\?\.\(\(ctx\) => memoryTools\.createSearchTool\(ctx\)/);
-  assert.match(indexTs, /registerTool\?\.\(\(ctx\) => memoryTools\.createGetTool\(ctx\)/);
+  assert.match(indexTs, /registerMemoryTool\(\(ctx\) => memoryTools\.createSearchTool\(ctx\)/);
+  assert.match(indexTs, /registerMemoryTool\(\(ctx\) => memoryTools\.createGetTool\(ctx\)/);
   assert.match(indexTs, /api\.config\?\.plugins\?\.slots\?\.memory/);
   assert.match(indexTs, /api\.on\("before_reset"/);
   assert.match(indexTs, /api\.on\("session_end"/);
