@@ -481,9 +481,10 @@ async function runSearch(
 
   try {
     const bridge = buildMemoryRuntimeBridge(runtime.getClient, cfg);
-    const { manager } = await bridge.getMemorySearchManager({
+    const { manager, error } = await bridge.getMemorySearchManager({
       agentId: opts?.agent,
     });
+    if (!manager) throw new Error(error ?? "LibraVDB memory is unavailable");
     const minScore = explicitMinScore ?? resolveDefaultSearchMinScore(manager.status(), cfg);
     const results = (await manager.search(
       {

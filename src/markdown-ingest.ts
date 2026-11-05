@@ -2,12 +2,16 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { resolveClientEndpoint } from "./libravdb-client.js";
+import { resolveTenantKey } from "./identity.js";
 
 import type { PartialMessage } from "@bufbuild/protobuf";
 import type { MarkdownSourceMeta as ProtoSourceMeta } from "@xdarkicex/libravdb-contracts";
 import type { LoggerLike, PluginConfig } from "./types.js";
 import { formatError } from "./format-error.js";
 import { IngestQueue } from "./ingest-queue.js";
+import { createMarkdownFenceTracker } from "./markdown-fence.js";
 import type { ClientGetter } from "./plugin-runtime.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
@@ -15,7 +19,9 @@ const DEFAULT_DEBOUNCE_MS = 150;
 // exists to bound walks over directories whose syscalls never return.
 const DEFAULT_WALK_TIMEOUT_MS = 60_000;
 const DEFAULT_TOKENIZER_ID = "markdown-ingest:v1";
-const MARKDOWN_INGEST_VERSION = 3;
+// Revalidate snapshots written before empty-file retirement and correct fenced
+// tag detection; their hashes can describe content that was never synchronized.
+const MARKDOWN_INGEST_VERSION = 4;
 const HASH_BACKEND = "wasm-fnv1a64";
 const STREAM_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_MARKDOWN_INGEST_EXCLUDES = [
@@ -75,6 +81,8 @@ export interface MarkdownIngestionSnapshot {
   fileHash: string;
   size: number;
   mtimeMs: number;
+  /** Optional for snapshots written by older plugin versions. */
+  ctimeMs?: number;
 }
 
 interface RootState {
@@ -84,9 +92,11 @@ interface RootState {
     dirty: boolean;
     timer: ReturnType<typeof setTimeout> | null;
     resumeFromPath: string | null;
+    retryDelayMs: number;
   };
   knownFiles: Set<string>;
   directoryWatchers: Map<string, FsWatcherLike>;
+  parentWatcher?: FsWatcherLike;
   /**
    * Incremented after each filesystem call of THIS root's walk returns. The
    * stall detector watches it rather than the scan stats, which count
@@ -123,12 +133,16 @@ interface RootState {
 }
 
 interface FileState extends MarkdownIngestionSnapshot {
+  needsReingest?: boolean;
   root: string;
   sourceDoc: string;
   relativePath: string;
+  /** Keeps legacy source tracking until replacement or retirement succeeds. */
+  needsRevalidation?: boolean;
 }
 
 interface GenericMarkdownSourceConfig {
+  destination: string;
   roots: string[];
   include?: string[];
   exclude?: string[];
@@ -164,6 +178,8 @@ type SyncMarkdownResult = "ingested" | "unchanged" | "deleted" | "skipped";
 type StreamReadResult = { text: string; fileHash: string } | "too_large" | { failed: string } | null;
 
 interface MarkdownSnapshotFile {
+  destination?: string;
+  otherDestinations?: Record<string, Record<string, FileState>>;
   version: number;
   ingestVersion: number;
   hashBackend: string;
@@ -206,13 +222,23 @@ interface DeleteAuthoredDocumentParams {
   sourceDoc: string;
 }
 
+function resolveSnapshotDestination(cfg: PluginConfig): string {
+  // Match the default client's write target without storing tenant identifiers
+  // or endpoint credentials in the checkpoint.
+  return createHash("sha256").update(JSON.stringify([
+    resolveClientEndpoint(cfg.grpcEndpoint || cfg.sidecarPath),
+    resolveTenantKey(cfg),
+  ])).digest("hex");
+}
+
 export function createMarkdownIngestionHandle(
   cfg: PluginConfig,
   getClient: ClientGetter,
   logger: LoggerLike = console,
   fsApi: FsApi = createRealFsApi(),
 ): MarkdownIngestionHandle {
-  const adapters: MarkdownSourceAdapter[] = [];
+  const adapters: DirectoryMarkdownSourceAdapter[] = [];
+  const coordinator = new MarkdownSourceCoordinator();
 
   const genericRoots = normalizeMarkdownRoots(cfg.markdownIngestionRoots);
   if (isMarkdownIngestionEnabled(cfg, genericRoots)) {
@@ -221,6 +247,7 @@ export function createMarkdownIngestionHandle(
         "generic",
         {
           roots: genericRoots,
+          destination: resolveSnapshotDestination(cfg),
           include: cfg.markdownIngestionInclude,
           exclude: cfg.markdownIngestionExclude,
           debounceMs: cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
@@ -232,6 +259,7 @@ export function createMarkdownIngestionHandle(
         getClient,
         logger,
         fsApi,
+        coordinator,
       ),
     );
   }
@@ -243,6 +271,7 @@ export function createMarkdownIngestionHandle(
         "obsidian",
         {
           roots: obsidianRoots,
+          destination: resolveSnapshotDestination(cfg),
           include: cfg.markdownIngestionObsidianInclude,
           exclude: cfg.markdownIngestionObsidianExclude,
           debounceMs: cfg.markdownIngestionObsidianDebounceMs ?? cfg.markdownIngestionDebounceMs ?? DEFAULT_DEBOUNCE_MS,
@@ -254,6 +283,7 @@ export function createMarkdownIngestionHandle(
         getClient,
         logger,
         fsApi,
+        coordinator,
       ),
     );
   }
@@ -277,9 +307,12 @@ export function createMarkdownIngestionHandle(
 
 class CompositeMarkdownSourceAdapter implements MarkdownSourceAdapter {
   kind = "composite";
-  constructor(private readonly adapters: MarkdownSourceAdapter[]) {}
+  constructor(private readonly adapters: DirectoryMarkdownSourceAdapter[]) {}
 
   async start(): Promise<void> {
+    // A first adapter's prune must see every persisted owner, including
+    // adapters whose initial scan has not started yet.
+    await Promise.all(this.adapters.map(adapter => adapter.prepare()));
     for (const adapter of this.adapters) {
       await adapter.start();
     }
@@ -295,6 +328,31 @@ class CompositeMarkdownSourceAdapter implements MarkdownSourceAdapter {
     for (const adapter of this.adapters) {
       await adapter.stop();
     }
+    // Keep ownership visible until every adapter's in-flight scan has drained.
+    for (const adapter of this.adapters) adapter.releaseOwnership();
+  }
+}
+
+/** Coordinates adapters within one ingestion handle, not independent processes. */
+class MarkdownSourceCoordinator {
+  private readonly adapters = new Set<DirectoryMarkdownSourceAdapter>();
+  private readonly pending = new Map<string, Promise<unknown>>();
+
+  register(adapter: DirectoryMarkdownSourceAdapter): void { this.adapters.add(adapter); }
+
+  hasOtherOwner(owner: DirectoryMarkdownSourceAdapter, sourceDoc: string): boolean {
+    return [...this.adapters].some(adapter => adapter !== owner && adapter.ownsDocument(sourceDoc));
+  }
+
+  async run<T>(sourceDoc: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.pending.get(sourceDoc) ?? Promise.resolve();
+    const pending = previous.catch(() => {}).then(operation);
+    this.pending.set(sourceDoc, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.pending.get(sourceDoc) === pending) this.pending.delete(sourceDoc);
+    }
   }
 }
 
@@ -308,6 +366,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private readonly getClient: ClientGetter;
   private readonly logger: LoggerLike;
   private readonly snapshotPath: string;
+  private readonly destination: string;
+  private readonly otherDestinations = new Map<string, Record<string, FileState>>();
   private readonly priorityMode: "mtime" | "ctime" | "size" | "fifo";
   private readonly maxTokensPerFile: number;
   private readonly walkTimeoutMs: number;
@@ -332,9 +392,11 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   private lastWalCapacity = 0;
   private snapshotLoaded = false;
   private snapshotDirty = false;
+  private snapshotWrites: Promise<void> = Promise.resolve();
 
-  constructor(kind: string, config: GenericMarkdownSourceConfig, getClient: ClientGetter, logger: LoggerLike, fsApi: FsApi) {
+  constructor(kind: string, config: GenericMarkdownSourceConfig, getClient: ClientGetter, logger: LoggerLike, fsApi: FsApi, private readonly coordinator: MarkdownSourceCoordinator) {
     this.kind = kind;
+    this.destination = config.destination;
     this.roots = config.roots;
     this.includePatterns = config.include?.length ? config.include : [];
     this.excludePatterns = config.exclude?.length ? config.exclude : DEFAULT_MARKDOWN_INGEST_EXCLUDES;
@@ -348,7 +410,14 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     this.maxTokensPerFile = Math.max(1, Math.trunc(config.maxTokensPerFile ?? 128_000));
     this.tokenizerId = DEFAULT_TOKENIZER_ID;
     this.coreDoc = true;
+    coordinator.register(this);
   }
+
+  prepare(): Promise<void> { return this.loadSnapshot(); }
+
+  ownsDocument(sourceDoc: string): boolean { return this.fileStates.has(sourceDoc); }
+
+  releaseOwnership(): void { this.fileStates.clear(); }
 
   async start(): Promise<void> {
     if (this.started) {
@@ -371,6 +440,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         state.scanState.timer = null;
       }
       state.scanState.dirty = false;
+      state.scanState.retryDelayMs = 0;
     }
     for (const root of this.roots) {
       await this.scanRoot(root);
@@ -388,6 +458,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         watcher.close();
       }
       state.directoryWatchers.clear();
+      state.parentWatcher?.close();
+      state.parentWatcher = undefined;
     }
     if (this.activeScans.size > 0) {
       await Promise.allSettled([...this.activeScans]);
@@ -395,6 +467,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     await this.saveSnapshotIfDirty();
     this.states.clear();
     this.fileStates.clear();
+    this.otherDestinations.clear();
     this.snapshotLoaded = false;
     this.started = false;
   }
@@ -412,6 +485,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         dirty: false,
         timer: null,
         resumeFromPath: null,
+        retryDelayMs: 0,
       },
       knownFiles: this.snapshotFilesForRoot(resolved),
       walkCompletions: 0,
@@ -440,10 +514,15 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     rootState.scanState.scanning = true;
     this.lastAcceptMore = true;
     this.lastRetryAfterMs = 0;
+    // Feedback is an observation from the previous RPC, not a live readiness
+    // signal. Permit a probe on the next scan so a drained WAL can recover.
+    this.lastWalDepth = 0;
+    this.lastWalCapacity = 0;
     const scan = (async () => {
         const stats = createScanStats();
         const startedAt = Date.now();
         try {
+          this.ensureRootParentWatcher(rootState);
           const currentFiles = new Set<string>();
           const candidates: FileCandidate[] = [];
           rootState.walkCompletions = 0;
@@ -490,8 +569,10 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         rootState.scanState.scanning = false;
         if (rootState.scanState.dirty) {
           rootState.scanState.dirty = false;
+          const retryDelayMs = rootState.scanState.retryDelayMs;
+          rootState.scanState.retryDelayMs = 0;
           if (!this.stopping && !rootState.quarantined) {
-            this.scheduleRootScan(rootState);
+            this.scheduleRootScan(rootState, retryDelayMs);
           }
         }
       }
@@ -511,6 +592,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
     if (rootState.scanState.scanning) {
       rootState.scanState.dirty = true;
+      rootState.scanState.retryDelayMs = Math.max(rootState.scanState.retryDelayMs, delayMs ?? 0);
       return;
     }
     if (rootState.scanState.timer) {
@@ -611,6 +693,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     } catch (error) {
       rootState.walkCompletions += 1;
       if (isEnoent(error)) {
+        this.closeDirectoryWatchers(rootState, dir);
         // The directory really is gone; its files are legitimately absent from
         // the walk and the prune pass should retire their documents.
         return;
@@ -710,7 +793,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       const estimatedTokens = estimateTokens(candidate.size);
       if (estimatedTokens > this.maxTokensPerFile) {
         stats.filesDeferred++;
-        if (await this.deleteCachedSourceDocument(candidate.path)) {
+        if (await this.coordinator.run(candidate.path, () => this.deleteCachedSourceDocument(candidate.path))) {
           stats.filesDeleted++;
           rootState.retiredThisScan.add(candidate.path);
         }
@@ -746,26 +829,92 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     return false;
   }
 
-  private async ensureDirectoryWatcher(rootState: RootState, dir: string): Promise<void> {
-    if (rootState.directoryWatchers.has(dir)) {
-      return;
+  private closeDirectoryWatchers(rootState: RootState, dir: string): void {
+    for (const [watched, watcher] of rootState.directoryWatchers) {
+      if (watched === dir || watched.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)) {
+        rootState.directoryWatchers.delete(watched);
+        watcher.close();
+      }
     }
+  }
 
-    try {
-      const watcher = this.fsApi.watch(dir, () => {
-        if (!this.stopping) {
-          rootState.scanState.resumeFromPath = null;
-          if (rootState.scanState.timer) {
-            clearTimeout(rootState.scanState.timer);
-            rootState.scanState.timer = null;
+  private scheduleWatcherScan(rootState: RootState): void {
+    rootState.scanState.resumeFromPath = null;
+    rootState.scanState.retryDelayMs = 0;
+    if (rootState.scanState.timer) {
+      clearTimeout(rootState.scanState.timer);
+      rootState.scanState.timer = null;
+    }
+    this.scheduleRootScan(rootState);
+  }
+
+  private ensureRootParentWatcher(rootState: RootState): void {
+    let candidate = path.dirname(rootState.root);
+    if (rootState.parentWatcher || candidate === rootState.root || this.stopping || rootState.quarantined) return;
+    while (true) {
+      const watchedDir = candidate;
+      const childName = path.relative(watchedDir, rootState.root).split(path.sep)[0];
+      try {
+        // Missing directory trees need a watch on their nearest existing
+        // ancestor. Re-evaluate that ancestor whenever its child changes.
+        const watcher = this.fsApi.watch(watchedDir, (event, filename) => {
+          if (this.stopping || rootState.parentWatcher !== watcher) return;
+          const name = filename?.toString();
+          const selfRename = event === "rename" && name === path.basename(watchedDir);
+          if (name && name !== childName && !selfRename) return;
+          if (event === "rename") {
+            rootState.parentWatcher = undefined;
+            watcher.close();
+            this.closeDirectoryWatchers(rootState, rootState.root);
           }
-          this.scheduleRootScan(rootState);
+          this.scheduleWatcherScan(rootState);
+        });
+        rootState.parentWatcher = watcher;
+        watcher.on("error", (error) => {
+          if (rootState.parentWatcher !== watcher) return;
+          rootState.parentWatcher = undefined;
+          watcher.close();
+          this.logger.warn?.(`[markdown-ingest] parent watch error for ${watchedDir}: ${formatError(error)}`);
+          this.scheduleWatcherScan(rootState);
+        });
+        return;
+      } catch (error) {
+        const parent = path.dirname(watchedDir);
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code === "ENOENT" || code === "ENOTDIR") && parent !== watchedDir) {
+          candidate = parent;
+          continue;
         }
-      });
-      watcher.on("error", (error) => {
-        this.logger.warn?.(`[markdown-ingest] watch error for ${dir}: ${formatError(error)}`);
+        this.logger.warn?.(`[markdown-ingest] parent watch unavailable for ${watchedDir}: ${formatError(error)}`);
+        return;
+      }
+    }
+  }
+
+  private async ensureDirectoryWatcher(rootState: RootState, dir: string): Promise<void> {
+    if (rootState.directoryWatchers.has(dir) || this.stopping || rootState.quarantined) return;
+    try {
+      const watcher = this.fsApi.watch(dir, (event, filename) => {
+        if (this.stopping || rootState.directoryWatchers.get(dir) !== watcher) return;
+        if (event === "rename") {
+          if (filename === null || filename.toString() === path.basename(dir)) {
+            this.closeDirectoryWatchers(rootState, dir);
+          } else {
+            // A child directory may have been replaced. Discard every watch
+            // below it before the next walk installs watches on the new tree.
+            this.closeDirectoryWatchers(rootState, path.join(dir, filename.toString()));
+          }
+        }
+        this.scheduleWatcherScan(rootState);
       });
       rootState.directoryWatchers.set(dir, watcher);
+      watcher.on("error", (error) => {
+        if (rootState.directoryWatchers.get(dir) !== watcher) return;
+        rootState.directoryWatchers.delete(dir);
+        watcher.close();
+        this.logger.warn?.(`[markdown-ingest] watch error for ${dir}: ${formatError(error)}`);
+        this.scheduleWatcherScan(rootState);
+      });
     } catch (error) {
       this.logger.warn?.(`[markdown-ingest] watch unavailable for ${dir}: ${formatError(error)}`);
     }
@@ -805,14 +954,28 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       return;
     }
     for (const filePath of removed) {
-      await this.deleteSourceDocument(filePath);
-      this.fileStates.delete(filePath);
-      this.snapshotDirty = true;
-      stats.filesDeleted++;
+      await this.coordinator.run(filePath, async () => {
+        // Another overlapping root may have validated this file after our
+        // directory walk. Its current document must survive our stale absence.
+        const cached = this.fileStates.get(filePath);
+        if (cached && cached.root !== rootState.root) return;
+        await this.deleteSourceDocument(filePath);
+        this.fileStates.delete(filePath);
+        this.snapshotDirty = true;
+        stats.filesDeleted++;
+      });
     }
   }
 
   private async syncMarkdownFile(
+    rootState: RootState,
+    filePath: string,
+    initialStat?: { size: number; mtimeMs: number; ctimeMs: number },
+  ): Promise<SyncMarkdownResult> {
+    return this.coordinator.run(filePath, () => this.syncMarkdownFileLocked(rootState, filePath, initialStat));
+  }
+
+  private async syncMarkdownFileLocked(
     rootState: RootState,
     filePath: string,
     initialStat?: { size: number; mtimeMs: number; ctimeMs: number },
@@ -836,7 +999,17 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     const cached = this.fileStates.get(sourceDoc);
-    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    if (
+      cached &&
+      !cached.needsRevalidation &&
+      !cached.needsReingest &&
+      cached.size === stat.size &&
+      cached.mtimeMs === stat.mtimeMs &&
+      cached.ctimeMs === stat.ctimeMs
+    ) {
+      if (cached.root !== rootState.root) {
+        this.setFileState(sourceDoc, { ...cached, root: rootState.root, relativePath });
+      }
       return "unchanged";
     }
 
@@ -863,7 +1036,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
     }
 
     const { text, fileHash } = streamed;
-    if (cached && cached.fileHash === fileHash) {
+    if (cached && !cached.needsRevalidation && !cached.needsReingest && cached.fileHash === fileHash) {
       this.setFileState(sourceDoc, {
         root: rootState.root,
         sourceDoc,
@@ -871,6 +1044,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         fileHash,
         size: stat.size,
         mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
       });
       return "unchanged";
     }
@@ -890,6 +1064,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       fileHash,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
+      ctimeMs: stat.ctimeMs,
     });
     return "ingested";
   }
@@ -965,6 +1140,9 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
   }
 
   private async deleteSourceDocument(sourceDoc: string): Promise<void> {
+    // Both adapters use the same daemon sourceDoc. Removing this adapter's
+    // snapshot must not erase a document still accepted by the other one.
+    if (this.coordinator.hasOtherOwner(this, sourceDoc)) return;
     const queue = await this.getIngestQueue();
     await queue.enqueueDelete(sourceDoc);
   }
@@ -1034,6 +1212,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
         {
           onChunkFeedback: (feedback) => this.applyIngestFeedback(feedback),
         },
+        client,
       );
     }
     return this.ingestQueue;
@@ -1128,27 +1307,68 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
 
     try {
       const parsed = JSON.parse(raw) as Partial<MarkdownSnapshotFile>;
-      if (parsed.ingestVersion !== MARKDOWN_INGEST_VERSION || parsed.hashBackend !== HASH_BACKEND || !parsed.files) {
+      const migrateLegacy = parsed.ingestVersion === 3;
+      if ((!migrateLegacy && parsed.ingestVersion !== MARKDOWN_INGEST_VERSION) || parsed.hashBackend !== HASH_BACKEND || !parsed.files) {
         return;
       }
-      const configuredRoots = new Set(this.roots.map((root) => path.resolve(root)));
-      for (const [sourceDoc, state] of Object.entries(parsed.files)) {
-        if (isValidSnapshotState(sourceDoc, state) && configuredRoots.has(path.resolve(state.root))) {
-          this.fileStates.set(sourceDoc, state);
+      for (const [destination, files] of Object.entries(parsed.otherDestinations ?? {})) {
+        if (files && typeof files === "object" && !Array.isArray(files)) {
+          this.otherDestinations.set(destination, files);
         }
       }
+      if (parsed.destination && parsed.destination !== this.destination) {
+        this.otherDestinations.set(parsed.destination, parsed.files);
+      }
+      const legacy = !parsed.destination;
+      const files = legacy || parsed.destination === this.destination
+        ? parsed.files
+        : this.otherDestinations.get(this.destination) ?? {};
+      this.otherDestinations.delete(this.destination);
+      const configuredRoots = new Set(this.roots.map((root) => path.resolve(root)));
+      for (const [sourceDoc, state] of Object.entries(files)) {
+        if (isValidSnapshotState(sourceDoc, state) && configuredRoots.has(path.resolve(state.root))) {
+          // Retain identities for missing/oversized sources while forcing both
+          // metadata and hash sentinels to revalidate present legacy content.
+          // Persist the marker so a transient failure and restart cannot turn
+          // an unconfirmed legacy entry into a synchronized version-4 entry.
+          // Legacy snapshots also have no destination proof. Preserve their cleanup
+          // history, but re-upload present files once before trusting the cache.
+          const nextState: FileState = { ...state };
+          if (migrateLegacy) {
+            nextState.needsRevalidation = true;
+          }
+          if (legacy) {
+            nextState.needsReingest = true;
+          }
+          this.fileStates.set(sourceDoc, nextState);
+        }
+      }
+      if (migrateLegacy) this.snapshotDirty = true;
       this.logger.info?.(`[markdown-ingest] loaded ${this.fileStates.size} ${this.kind} file snapshots from ${this.snapshotPath}`);
     } catch (error) {
       this.logger.warn?.(`[markdown-ingest] failed to parse snapshot ${this.snapshotPath}: ${formatError(error)}`);
     }
   }
 
-  private async saveSnapshotIfDirty(): Promise<void> {
+  private saveSnapshotIfDirty(): Promise<void> {
+    // Watchers for different roots can finish together. Serialize the entire
+    // capture/write/rename sequence so an older snapshot cannot win last.
+    const save = this.snapshotWrites.then(() => this.writeSnapshotIfDirty());
+    this.snapshotWrites = save.catch(() => {});
+    return save;
+  }
+
+  private async writeSnapshotIfDirty(): Promise<void> {
     if (!this.snapshotDirty) {
       return;
     }
+    // Changes made while this write is pending must remain dirty for the next
+    // queued save. A failed write restores the dirty flag for a later retry.
+    this.snapshotDirty = false;
     const payload: MarkdownSnapshotFile = {
-      version: 1,
+      version: 2,
+      destination: this.destination,
+      otherDestinations: Object.fromEntries(this.otherDestinations),
       ingestVersion: MARKDOWN_INGEST_VERSION,
       hashBackend: HASH_BACKEND,
       files: Object.fromEntries([...this.fileStates.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -1158,8 +1378,8 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
       const tmp = `${this.snapshotPath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
       await fsp.writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`);
       await fsp.rename(tmp, this.snapshotPath);
-      this.snapshotDirty = false;
     } catch (error) {
+      this.snapshotDirty = true;
       this.logger.warn?.(`[markdown-ingest] failed to write snapshot ${this.snapshotPath}: ${formatError(error)}`);
     }
   }
@@ -1418,7 +1638,10 @@ function isValidSnapshotState(sourceDoc: string, value: unknown): value is FileS
     typeof state.size === "number" &&
     Number.isFinite(state.size) &&
     typeof state.mtimeMs === "number" &&
-    Number.isFinite(state.mtimeMs)
+    Number.isFinite(state.mtimeMs) &&
+    (state.needsRevalidation === undefined || typeof state.needsRevalidation === "boolean") &&
+    (state.needsReingest === undefined || typeof state.needsReingest === "boolean") &&
+    (state.ctimeMs === undefined || (typeof state.ctimeMs === "number" && Number.isFinite(state.ctimeMs)))
   );
 }
 
@@ -1477,15 +1700,11 @@ function findFrontmatterEnd(text: string, offset: number): { position: number; b
 }
 
 function hasInlineObsidianTag(text: string): boolean {
-  let inFence = false;
+  const isFencedLine = createMarkdownFenceTracker();
   const lines = text.split("\n");
   for (const line of lines) {
     const trimmed = line.trimStart();
-    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) {
+    if (isFencedLine(line)) {
       continue;
     }
     const searchable = trimmed.replace(/^#{1,6}\s+/, "");

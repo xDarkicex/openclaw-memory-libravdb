@@ -8,7 +8,23 @@ model fields do not change an already-running daemon's settings. For example,
 select ONNX CPU execution with `LIBRAVDB_ONNX_DEVICE=cpu` in the daemon's
 environment, rather than relying on the plugin's `onnxDevice` field.
 
+`excludeAgents: ["voice"]` disables context-engine memory work for the named
+agents. It also skips their prompt routing, speaker-card and rule injection,
+reset/end lifecycle hints, and memory tool factories. The native memory runtime
+returns an unavailable manager before connecting for these agents. Hooks use the agent in
+`sessionKey` when available, otherwise `agentId`; recently observed excluded
+session IDs are retained for lifecycle events that omit both. Shared background
+Markdown ingestion and diary promotion are configured separately.
+
 ## Connection
+
+Agent operations select `tenantIdByAgent` using the host's agent ID or the agent
+component of its session key. Each distinct primary tenant and read-access list
+uses a separate client, so another agent's prompt hook cannot redirect queued
+transcript ingestion or tools. Later callbacks that omit the session key retain
+the session's explicit agent binding until runtime shutdown. Background Markdown
+ingestion, dream promotion, CLI operations, and the standalone compaction provider
+(whose host API supplies no agent context) use the configured default tenant.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
@@ -115,6 +131,16 @@ endpoints; provisioning and backend selection still happen on the daemon.
 
 ## Ingestion gating
 
+With `excludeSubagents: true`, a child marked by `prepareSubagentSpawn` remains
+excluded across context-engine replacement and parent disposal within the same
+plugin runtime. Spawn rollback, child completion, and runtime shutdown clear the
+marker. Independent runtimes do not share exclusion state.
+
+Tracked children also receive no LibraVDB tools or prompt-hook injection, and
+their reset/end advisory hooks skip daemon calls. Native memory access is
+blocked when the host supplies the child session key or a remembered session ID.
+An agent ID alone cannot distinguish a child from its parent.
+
 Gating thresholds and scoring weights are owned by the vector service and configured via
 service environment variables. See the service documentation for tuning details.
 
@@ -161,6 +187,14 @@ An explicit `identityPath` or `OPENCLAW_STATE_DIR` continues to take precedence.
 
 ## Markdown ingestion
 
+Unicode characters, including emoji and supplementary CJK ideographs, are
+preserved when large Markdown files are split into chunks for ingestion.
+
+Directory watches are renewed after a root or nested directory is replaced.
+A watch on the nearest existing ancestor also detects creation when a root or
+its parents are initially missing, and moves closer as directories appear.
+At least one ancestor must be present and watchable.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `markdownIngestionEnabled` | boolean | `false` | Watch markdown roots for changes |
@@ -173,12 +207,41 @@ An explicit `identityPath` or `OPENCLAW_STATE_DIR` continues to take precedence.
 | `markdownIngestionObsidianInclude` | string[] | — | Obsidian glob include patterns |
 | `markdownIngestionObsidianExclude` | string[] | same defaults as above | Obsidian glob exclude patterns; defaults to the same set as generic markdown ingestion |
 | `markdownIngestionObsidianDebounceMs` | number | `150` | Obsidian debounce window |
-| `markdownIngestionSnapshotPath` | string | — | Path to snapshot file for generic markdown ingestion state |
+| `markdownIngestionSnapshotPath` | string | — | Path to snapshot file for generic markdown ingestion state; updates from concurrent root scans are serialized so restart cleanup retains every tracked document |
 | `markdownIngestionObsidianSnapshotPath` | string | — | Path to snapshot file for Obsidian ingestion state |
+
+Updates and deletes for the same source document run in order across roots and
+adapters sharing a client. A replacement's APPEND chunks finish before another
+replacement or deletion begins; unrelated documents can still progress in parallel.
+
+Snapshots keep separate file checkpoints for each resolved daemon endpoint and write tenant.
+Changing either destination uploads unchanged files to the new destination; returning to a
+previous destination restores its cleanup history. Older snapshots are revalidated by
+re-uploading present files once. This does not detect a database erased behind an unchanged
+endpoint and tenant; remove the corresponding snapshot to force a full rescan in that case.
 
 Configured markdown roots are ignored unless the matching enable flag is set to
 `true`. Set `markdownIngestionEnabled: true` for generic roots and
 `markdownIngestionObsidianEnabled: true` for Obsidian vault roots.
+
+If the daemon explicitly rejects content, the scan reports an ingestion error
+and leaves the file eligible for a later scan or restart. A rejected chunk is
+retried at a smaller size only when none of its nodes were accepted and the
+daemon supplies a lower burst limit. Already accepted chunks may remain indexed
+until a successful retry replaces the document; a failed scan is not an atomic
+rollback. An asynchronous acknowledgment with zero accepted and zero rejected
+nodes remains a successful queue submission.
+
+Generic and Obsidian roots may overlap within one ingestion handle. They share
+the file's daemon document: removing an Obsidian tag or excluding it from one
+adapter does not delete it while the other adapter still manages it. Persisted
+ownership is loaded before startup pruning, and concurrent operations on the
+same file are serialized. This coordination does not span independent plugin
+instances or processes.
+
+Within an adapter, an unchanged file can transfer its checkpoint to another
+configured root that still accepts it. A stale scan from a different root does
+not prune a document that has since been validated through its current root.
 
 ## Continuity
 
@@ -218,12 +281,35 @@ and recency-adjusted scoring pass that runs after the initial vector search.
 
 ## Dream promotion
 
+Diary edits received during an in-flight promotion are scanned after it finishes,
+including when that promotion fails. Stopping the watcher cancels pending scans.
+
+The diary watcher also detects creation or replacement of its containing directory,
+including initially missing parent directories, provided an existing ancestor
+remains watchable.
+
+A confirmed missing dream diary reconciles that source with an empty entry list,
+including when it was deleted while the plugin was offline. Permission and other
+transient read errors retain existing entries. Failed reconciliation is retried on
+a subsequent refresh; recreating the diary promotes its entries again.
+
+Diary entries with malformed numeric metadata are skipped. The `recall` and
+`unique` counts must fit the RPC's signed 32-bit integer fields; an out-of-range
+entry is skipped so it cannot prevent valid entries in the diary from syncing.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `dreamPromotionEnabled` | boolean | `false` | Enable dream diary promotion |
-| `dreamPromotionDiaryPath` | string | — | Path to dream diary markdown file under the operator home directory or `OPENCLAW_STATE_DIR` |
+| `dreamPromotionDiaryPath` | string | — | Path to dream diary markdown file under the operator home directory or `OPENCLAW_STATE_DIR`. Change time is checked so equal-size rewrites with preserved modification times are detected. |
 | `dreamPromotionUserId` | string | — | User ID for dream collection scoping |
 | `dreamPromotionDebounceMs` | number | `150` | Debounce window for dream diary changes |
+
+If the daemon explicitly rejects ingestion nodes, promotion logs a failure and
+leaves the diary fingerprint retryable on a later refresh. The `dream-promote`
+CLI command exits unsuccessfully for the same response. Candidate eligibility
+rejections are normal results, and asynchronous admission with zero accepted
+and zero rejected nodes is also valid. A partially rejected batch is reported
+as a failure without immediately replaying it.
 
 ## Misc
 

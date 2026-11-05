@@ -22,6 +22,54 @@ function baseParams() {
   };
 }
 
+test("shared-client queues order deletion after all chunks without blocking other documents", { timeout: 3000 }, async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const documents = new Map<string, string>();
+  let deleted = false;
+  let first = true;
+  const scope = {};
+  const makeQueue = () => new IngestQueue(async params => {
+    documents.set(params.sourceDoc, params.mode === IngestMode.APPEND
+      ? (documents.get(params.sourceDoc) ?? "") + params.text : params.text);
+    if (params.sourceDoc === "shared" && first) {
+      first = false;
+      started();
+      await blocked;
+    }
+    return { ok: true };
+  }, async ({ sourceDoc }) => { deleted = true; documents.delete(sourceDoc); },
+  { error() {} }, { chunkTokens: 4, maxRetries: 0 }, scope);
+  const firstQueue = makeQueue();
+  const secondQueue = makeQueue();
+  const ingest = firstQueue.enqueueIngest("shared", "x".repeat(100), baseParams());
+  await ready;
+  const deletion = secondQueue.enqueueDelete("shared");
+  try {
+    await secondQueue.enqueueIngest("other", "independent", baseParams());
+    assert.equal(documents.get("other"), "independent");
+    assert.equal(deleted, false, "deletion must wait for the entire replacement");
+  } finally { release(); }
+  await Promise.all([ingest, deletion]);
+  assert.equal(documents.has("shared"), false, "a late APPEND must not resurrect a deleted document");
+});
+
+test("a failed replacement does not poison the next queued update", async () => {
+  const calls: string[] = [];
+  const queue = new IngestQueue(async params => {
+    calls.push(params.text);
+    if (params.text === "failure") throw new Error("daemon disconnected");
+    return { ok: true };
+  }, async () => {}, { error() {} }, { maxRetries: 0 });
+  const failed = queue.enqueueIngest("shared", "failure", baseParams());
+  const next = queue.enqueueIngest("shared", "replacement", baseParams());
+  await assert.rejects(failed, /daemon disconnected/);
+  await next;
+  assert.deepEqual(calls, ["failure", "replacement"]);
+});
+
 function feedback(overrides: Partial<{
   queueDepth: number;
   queueCapacity: number;
@@ -46,6 +94,34 @@ function feedback(overrides: Partial<{
     ...overrides,
   };
 }
+
+test("empty ingest deletes the previous authored document in every chunking mode", async () => {
+  for (const chunkTokens of [4, Infinity]) {
+    const deleted: string[] = [];
+    let ingested = false;
+    const queue = new IngestQueue(
+      async () => { ingested = true; return { ok: true }; },
+      async ({ sourceDoc }) => { deleted.push(sourceDoc); },
+      { error() {}, warn() {} },
+      { chunkTokens, maxRetries: 0 },
+    );
+
+    assert.equal(await queue.enqueueIngest("/vault/daily.md", "", baseParams()), undefined);
+    assert.deepEqual(deleted, ["/vault/daily.md"]);
+    assert.equal(ingested, false);
+  }
+});
+
+test("empty ingest fails when clearing the previous document fails", async () => {
+  const queue = new IngestQueue(
+    async () => ({ ok: true }),
+    async () => { throw new Error("delete unavailable"); },
+    { error() {}, warn() {} },
+    { maxRetries: 0 },
+  );
+
+  await assert.rejects(queue.enqueueIngest("/vault/daily.md", "", baseParams()), /delete unavailable/);
+});
 
 test("chunked ingest replaces first chunk then appends remaining chunks", async () => {
   const calls: Array<{ mode?: IngestMode; text: string }> = [];
@@ -231,4 +307,56 @@ test("a real rejection (nodesRejected>0) with a lower burst limit shrinks and re
   assert.ok(calls.length >= 2, "should retry after a real rejection");
   assert.ok(calls[1].length < calls[0].length, "the retry shrinks the chunk");
   assert.equal(calls[0].slice(0, calls[1].length), calls[1], "the retry is the same offset, just smaller");
+});
+
+for (const chunkTokens of [4, Infinity]) {
+  test(`explicit rejected nodes fail ingestion with chunkTokens=${chunkTokens}`, async () => {
+    const calls: string[] = [];
+    const acceptedFeedback: unknown[] = [];
+    const queue = new IngestQueue(
+      async (params) => {
+        calls.push(params.text);
+        return { ok: true, feedback: feedback({ nodesAccepted: 0, nodesRejected: 1, tokenBurstLimit: 0 }) };
+      },
+      async () => {},
+      { error() {}, warn() {} },
+      { chunkTokens, maxRetries: 0, onChunkFeedback: (value) => acceptedFeedback.push(value) },
+    );
+    await assert.rejects(
+      queue.enqueueIngest("/vault/rejected.md", "x".repeat(40), baseParams()),
+      /rejected.*nodesRejected=1/i,
+    );
+    assert.equal(calls.length, 1, "must not advance beyond a rejected chunk");
+    assert.deepEqual(acceptedFeedback, [], "rejected feedback must not be reported as an accepted chunk");
+  });
+}
+
+test("a rejected append stops the document instead of continuing past a missing section", async () => {
+  const calls: Array<{ mode?: IngestMode; text: string }> = [];
+  const queue = new IngestQueue(
+    async (params) => {
+      calls.push(params);
+      return { ok: true, feedback: feedback({ nodesRejected: calls.length === 2 ? 1 : 0, tokenBurstLimit: 4 }) };
+    },
+    async () => {},
+    { error() {}, warn() {} },
+    { chunkTokens: 4, maxRetries: 0 },
+  );
+  await assert.rejects(queue.enqueueIngest("/vault/rejected.md", "x".repeat(60), baseParams()), /rejected/i);
+  assert.deepEqual(calls.map((call) => call.mode), [IngestMode.REPLACE, IngestMode.APPEND]);
+});
+
+test("partial acceptance fails without replaying accepted nodes at a smaller burst limit", async () => {
+  let calls = 0;
+  const queue = new IngestQueue(
+    async () => {
+      calls++;
+      return { ok: true, feedback: feedback({ nodesAccepted: 1, nodesRejected: 1, tokenBurstLimit: 2 }) };
+    },
+    async () => {},
+    { error() {}, warn() {} },
+    { chunkTokens: 4, maxRetries: 0 },
+  );
+  await assert.rejects(queue.enqueueIngest("/vault/partial.md", "x".repeat(40), baseParams()), /rejected/i);
+  assert.equal(calls, 1, "a partially accepted chunk must not be replayed as an append");
 });

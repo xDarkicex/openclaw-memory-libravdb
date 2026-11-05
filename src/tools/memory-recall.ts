@@ -287,8 +287,27 @@ export function createMemoryExpandTool(
       const summaryIds: string[] = Array.isArray(rawIds) ? rawIds.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : [];
 
       const maxDepth = readNum(params, "maxDepth", { integer: true, min: 0 }) ?? 1;
-      let maxTokens = readNum(params, "maxTokens", { integer: true }) ?? MAX_EXPAND_TOKENS;
+      let maxTokens = Math.min(MAX_EXPAND_TOKENS, readNum(params, "maxTokens", { integer: true }) ?? MAX_EXPAND_TOKENS);
       const sessionId = readStr(params, "sessionId") ?? getSessionId() ?? "";
+
+      if (!recordId && summaryIds.length === 0) throw new Error("memory_expand requires at least one summaryId or record_id");
+
+      // Both summary and graph expansion draw from the same subagent budget.
+      const expansionId = recordId ?? summaryIds[0] ?? "";
+      const sessionKey = getSessionKey();
+      if (sessionKey) {
+        const grantedTokens = consumeSubagentBudget(sessionKey, maxTokens);
+        if (grantedTokens === 0) {
+          return {
+            content: [{ type: "text", text: "[Subagent expansion budget exhausted. Narrow the query or request fewer summaries.]" }],
+            details: { summaryId: expansionId, depth: maxDepth, text: "", truncated: true, exceededBudget: true, parentCount: 0 },
+          };
+        }
+        if (grantedTokens > 0 && grantedTokens < maxTokens) {
+          logger.info?.(`subagent expansion budget clamped from ${maxTokens} to ${grantedTokens} tokens`);
+          maxTokens = grantedTokens;
+        }
+      }
 
       // Graph mode: walk causal edges from a record ID.
       if (recordId) {
@@ -311,6 +330,12 @@ export function createMemoryExpandTool(
           if (!text && resp.whyIds?.length) {
             text = `why_ids: ${resp.whyIds.join(", ")}\nhow_ids: ${resp.howIds?.join(", ") ?? "none"}\nhop_targets: ${resp.hopTargets?.join(", ") ?? "none"}`;
           }
+          if (text.length > maxTokens * 4) {
+            return {
+              content: [{ type: "text", text: `[Expansion exceeds ${maxTokens}-token budget. Narrow the graph with a lower maxDepth or a more specific record_id.]` }],
+              details: { summaryId: recordId, depth: maxDepth, text: "", truncated: true, exceededBudget: true, parentCount: connected.length },
+            };
+          }
           return {
             content: [{ type: "text", text: text || "(no graph edges found)" }],
             details: { summaryId: recordId, depth: maxDepth, text: text || "", truncated: false, exceededBudget: false, parentCount: connected.length, connected },
@@ -318,25 +343,6 @@ export function createMemoryExpandTool(
         } catch (error) {
           logger.warn?.(`memory_expand graph mode failed: ${formatError(error)}`);
           return { content: [{ type: "text", text: `Graph expansion failed: ${formatError(error)}` }], details: { summaryId: recordId, depth: maxDepth, text: "", truncated: false, exceededBudget: false, parentCount: 0 } };
-        }
-      }
-
-      if (summaryIds.length === 0) throw new Error("memory_expand requires at least one summaryId or record_id");
-
-      // Subagent budget gate: if this is a subagent, check remaining expansion budget.
-      const sessionKey = getSessionKey();
-      if (sessionKey) {
-        const grantedTokens = consumeSubagentBudget(sessionKey, maxTokens);
-        if (grantedTokens === 0) {
-          return {
-            content: [{ type: "text", text: "[Subagent expansion budget exhausted. Narrow the query or request fewer summaries.]" }],
-            details: { summaryId: summaryIds[0] ?? "", depth: maxDepth, text: "", truncated: true, exceededBudget: true, parentCount: 0 },
-          };
-        }
-        if (grantedTokens > 0 && grantedTokens < maxTokens) {
-          // Clamp to remaining budget.
-          logger.info?.(`subagent expansion budget clamped from ${maxTokens} to ${grantedTokens} tokens`);
-          maxTokens = grantedTokens;
         }
       }
 
@@ -383,7 +389,7 @@ export function createMemoryExpandTool(
         }
 
         const text = parts.join("\n\n");
-        const exceededBudget = totalChars > maxTokens * 4;
+        const exceededBudget = text.length > maxTokens * 4;
 
         if (exceededBudget) {
           return {

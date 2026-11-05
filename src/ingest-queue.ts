@@ -56,27 +56,31 @@ interface IngestMarkdownDocumentResponse {
   feedback?: IngestFeedback;
 }
 
-interface QueuedIngest {
-  sourceDoc: string;
-  params: IngestMarkdownDocumentParams;
-  resolve: () => void;
-  reject: (err: Error) => void;
-}
+// Adapters sharing a client must also share document ordering, while unrelated
+// clients/tenants and different documents can still make progress independently.
+const documentQueues = new WeakMap<object, Map<string, Promise<void>>>();
 
 export class IngestQueue {
-  private readonly queue: QueuedIngest[] = [];
+  private readonly pendingByDocument: Map<string, Promise<void>>;
   private readonly ingestDocument: (params: IngestMarkdownDocumentParams) => Promise<IngestMarkdownDocumentResponse>;
   private readonly deleteDocument: (params: { sourceDoc: string }) => Promise<unknown>;
   private readonly logger: LoggerLike;
   private readonly options: IngestQueueOptions;
-  private running = false;
 
   constructor(
     ingestDocument: (params: IngestMarkdownDocumentParams) => Promise<IngestMarkdownDocumentResponse>,
     deleteDocument: (params: { sourceDoc: string }) => Promise<unknown>,
     logger: LoggerLike,
     options: Partial<IngestQueueOptions> = {},
+    coordinationScope?: object,
   ) {
+    const scope = coordinationScope ?? this;
+    let pending = documentQueues.get(scope);
+    if (!pending) {
+      pending = new Map();
+      documentQueues.set(scope, pending);
+    }
+    this.pendingByDocument = pending;
     this.ingestDocument = ingestDocument;
     this.deleteDocument = deleteDocument;
     this.logger = logger;
@@ -93,6 +97,24 @@ export class IngestQueue {
     baseParams: Omit<IngestMarkdownDocumentParams, "sourceDoc" | "text" | "mode">,
     maxChunkTokens?: number,
   ): Promise<IngestFeedback | undefined> {
+    return await this.runDocumentOperation(sourceDoc, async () => {
+      // An empty replacement must still clear the previously authored document.
+      // There are no chunks to submit, so use the deletion RPC and only let the
+      // caller record the empty-file snapshot after that operation succeeds.
+      if (text.length === 0) {
+        await this.deleteWithRetry(sourceDoc);
+        return undefined;
+      }
+      return this.ingestChunks(sourceDoc, text, baseParams, maxChunkTokens);
+    });
+  }
+
+  private async ingestChunks(
+    sourceDoc: string,
+    text: string,
+    baseParams: Omit<IngestMarkdownDocumentParams, "sourceDoc" | "text" | "mode">,
+    maxChunkTokens?: number,
+  ): Promise<IngestFeedback | undefined> {
     if (this.options.chunkTokens === Infinity) {
       const resp = await this.ingestWithRetry({
         ...baseParams,
@@ -100,6 +122,7 @@ export class IngestQueue {
         text,
         mode: IngestMode.REPLACE,
       });
+      assertNoRejectedNodes(sourceDoc, resp.feedback, 0);
       return resp.feedback;
     }
 
@@ -133,16 +156,13 @@ export class IngestQueue {
       if (lastFeedback && lastFeedback.nodesRejected > 0) {
         // A real rejection. If the daemon reported a lower per-chunk token
         // limit, shrink and retry the same offset before giving up.
-        if (lastFeedback.tokenBurstLimit > 0 && lastFeedback.tokenBurstLimit < currentLimit) {
+        if (lastFeedback.nodesAccepted === 0 && lastFeedback.tokenBurstLimit > 0 && lastFeedback.tokenBurstLimit < currentLimit) {
           currentLimit = lastFeedback.tokenBurstLimit;
           continue;
         }
-        this.logger.warn?.(
-          `[ingest-queue] Chunk rejected for ${sourceDoc} ` +
-          `at offset=${offset} length=${chunkText.length} ` +
-          `nodesRejected=${lastFeedback.nodesRejected} ` +
-          `tokenBurstLimit=${lastFeedback.tokenBurstLimit ?? "unset"}`,
-        );
+        // Do not skip missing content or retry a partially accepted APPEND.
+        // Reject so the caller cannot checkpoint the whole file as indexed.
+        assertNoRejectedNodes(sourceDoc, lastFeedback, offset);
       }
 
       if (this.options.onChunkFeedback && lastFeedback) {
@@ -180,12 +200,37 @@ export class IngestQueue {
   }
 
   async enqueueDelete(sourceDoc: string): Promise<void> {
+    await this.runDocumentOperation(sourceDoc, () => this.deleteWithRetry(sourceDoc));
+  }
+
+  private async deleteWithRetry(sourceDoc: string): Promise<void> {
     await withRetry(
       () => this.deleteDocument({ sourceDoc }) as Promise<void>,
       this.options.maxRetries,
       this.options.retryBaseDelayMs,
       this.logger,
       `delete_authored_document(${sourceDoc})`,
+    );
+  }
+
+  private runDocumentOperation<T>(sourceDoc: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.pendingByDocument.get(sourceDoc) ?? Promise.resolve();
+    const result = previous.then(task);
+    // Preserve the caller's failure, but don't poison later updates/deletes.
+    const settled = result.then(() => {}, () => {});
+    this.pendingByDocument.set(sourceDoc, settled);
+    void settled.then(() => {
+      if (this.pendingByDocument.get(sourceDoc) === settled) this.pendingByDocument.delete(sourceDoc);
+    });
+    return result;
+  }
+}
+
+function assertNoRejectedNodes(sourceDoc: string, feedback: IngestFeedback | undefined, offset: number): void {
+  if (feedback && feedback.nodesRejected > 0) {
+    throw new Error(
+      `[ingest-queue] Chunk rejected for ${sourceDoc} at offset=${offset} ` +
+      `nodesRejected=${feedback.nodesRejected} tokenBurstLimit=${feedback.tokenBurstLimit ?? "unset"}`,
     );
   }
 }
@@ -197,7 +242,9 @@ function splitIntoChunks(text: string, maxTokens: number): Array<{ text: string;
   if (!(maxTokens > 0)) {
     return [{ text, ordinal: 0 }];
   }
-  const maxChars = maxTokens * 4;
+  // A Unicode code point may need two UTF-16 code units. Even a fractional
+  // caller budget must leave enough room to consume one complete code point.
+  const maxChars = Math.max(2, Math.floor(maxTokens * 4));
   if (text.length <= maxChars) {
     return [{ text, ordinal: 0 }];
   }
@@ -208,6 +255,13 @@ function splitIntoChunks(text: string, maxTokens: number): Array<{ text: string;
 
   while (offset < text.length) {
     let end = Math.min(offset + maxChars, text.length);
+    const last = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      // Each chunk is encoded as a separate protobuf string. Splitting a pair
+      // would turn both halves into replacement characters on the wire.
+      end--;
+    }
 
     // Walk back up to 256 chars looking for a sentence boundary.
     // `end` is exclusive, so probes must stay inside [offset, end).

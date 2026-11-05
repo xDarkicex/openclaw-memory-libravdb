@@ -315,6 +315,25 @@ function isHistoricalToolControlText(normalizedContent: string): boolean {
 
 const asyncIngestionQueues = new Map<string, Promise<void>>();
 
+// Parent and child turns use different context-engine instances. Exclusion
+// belongs to their shared plugin runtime, not the engine that prepared a spawn.
+const excludedSubagentsByRuntime = new WeakMap<PluginRuntime, Set<string>>();
+
+export function isRuntimeSubagentExcluded(runtime: PluginRuntime, sessionKey: string): boolean {
+  return excludedSubagentsByRuntime.get(runtime)?.has(sessionKey.trim()) ?? false;
+}
+
+function runtimeSubagentExclusions(runtime: PluginRuntime): Set<string> {
+  let keys = excludedSubagentsByRuntime.get(runtime);
+  if (!keys) {
+    keys = new Set();
+    excludedSubagentsByRuntime.set(runtime, keys);
+    const ownedKeys = keys;
+    runtime.onShutdown(() => { ownedKeys.clear(); });
+  }
+  return keys;
+}
+
 class SessionLifecycleChangedError extends Error {
   constructor() {
     super("session lifecycle changed");
@@ -2125,7 +2144,7 @@ export function buildContextEngineFactory(
       .filter(Boolean),
   );
   const excludeSubagents = cfg?.excludeSubagents === true;
-  const excludedSubagentKeys = new Set<string>();
+  const excludedSubagentKeys = excludeSubagents ? runtimeSubagentExclusions(runtime) : new Set<string>();
   // Fallback exclusion marker for compact(). The host threads sessionKey through
   // on every compaction path (timeout/overflow recovery and the manual /compact
   // lane), so compact() resolves exclusion authoritatively from the agent id — but
@@ -2547,6 +2566,7 @@ export function buildContextEngineFactory(
       queryText: string;
       userId: string;
       sessionId: string;
+      sessionKey?: string;
       tokenBudget?: number;
       reservedTokens?: number;
     },
@@ -2571,7 +2591,7 @@ export function buildContextEngineFactory(
 
     let client: Awaited<ReturnType<typeof runtime.getClient>>;
     try {
-      client = await runtime.getClient();
+      client = await runtime.getClient(args);
     } catch (error) {
       logger.warn?.(
         `LibraVDB exact recall skipped sessionId=${args.sessionId}: ` +
@@ -2815,6 +2835,7 @@ export function buildContextEngineFactory(
   async function runCompaction(
     args: {
       sessionId: string;
+      sessionKey?: string;
       force?: boolean;
       targetSize?: number;
       tokenBudget?: number;
@@ -2829,7 +2850,7 @@ export function buildContextEngineFactory(
     }
     const request = buildCompactSessionRequest(args);
     try {
-      const client = await runtime.getClient();
+      const client = await runtime.getClient(args);
       const threshold = getDynamicCompactThreshold(args.tokenBudget);
       const response = await client.compactSession(request);
       const result = normalizeCompactResult(response, {
@@ -2865,6 +2886,7 @@ export function buildContextEngineFactory(
 
   async function performAfterTurnPredictiveCompaction(args: {
     sessionId: string;
+    sessionKey?: string;
     messages: OpenClawCompatibleMessage[];
     tokenBudget?: number;
     currentTokenCount?: number;
@@ -2897,6 +2919,7 @@ export function buildContextEngineFactory(
     });
     const compactionResult = await runCompaction({
       sessionId: args.sessionId,
+      sessionKey: args.sessionKey,
       targetSize: predictiveTargetSize,
       tokenBudget: args.tokenBudget,
       force: true,
@@ -2959,7 +2982,7 @@ export function buildContextEngineFactory(
         `LibraVDB bootstrap sessionId=${sessionId} userId=${userId} ` +
         `sessionKey=${args.sessionKey ?? "(none)"}`,
       );
-      const client = await runtime.getClient();
+      const client = await runtime.getClient(args);
       return await client.bootstrapSessionKernel({
         sessionId,
         sessionKey: args.sessionKey,
@@ -2983,7 +3006,7 @@ export function buildContextEngineFactory(
         `contentLen=${message.content.length}`,
       );
       try {
-        const client = await runtime.getClient();
+        const client = await runtime.getClient(args);
         return await client.ingestMessageKernel({
           sessionId,
           sessionKey: args.sessionKey,
@@ -3109,6 +3132,7 @@ export function buildContextEngineFactory(
         const compactionResult = await runCompaction(
           {
             sessionId,
+            sessionKey: args.sessionKey,
             targetSize: predictiveTargetSize,
             tokenBudget: args.tokenBudget,
             force: true,
@@ -3212,7 +3236,7 @@ export function buildContextEngineFactory(
       }
 
       try {
-        const client = await runtime.getClient();
+        const client = await runtime.getClient(args);
 
 
 
@@ -3418,6 +3442,7 @@ export function buildContextEngineFactory(
               queryText: retrievalQuery,
               userId,
               sessionId,
+              sessionKey: args.sessionKey,
               tokenBudget: args.tokenBudget,
               reservedTokens: reservedCurrentTurnTokens,
             }),
@@ -3875,7 +3900,7 @@ export function buildContextEngineFactory(
               manifestTailHash: manifest.tailHash,
             };
 
-          const client = await runtime.getClient();
+          const client = await runtime.getClient(args);
           if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
           const currentTokenCount = normalizeCurrentTokenCount(
             typeof args.runtimeContext?.currentTokenCount === "number"
@@ -3985,6 +4010,7 @@ export function buildContextEngineFactory(
           try {
             await performAfterTurnPredictiveCompaction({
               sessionId,
+              sessionKey: args.sessionKey,
               messages,
               tokenBudget: args.tokenBudget,
               currentTokenCount,
@@ -4130,7 +4156,8 @@ export function buildContextEngineFactory(
       predictiveContextCache.clear();
       postToolRecallCache.clear();
       triggerCache.clear();
-      excludedSubagentKeys.clear();
+      // Spawn rollback, child completion, and runtime shutdown own exclusions.
+      // Disposing a parent turn must not re-enable memory for its live children.
       excludedSessionIds.clear();
     },
   };

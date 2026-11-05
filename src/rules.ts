@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { LoggerLike } from "./types.js";
 
@@ -10,10 +11,11 @@ export interface Rule {
   created_at: number;
 }
 
-let maxRules = 20;
+const DEFAULT_MAX_RULES = 20;
+let maxRules = DEFAULT_MAX_RULES;
 
 export function setMaxRules(n: number): void {
-  maxRules = Math.max(0, n);
+  maxRules = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : DEFAULT_MAX_RULES;
 }
 
 type ToolContent = { type: "text"; text: string };
@@ -30,6 +32,7 @@ let rulesPath: string | null = null;
 let nextId = 1;
 
 export function initRuleStore(cacheDir: string, logger?: LoggerLike): void {
+  maxRules = DEFAULT_MAX_RULES;
   rulesPath = cacheDir + "/rules.json";
   try {
     const raw = readFileSync(rulesPath, "utf8");
@@ -45,16 +48,24 @@ export function initRuleStore(cacheDir: string, logger?: LoggerLike): void {
   }
 }
 
-function persist(): void {
-  if (!rulesPath) return;
+function persist(nextRules: Rule[], nextRuleId: number): void {
+  if (!rulesPath) throw new Error("Rule store is not initialized");
+  mkdirSync(dirname(rulesPath), { recursive: true });
+  const temporaryPath = `${rulesPath}.${randomUUID()}.tmp`;
   try {
-    mkdirSync(dirname(rulesPath), { recursive: true });
-    writeFileSync(rulesPath, JSON.stringify({ rules, nextId }));
-  } catch { /* best-effort disk write */ }
+    // Write beside the destination so a failed write cannot truncate the old store.
+    writeFileSync(temporaryPath, JSON.stringify({ rules: nextRules, nextId: nextRuleId }), {
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, rulesPath);
+  } finally {
+    try { rmSync(temporaryPath, { force: true }); } catch { /* preserve the persistence error */ }
+  }
 }
 
 export function getRules(): Rule[] {
-  return rules;
+  return maxRules === 0 ? [] : rules;
 }
 
 export function getRule(id: string): Rule | undefined {
@@ -62,25 +73,29 @@ export function getRule(id: string): Rule | undefined {
 }
 
 export function setRule(ruleText: string, keywords: string[], priority: number): { rule: Rule; replaced: boolean } {
+  if (maxRules === 0) throw new Error("Hard constraint rules are disabled (maxRules=0)");
   let replaced = false;
+  const nextRules = [...rules];
   if (maxRules > 0 && rules.length >= maxRules) {
     let minIdx = 0;
     for (let i = 1; i < rules.length; i++) {
       if (rules[i].priority < rules[minIdx].priority) minIdx = i;
     }
-    rules.splice(minIdx, 1);
+    nextRules.splice(minIdx, 1);
     replaced = true;
   }
   const rule: Rule = {
-    id: String(nextId++),
+    id: String(nextId),
     rule: ruleText,
     keywords: keywords.map(k => k.toLowerCase().trim()).filter(k => k.length > 0),
     priority: Math.max(1, Math.min(10, priority || 5)),
     created_at: Date.now(),
   };
-  rules.push(rule);
-  rules.sort((a, b) => b.priority - a.priority);
-  persist();
+  nextRules.push(rule);
+  nextRules.sort((a, b) => b.priority - a.priority);
+  persist(nextRules, nextId + 1);
+  rules = nextRules;
+  nextId++;
   return { rule, replaced };
 }
 
@@ -88,7 +103,7 @@ export function setRule(ruleText: string, keywords: string[], priority: number):
 // violating rule, or null if clean.
 export function scanReply(replyText: string): Rule | null {
   const lower = replyText.toLowerCase();
-  for (const rule of rules) {
+  for (const rule of getRules()) {
     for (const kw of rule.keywords) {
       if (kw && lower.includes(kw)) {
         return rule;
@@ -101,8 +116,9 @@ export function scanReply(replyText: string): Rule | null {
 export function deleteRule(id: string): boolean {
   const idx = rules.findIndex((r) => r.id === id);
   if (idx < 0) return false;
-  rules.splice(idx, 1);
-  persist();
+  const nextRules = rules.filter((_, i) => i !== idx);
+  persist(nextRules, nextId);
+  rules = nextRules;
   return true;
 }
 
@@ -135,8 +151,12 @@ export function createSetRuleTool(logger: LoggerLike = console) {
       const kwRaw = typeof params?.keywords === "string" ? params.keywords : "";
       const keywords = kwRaw.split(",").map(k => k.trim()).filter(k => k.length > 0);
       const priority = typeof params?.priority === "number" ? params.priority : 5;
-      const result = setRule(ruleText, keywords, priority);
-      return jsonResult({ ok: true, rule: result.rule, replaced: result.replaced });
+      try {
+        const result = setRule(ruleText, keywords, priority);
+        return jsonResult({ ok: true, rule: result.rule, replaced: result.replaced });
+      } catch (error) {
+        return jsonResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
     },
   };
 }
@@ -173,7 +193,8 @@ export function createListRulesTool(logger: LoggerLike = console) {
       "asks what their rules are.",
     parameters: { type: "object", additionalProperties: false, properties: {} } as const,
     execute: async (): Promise<ToolResult<{ rules: Rule[]; count: number }>> => {
-      return jsonResult({ rules: getRules(), count: rules.length });
+      const active = getRules();
+      return jsonResult({ rules: active, count: active.length });
     },
   };
 }
@@ -195,8 +216,12 @@ export function createDeleteRuleTool(logger: LoggerLike = console) {
       const params = rawParams as Record<string, unknown> | undefined;
       const id = typeof params?.rule_id === "string" ? params.rule_id.trim() : "";
       if (!id) return jsonResult({ ok: false, error: "delete_rule requires rule_id" });
-      const ok = deleteRule(id);
-      return jsonResult({ ok });
+      try {
+        const ok = deleteRule(id);
+        return jsonResult({ ok });
+      } catch (error) {
+        return jsonResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
     },
   };
 }

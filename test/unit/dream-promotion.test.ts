@@ -102,6 +102,40 @@ test("dream promotion parser rejects partially parsed numeric metadata", () => {
   assert.equal(candidates[0]?.uniqueQueries, 2);
 });
 
+test("dream promotion parser keeps mismatched, short and annotated fences inside code blocks", () => {
+  for (const [opening, falseClosing, closing] of [
+    ["````markdown", "```", "````"],
+    ["```markdown", "~~~", "```"],
+    ["~~~markdown", "```", "~~~~"],
+    ["```markdown", "```not a closing fence", "```"],
+  ]) {
+    const candidates = parseDreamPromotionCandidates([
+      "## Deep Sleep",
+      opening,
+      falseClosing,
+      "- Code example {score=0.9 recall=3 unique=2}",
+      closing,
+      "- Actual candidate {score=0.9 recall=3 unique=2}",
+    ].join("\r\n"));
+
+    assert.deepEqual(candidates.map((candidate) => candidate.text), ["Actual candidate"]);
+  }
+});
+
+test("dream promotion parser recognizes closing heading hashes and top-level section boundaries", () => {
+  const candidates = parseDreamPromotionCandidates([
+    "## Deep Sleep ##",
+    "- Actual candidate {score=0.9 recall=3 unique=2}",
+    "# Examples",
+    "- Other section {score=0.9 recall=3 unique=2}",
+    "## Deep Sleep",
+    "##",
+    "- Unnamed section {score=0.9 recall=3 unique=2}",
+  ].join("\n"));
+
+  assert.deepEqual(candidates.map((candidate) => candidate.text), ["Actual candidate"]);
+});
+
 import type { LibravDBClient } from "../../src/libravdb-client.js";
 
 function fakeClient(impl?: { promoteDreamEntries?: (params: unknown) => Promise<unknown> }) {

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { getHashBackendName, hashBytes } from "./markdown-hash.js";
 import { formatError } from "./format-error.js";
+import { createMarkdownFenceTracker } from "./markdown-fence.js";
 import type { LoggerLike, PluginConfig } from "./types.js";
 
 const DEFAULT_DEBOUNCE_MS = 150;
@@ -15,7 +16,7 @@ const DREAM_PROMOTION_VERSION = 1;
 const DREAM_SOURCE_KIND = "dream";
 
 import type { PartialMessage } from "@bufbuild/protobuf";
-import type { DreamPromotionEntry as ProtoEntry } from "@xdarkicex/libravdb-contracts";
+import type { DreamPromotionEntry as ProtoEntry, DreamPromotionResponse } from "@xdarkicex/libravdb-contracts";
 import type { LibravDBClient } from "./libravdb-client.js";
 
 type Disposable = { close(): void };
@@ -28,7 +29,7 @@ interface FsWatcherLike extends Disposable {
 
 interface FsApi {
   readFile(file: string): Promise<Uint8Array>;
-  stat(file: string): Promise<{ size: number; mtimeMs: number }>;
+  stat(file: string): Promise<{ size: number; mtimeMs: number; ctimeMs?: number }>;
   watch(dir: string, onChange: (event: string, filename: string | Buffer | null) => void): FsWatcherLike;
 }
 
@@ -70,9 +71,23 @@ interface DreamPromotionResult {
   rejected?: number;
 }
 
+function assertDreamPromotionAccepted(result: DreamPromotionResponse): void {
+  // Eligibility rejection is reported separately by result.rejected. Queue
+  // admission can legitimately return 0 accepted / 0 rejected asynchronously;
+  // only an explicit node rejection means this response was not fully accepted.
+  const feedback = result.feedback;
+  if (feedback && feedback.nodesRejected > 0) {
+    throw new Error(
+      `Dream promotion rejected by daemon: nodesRejected=${feedback.nodesRejected}, ` +
+      `nodesAccepted=${feedback.nodesAccepted}`,
+    );
+  }
+}
+
 interface DreamFileState {
   size: number;
   mtimeMs: number;
+  ctimeMs?: number;
   fileHash: string;
 }
 
@@ -82,6 +97,7 @@ interface DreamPromotionState {
   scanning: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   watcher: FsWatcherLike | null;
+  parentWatcher: FsWatcherLike | null;
 }
 
 export function createDreamPromotionHandle(
@@ -114,8 +130,11 @@ export function createDreamPromotionHandle(
     scanning: false,
     timer: null,
     watcher: null,
+    parentWatcher: null,
   };
   let lastFileState: DreamFileState | null = null;
+  let activeScan: Promise<void> | null = null;
+  let missingSourceReconciled = false;
   const debounceMs = cfg.dreamPromotionDebounceMs ?? DEFAULT_DEBOUNCE_MS;
 
   return {
@@ -133,14 +152,15 @@ export function createDreamPromotionHandle(
 
     async stop(): Promise<void> {
       state.watching = false;
+      state.dirty = false;
       if (state.timer) {
         clearTimeout(state.timer);
         state.timer = null;
       }
-      if (state.watcher) {
-        state.watcher.close();
-        state.watcher = null;
-      }
+      closeDiaryWatcher();
+      state.parentWatcher?.close();
+      state.parentWatcher = null;
+      await activeScan;
     },
   };
 
@@ -158,8 +178,12 @@ export function createDreamPromotionHandle(
     }
     state.timer = setTimeout(() => {
       state.timer = null;
-      void scanDiary().catch((error) => {
+      const scan = scanDiary().catch((error) => {
         logger.warn?.(`[dream-promotion] refresh failed for ${diaryPath}: ${formatError(error)}`);
+      });
+      activeScan = scan;
+      void scan.then(() => {
+        if (activeScan === scan) activeScan = null;
       });
     }, debounceMs);
   }
@@ -173,11 +197,12 @@ export function createDreamPromotionHandle(
       await performScan();
     } finally {
       state.scanning = false;
-    }
-
-    if (state.dirty) {
-      state.dirty = false;
-      await refreshDiary();
+      // An edit received while promotion was in flight still needs a scan if
+      // that RPC fails. Scheduling outside finally strands the dirty marker.
+      if (state.dirty) {
+        state.dirty = false;
+        await refreshDiary();
+      }
     }
   }
 
@@ -186,25 +211,28 @@ export function createDreamPromotionHandle(
 
     const stat = await safeStat(diaryPath);
     if (!stat) {
-      lastFileState = null;
+      await reconcileMissingSource();
       return;
     }
 
-    if (lastFileState && lastFileState.size === stat.size && lastFileState.mtimeMs === stat.mtimeMs) {
+    if (lastFileState && lastFileState.size === stat.size && lastFileState.mtimeMs === stat.mtimeMs
+      && stat.ctimeMs !== undefined && lastFileState.ctimeMs === stat.ctimeMs) {
       return;
     }
 
     const bytes = await safeReadFile(diaryPath);
     if (!bytes) {
-      lastFileState = null;
+      await reconcileMissingSource();
       return;
     }
+    missingSourceReconciled = false;
 
     const fileHash = hashBytes(bytes);
     if (lastFileState && lastFileState.fileHash === fileHash) {
       lastFileState = {
         size: stat.size,
         mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
         fileHash,
       };
       return;
@@ -214,7 +242,7 @@ export function createDreamPromotionHandle(
     const candidates = parseDreamPromotionCandidates(text);
 
     const client = await getClient();
-    await client.promoteDreamEntries({
+    const result = await client.promoteDreamEntries({
       userId,
       sourceDoc: diaryPath,
       sourceRoot: path.dirname(diaryPath),
@@ -236,50 +264,128 @@ export function createDreamPromotionHandle(
       })) as unknown as ProtoEntry[],
     });
 
+    assertDreamPromotionAccepted(result);
     lastFileState = {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
+      ctimeMs: stat.ctimeMs,
       fileHash,
     };
   }
 
-  async function safeStat(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
+  async function reconcileMissingSource(): Promise<void> {
+    if (missingSourceReconciled) return;
+    const client = await getClient();
+    // Empty entries use the same source reconciliation as an emptied diary,
+    // including when the file disappeared while the plugin was offline.
+    await promoteDreamDiaryFile(client, {
+      userId, diaryPath, text: "", fileHash: hashBytes(new Uint8Array()),
+      sourceSize: 0, sourceMtimeMs: 0,
+    });
+    missingSourceReconciled = true;
+    lastFileState = null;
+  }
+
+  async function safeStat(filePath: string): Promise<{ size: number; mtimeMs: number; ctimeMs?: number } | null> {
     try {
       return await fsApi.stat(filePath);
-    } catch {
-      return null;
+    } catch (error) {
+      if (isMissingFile(error)) return null;
+      throw error;
     }
   }
 
   async function safeReadFile(filePath: string): Promise<Uint8Array | null> {
     try {
       return await fsApi.readFile(filePath);
-    } catch {
-      return null;
+    } catch (error) {
+      if (isMissingFile(error)) return null;
+      throw error;
+    }
+  }
+
+  function closeDiaryWatcher(): void {
+    state.watcher?.close();
+    state.watcher = null;
+  }
+
+  function ensureParentWatcher(parentDir: string): void {
+    let candidate = path.dirname(parentDir);
+    if (state.parentWatcher || candidate === parentDir) return;
+    while (true) {
+      const watchedDir = candidate;
+      const childName = path.relative(watchedDir, parentDir).split(path.sep)[0];
+      try {
+        const watcher = fsApi.watch(watchedDir, (event, filename) => {
+          if (!state.watching || state.parentWatcher !== watcher) return;
+          const name = filename?.toString();
+          const selfRename = event === "rename" && name === path.basename(watchedDir);
+          if (name && name !== childName && !selfRename) return;
+          if (event === "rename") {
+            state.parentWatcher = null;
+            watcher.close();
+            closeDiaryWatcher();
+          }
+          state.dirty = true;
+          void refreshDiary();
+        });
+        state.parentWatcher = watcher;
+        watcher.on("error", (error) => {
+          if (state.parentWatcher !== watcher) return;
+          state.parentWatcher = null;
+          watcher.close();
+          logger.warn?.(`[dream-promotion] parent watch error for ${watchedDir}: ${formatError(error)}`);
+          void refreshDiary();
+        });
+        return;
+      } catch (error) {
+        const parent = path.dirname(watchedDir);
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code === "ENOENT" || code === "ENOTDIR") && parent !== watchedDir) {
+          candidate = parent;
+          continue;
+        }
+        logger.warn?.(`[dream-promotion] parent watch unavailable for ${watchedDir}: ${formatError(error)}`);
+        return;
+      }
     }
   }
 
   async function ensureWatcher(): Promise<void> {
-    if (state.watcher) {
-      return;
-    }
+    if (!state.watching) return;
     const parentDir = path.dirname(diaryPath);
+    // Keep observing the containing directory while the diary directory is
+    // missing. A watch on the old inode cannot see its later replacement.
+    ensureParentWatcher(parentDir);
+    if (state.watcher) return;
     try {
-      const watcher = fsApi.watch(parentDir, (_event, filename) => {
-        if (filename && path.basename(String(filename)) !== path.basename(diaryPath)) {
+      const watcher = fsApi.watch(parentDir, (event, filename) => {
+        if (!state.watching || state.watcher !== watcher) return;
+        const name = filename?.toString();
+        if (event === "rename" && (!name || name === path.basename(parentDir))) {
+          closeDiaryWatcher();
+        } else if (name && path.basename(name) !== path.basename(diaryPath)) {
           return;
         }
         state.dirty = true;
         void refreshDiary();
       });
-      watcher.on("error", (error) => {
-        logger.warn?.(`[dream-promotion] watch error for ${parentDir}: ${formatError(error)}`);
-      });
       state.watcher = watcher;
+      watcher.on("error", (error) => {
+        if (state.watcher !== watcher) return;
+        closeDiaryWatcher();
+        logger.warn?.(`[dream-promotion] watch error for ${parentDir}: ${formatError(error)}`);
+        void refreshDiary();
+      });
     } catch (error) {
       logger.warn?.(`[dream-promotion] watch unavailable for ${parentDir}: ${formatError(error)}`);
     }
   }
+
+}
+
+function isMissingFile(error: unknown): boolean {
+  return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
 }
 
 export async function promoteDreamDiaryFile(
@@ -316,7 +422,7 @@ export async function promoteDreamDiaryFile(
   }
 
   const candidates = parseDreamPromotionCandidates(text);
-  return await client.promoteDreamEntries({
+  const result = await client.promoteDreamEntries({
     userId,
     sourceDoc: diaryPath,
     sourceRoot: path.dirname(diaryPath),
@@ -337,27 +443,25 @@ export async function promoteDreamDiaryFile(
       sourceLine: candidate.line,
     })) as unknown as ProtoEntry[],
   });
+  assertDreamPromotionAccepted(result);
+  return result;
 }
 
 export function parseDreamPromotionCandidates(text: string): DreamPromotionCandidate[] {
   const candidates: DreamPromotionCandidate[] = [];
   const lines = text.split("\n");
-  let inFence = false;
+  const isFencedLine = createMarkdownFenceTracker();
   let activeSection = "";
 
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index] ?? "";
     const trimmed = line.trimStart();
-    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) {
+    if (isFencedLine(line)) {
       continue;
     }
 
     const heading = parseHeading(trimmed);
-    if (heading) {
+    if (heading !== null) {
       activeSection = heading;
       continue;
     }
@@ -394,11 +498,11 @@ export function parseDreamPromotionCandidates(text: string): DreamPromotionCandi
 }
 
 function parseHeading(value: string): string | null {
-  const match = /^(#{2,6})\s+(.+)$/.exec(value);
+  const match = /^(#{1,6})(?:[ \t]+(.*)|[ \t]*)$/.exec(value.trimEnd());
   if (!match) {
     return null;
   }
-  return normalizeSectionName(match[2] ?? "");
+  return normalizeSectionName((match[2] ?? "").replace(/[ \t]+#+[ \t]*$/, ""));
 }
 
 function isPromotionSection(section: string): boolean {
@@ -447,8 +551,8 @@ function parseTrailingMetadata(body: string): { bodyStart: number; score: number
   }
 
   const score = parseNumber(fields.get("score"));
-  const recallCount = parseInteger(fields.get("recall") ?? fields.get("recallcount"));
-  const uniqueQueries = parseInteger(fields.get("unique") ?? fields.get("uniquequeries"));
+  const recallCount = parseInt32(fields.get("recall") ?? fields.get("recallcount"));
+  const uniqueQueries = parseInt32(fields.get("unique") ?? fields.get("uniquequeries"));
   if (score == null || recallCount == null || uniqueQueries == null) {
     return null;
   }
@@ -476,13 +580,15 @@ function parseNumber(value: string | undefined): number | null {
   return parsed;
 }
 
-function parseInteger(value: string | undefined): number | null {
+function parseInt32(value: string | undefined): number | null {
   const trimmed = value?.trim();
   if (!trimmed || !INTEGER_PATTERN.test(trimmed)) {
     return null;
   }
   const parsed = Number(trimmed);
-  if (!Number.isSafeInteger(parsed)) {
+  // Both counts are int32 in DreamPromotionEntry. A larger JS-safe integer
+  // makes protobuf encoding reject the entire diary, including valid entries.
+  if (!Number.isInteger(parsed) || parsed < -2147483648 || parsed > 2147483647) {
     return null;
   }
   return parsed;
@@ -541,7 +647,7 @@ function createRealFsApi(): FsApi {
     readFile: async (file: string) => fsp.readFile(file),
     stat: async (file: string) => {
       const stat = await fsp.stat(file);
-      return { size: stat.size, mtimeMs: stat.mtimeMs };
+      return { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
     },
     watch: (dir: string, onChange: (event: string, filename: string | Buffer | null) => void) => fs.watch(dir, onChange),
   };

@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fsp from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { registerMemoryCli } from "../../src/cli.js";
 import { registerMemoryCliMetadata } from "../../src/cli-descriptors.js";
@@ -111,6 +114,39 @@ function buildMemoryCommand(runtime: PluginRuntime, cfg: PluginConfig = {}): Fak
   );
   return memory;
 }
+
+test("dream-promote reports daemon admission rejection as a CLI failure", async t => {
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  const previousExitCode = process.exitCode;
+  const tempRoot = await fsp.mkdtemp(join(tmpdir(), "libravdb-dream-cli-"));
+  process.env.OPENCLAW_STATE_DIR = tempRoot;
+  process.exitCode = undefined;
+  t.after(async () => {
+    process.exitCode = previousExitCode;
+    if (previousStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  });
+  const diaryPath = join(tempRoot, "DREAMS.md");
+  await fsp.writeFile(diaryPath, "## Deep Sleep\n- Keep this {score=0.9 recall=3 unique=2}");
+  const logs: string[] = [];
+  const errors: string[] = [];
+  t.mock.method(console, "log", (message: unknown) => logs.push(String(message)));
+  t.mock.method(console, "error", (message: unknown) => errors.push(String(message)));
+  let stopped = false;
+  const command = buildMemoryCommand({
+    async getClient() { return { async promoteDreamEntries() {
+      return { promoted: 0, rejected: 0, feedback: { nodesAccepted: 0, nodesRejected: 1 } };
+    } } as never; },
+    async shutdown() { stopped = true; }, onShutdown() {}, async emitLifecycleHint() {},
+  }).commands.find(command => command.name() === "dream-promote");
+  assert.ok(command?.handler);
+  await command.handler({ userId: "tester", dreamFile: diaryPath });
+  assert.equal(process.exitCode, 1);
+  assert.match(errors.join("\n"), /Dream promotion rejected.*nodesRejected=1/);
+  assert.deepEqual(logs, []);
+  assert.equal(stopped, true);
+});
 
 test("CLI metadata registers the memory descriptor only when LibraVDB owns the memory slot", () => {
   const registered: RegisteredCli[] = [];

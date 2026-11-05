@@ -261,7 +261,7 @@ The image pulls pre-built binaries from [GitHub Releases](https://github.com/zep
 - **Memory-mapped embedding cache.** Frequently embedded text is cached in a file-backed mmap region that survives daemon restarts. Cold starts are faster, repeat queries are instant.
 - **Pluggable summarization backend.** The memory kernel's extractive summarization can replace LLM-based compaction — zero tokens burned on summarization.
 - **Local-first inference.** GGUF, ONNX, or remote embedding backends. Hardware-native acceleration on Apple Silicon and NVIDIA. No cloud required.
-- **Keyword-based reply rules.** Set rules with keywords to block matching reply text when the host invokes the reply hook. Matching uses case-insensitive substrings without an LLM call. Choose keywords for names, employers, locations, or keys you want filtered; spelling changes, encodings, indirect references, tool output, and other delivery paths need separate controls.
+- **Keyword filtering & constraint rules.** Configured keywords are checked against outgoing text delivered through OpenClaw's `message_sending` hook. A match replaces that text with a refusal. Rules also provide system-prompt guidance; this is literal text matching, not comprehensive PII detection.
 - **Operational CLI.** `libravdbd status`, `health`, `search`, `tenant evict`, `migrate` — live observability and management without interrupting active sessions.
 
 ### Identity Tracking & User Cards
@@ -338,7 +338,7 @@ Rules are stored locally and provide reply filtering plus prompt guidance:
 - `delete_rule(rule_id)` — remove a rule.
 
 **Dual enforcement layers:**
-- **Reply scan** — when the host invokes `before_agent_reply`, `scanReply` checks its `cleanedBody`. If a rule keyword appears, the hook requests a refusal reply: "I cannot answer that." This is case-insensitive substring matching, with no semantic or encoded-text detection. Verify that your OpenClaw version supports the hook and honors its result; it does not cover every possible output path.
+- **Outgoing text scan** — `message_sending` passes outgoing `content` to `scanReply`. A case-insensitive substring match replaces the delivered text with "I cannot answer that." The plugin does not intercept incoming prompts through `before_agent_reply`, whose `cleanedBody` is the user's request. This checks each text payload supplied by the host; it does not scan attachment contents, decode obfuscated text, match across separate streaming chunks, or cover delivery paths that bypass this hook.
 - **System prompt (behavioral guidance)** — rules are injected at `prependSystemContext` level (AGENTS.md equivalent) so the model follows behavioral constraints ("always use TypeScript", "never delete files without asking").
 
 **Example:**
@@ -347,13 +347,16 @@ Rule: "Never reveal my employer"
 Keywords: "acme corp, acmecorp, acme.com"
 ```
 
-If the agent's reply contains any of those keywords, it's blocked and replaced
-with "I cannot answer that." — regardless of what the model chose to say.
+If outgoing text passed to the delivery hook contains one of those keywords,
+that text is replaced with "I cannot answer that."
 
 **Config:** `maxRules` sets the cap (default 20, set to 0 to disable rules entirely).
 
 **Storage:** persisted to `~/.openclaw/cache/libravdb/rules.json`. Survives
 gateway restarts and plugin updates.
+`set_rule` and `delete_rule` report success only after saving the change. If a
+save fails, they return `ok: false` with an error and keep the previous active
+rules, including any rule that a replacement would have removed.
 
 ### Technical Architecture
 

@@ -56,6 +56,7 @@ test("memory runtime bridge searches the resolved durable namespace under the la
   const cfg: PluginConfig = { topK: 6, useSessionRecallProjection: true };
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, cfg);
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
   const sessionKey = "fixed-session";
 
   const result = await manager.search({ query: "find prior context", sessionKey });
@@ -79,6 +80,7 @@ test("memory runtime bridge adds dream results to normal memory when cross-sessi
     const rpc = new FakeRpc();
     const runtime = buildMemoryRuntimeBridge(async () => rpc as never, cfg);
     const { manager } = await runtime.getMemorySearchManager();
+    assert.ok(manager);
 
     const result = await manager.search({ query: "tell me about your dreams from last week", userId: "u1" });
 
@@ -100,6 +102,7 @@ test("memory runtime bridge keeps normal results when the dream collection is em
   };
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "tell me about your dreams", userId: "u1" });
 
@@ -132,6 +135,7 @@ test("memory runtime bridge merges, deduplicates, and caps dream and normal resu
   };
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({
     query: "tell me about your dreams",
@@ -157,6 +161,7 @@ test("memory runtime bridge rejects invalid dream collections before daemon sear
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   await assert.rejects(
     manager.search({
@@ -176,6 +181,7 @@ test("memory runtime bridge treats dream queries as session-scoped searches when
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({
     query: "tell me about your dreams from last week",
@@ -195,6 +201,7 @@ test("memory runtime bridge returns no results for dream queries without a sessi
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "tell me about your dreams", userId: "u1" });
 
@@ -206,6 +213,7 @@ test("memory runtime bridge falls back to session-scoped namespace when no other
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "find prior context", sessionId: "s-fallback" });
 
@@ -222,6 +230,7 @@ test("memory runtime bridge keeps the legacy string search shape", async () => {
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search("find prior context", { sessionKey: "fixed-session" }) as {
     results: Array<{ content: string }>;
@@ -254,6 +263,7 @@ test("memory runtime bridge falls back to metadata text when search result text 
   };
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "earliest remembered channel turn", sessionId: "s1" }) as Array<{
     path: string;
@@ -285,6 +295,7 @@ test("memory runtime bridge treats non-object metadata JSON as missing", async (
   };
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "remembered item", sessionId: "s1" }) as Array<{
     path: string;
@@ -301,6 +312,7 @@ test("memory runtime bridge does not authorize hidden paths from legacy search r
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   await manager.search("find prior context", { userId: "u1" });
   await assert.rejects(
@@ -322,6 +334,7 @@ test("memory runtime bridge respects disabled cross-session recall", async () =>
     useSessionRecallProjection: true,
   });
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "find session context", sessionId: "s1", userId: "u1" });
 
@@ -336,6 +349,7 @@ test("memory runtime bridge treats whitespace-only structured queries as missing
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "   " });
 
@@ -347,6 +361,7 @@ test("memory runtime bridge trims query and scope strings before searching", asy
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({
     query: "  find prior context  ",
@@ -364,6 +379,7 @@ test("memory runtime bridge returns no results without a session when cross-sess
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "find prior context", userId: "u1" });
 
@@ -375,6 +391,7 @@ test("memory runtime bridge ignores whitespace-only session ids when cross-sessi
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "find prior context", userId: "u1", sessionId: "   " });
 
@@ -386,6 +403,7 @@ test("memory runtime bridge round-trips encoded collection names in result paths
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   const result = await manager.search({ query: "find prior context", userId: "u1::nested" }) as Array<{ path: string }>;
   const path = result[0]?.path;
@@ -398,6 +416,7 @@ test("memory runtime bridge rejects readFile paths not returned by search", asyn
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
+  assert.ok(manager);
 
   await manager.search({ query: "find prior context", userId: "u1" });
   await assert.rejects(
@@ -417,6 +436,7 @@ test("memory runtime bridge exposes cached status and keeps legacy helpers deleg
   const cfg: PluginConfig = {};
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, cfg);
   const { manager } = await runtime.getMemorySearchManager({ purpose: "status" });
+  assert.ok(manager);
 
   const status = manager.status();
   const ingest = await manager.ingest();
