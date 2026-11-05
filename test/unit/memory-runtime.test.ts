@@ -214,6 +214,7 @@ test("memory runtime bridge does not retrieve durable memory through an explicit
     const rpc = new FakeRpc();
     const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
     const { manager } = await runtime.getMemorySearchManager();
+    assert.ok(manager);
 
     const result = await manager.search({ query: "prior preferences", userId: "u1", corpus: "memory", sessionId });
 
