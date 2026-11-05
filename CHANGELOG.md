@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.11.1 — 2026-11-04
+
+Patch release fixing daemon data and model storage write permissions in the Terraform VM bootstrap script.
+
+*Special thanks to contributor **@compoodment** for identifying and fixing the container volume permission issue (#435).*
+
+### Infrastructure & Deployment
+
+- **Preserve writable daemon storage in VM bootstrap (#435).** Replaced host bind-mounts (`/var/lib/libravdbd/data` and `/var/lib/libravdbd/models`) with Docker named volumes (`libravdbd-data` and `libravdbd-models`) in `deploy/terraform/vm/main.tf`. Docker named volumes inherit directory ownership from the container image on first use, allowing the daemon container running as non-root UID 1000 to write database files and cached models without `Permission denied` failures. *(Contributed by @compoodment)*
+
 ## v1.11.0 — 2026-11-04
 
 Major consolidation release incorporating 60 pull requests across four core architectural phases, bringing enhanced context engine stability, resilient compaction projection lifecycles, full native memory search contracts, robust markdown ingestion queues, multi-tenant provenance, and daemon client lifecycle management.
