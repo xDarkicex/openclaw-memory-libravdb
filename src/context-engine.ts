@@ -4232,8 +4232,9 @@ export function buildContextEngineFactory(
         }
       }
       predictiveContextCache.clear();
-      postToolRecallCache.clear();
-      triggerCache.clear();
+      // These session-scoped caches are shared across factories. Bootstrap,
+      // reset/end hooks, and bounded eviction own their lifetime; disposing
+      // one logical turn must not invalidate other sessions' live state.
       // Spawn rollback, child completion, and runtime shutdown own exclusions.
       // Disposing a parent turn must not re-enable memory for its live children.
       excludedSessionIds.clear();
