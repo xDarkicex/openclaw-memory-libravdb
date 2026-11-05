@@ -111,3 +111,29 @@ test("causal traversal guidance includes the available causal follow-up tools", 
   assert.doesNotMatch(noGet, /use `libravdb_memory_get` for exact detail/);
   assert.doesNotMatch(noGet, /`get_user_card` to cross-reference/);
 });
+
+test("memory prompt does not instruct calls to unavailable tools", () => {
+  const memorySection = buildMemoryPromptSection(async () => new FakeRpc() as never, {});
+  const toolNames = ["libravdb_memory_search", "libravdb_memory_get", "get_user_card", "list_user_cards", "update_user_card", "memory_describe", "memory_expand", "memory_grep", "set_rule", "list_rules", "delete_rule"];
+
+  for (const availableTools of [new Set<string>(), new Set(["libravdb_memory_search"]), new Set(["libravdb_memory_search", "get_user_card"])]) {
+    const prompt = memorySection({ availableTools }).join("\n");
+    for (const toolName of toolNames) {
+      if (!availableTools.has(toolName)) assert.ok(!prompt.includes(toolName), `must not require unavailable ${toolName}`);
+    }
+  }
+});
+
+test("memory prompt guides card-only and recall-only surfaces without requiring search", () => {
+  const memorySection = buildMemoryPromptSection(async () => new FakeRpc() as never, {});
+
+  const cards = memorySection({ availableTools: new Set(["get_user_card", "update_user_card"]) }).join("\n");
+  assert.match(cards, /get_user_card\(user_id\)/);
+  assert.match(cards, /update_user_card/);
+  assert.doesNotMatch(cards, /libravdb_memory_search/);
+
+  const recall = memorySection({ availableTools: new Set(["memory_describe", "memory_expand"]) }).join("\n");
+  assert.match(recall, /memory_describe\(summaryId\)/);
+  assert.match(recall, /memory_expand\(summaryIds\)/);
+  assert.doesNotMatch(recall, /libravdb_memory_search/);
+});
