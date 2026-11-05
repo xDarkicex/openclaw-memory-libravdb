@@ -143,14 +143,9 @@ export function createLibraVdbMemoryTools(
   const TURN_SEARCH_MAX_KEYS = 500;
   const TURN_SEARCH_DEDUP_TTL_MS = 60_000;
 
-  function dedupKey(query: string): string {
-    return query.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 80);
-  }
-
-  function isDuplicateSearch(scopeKey: string, query: string): boolean {
+  function isDuplicateSearch(scopeKey: string, key: string): boolean {
     if (!scopeKey) return false;
     const now = Date.now();
-    const key = dedupKey(query);
     const keys = turnSearchKeys.get(scopeKey);
     if (!keys) {
       turnSearchKeys.set(scopeKey, new Map([[key, now + TURN_SEARCH_DEDUP_TTL_MS]]));
@@ -204,13 +199,6 @@ export function createLibraVdbMemoryTools(
         execute: async (_toolCallId, rawParams) => {
           const params = asToolParamsRecord(rawParams);
           const query = readRequiredStringParam(params, "query");
-          const dedupScope = ctx.sessionKey ?? ctx.sessionId ?? "";
-          if (isDuplicateSearch(dedupScope, query)) {
-            return jsonToolResult<MemorySearchToolDetails>({
-              results: [],
-              error: `Duplicate search blocked. You recently searched this query — use the previous results. Do not call libravdb_memory_search again for the same query.`,
-            });
-          }
           const corpus = readMemoryCorpus(params.corpus);
           const kind = typeof params.kind === "string" ? params.kind : undefined;
           const signals = Array.isArray(params.signals) ? (params.signals as string[]).filter((s): s is string => typeof s === "string") : undefined;
@@ -222,6 +210,24 @@ export function createLibraVdbMemoryTools(
               results: [],
               disabled: true,
               error: "LibraVDB libravdb_memory_search does not provide the wiki corpus; use corpus=memory, corpus=sessions, or corpus=all.",
+            });
+          }
+
+          const dedupScope = normalizeOptionalString(ctx.sessionKey) || normalizeOptionalString(ctx.sessionId)
+            ? managerCacheKey(ctx)
+            : "";
+          const searchKey = JSON.stringify({
+            query: query.toLowerCase().replace(/\s+/g, " ").trim(),
+            corpus,
+            kind,
+            signals: signals?.length ? [...new Set(signals)].sort() : undefined,
+            maxResults,
+            minScore,
+          });
+          if (isDuplicateSearch(dedupScope, searchKey)) {
+            return jsonToolResult<MemorySearchToolDetails>({
+              results: [],
+              error: `Duplicate search blocked. You recently searched this query — use the previous results. Do not call libravdb_memory_search again for the same query.`,
             });
           }
 
@@ -245,6 +251,8 @@ export function createLibraVdbMemoryTools(
               backend: status.backend,
             });
           } catch (error) {
+            // A failed request produced no results to reuse; permit its retry.
+            turnSearchKeys.get(dedupScope)?.delete(searchKey);
             logger.warn?.(`LibraVDB libravdb_memory_search failed: ${formatError(error)}`);
             return jsonToolResult<MemorySearchToolDetails>({
               results: [],

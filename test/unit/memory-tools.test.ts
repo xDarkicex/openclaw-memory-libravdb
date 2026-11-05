@@ -259,6 +259,48 @@ test("LibraVDB libravdb_memory_search duplicate guard expires instead of blockin
   }
 });
 
+test("LibraVDB search duplicate guard distinguishes filters and full query text", async () => {
+  const rpc = new FakeRpc();
+  const tools = createLibraVdbMemoryTools(async () => rpc as never, { userId: "u1" }, silentLogger);
+  const searchTool = tools.createSearchTool({ sessionId: "filter-session" });
+  const queries = [
+    { query: "needle", corpus: "all" },
+    { query: "needle", corpus: "sessions" },
+    { query: "needle", corpus: "memory" },
+    { query: "needle", corpus: "memory", kind: "fact" },
+    { query: "needle", corpus: "memory", signals: ["factual"] },
+    { query: "needle", corpus: "memory", maxResults: 20 },
+    { query: "needle", corpus: "memory", minScore: 0.99 },
+    { query: "x".repeat(80) + " cats" },
+    { query: "x".repeat(80) + " dogs" },
+  ];
+
+  for (const [index, params] of queries.entries()) {
+    const result = await searchTool.execute(`call-${index}`, params);
+    assert.doesNotMatch((result.details as { error?: string }).error ?? "", /Duplicate search blocked/);
+  }
+  assert.equal(rpc.calls.filter((call) => call.method.startsWith("searchText")).length, queries.length);
+});
+
+test("LibraVDB search duplicate guard allows retry after an RPC failure", async () => {
+  const rpc = new FakeRpc();
+  const originalSearch = rpc.searchTextCollections.bind(rpc);
+  let attempts = 0;
+  rpc.searchTextCollections = async (params) => {
+    if (++attempts === 1) throw new Error("temporary daemon outage");
+    return originalSearch(params);
+  };
+  const tools = createLibraVdbMemoryTools(async () => rpc as never, { userId: "u1" }, silentLogger);
+  const searchTool = tools.createSearchTool({ sessionKey: "retry-session" });
+
+  const failure = await searchTool.execute("call-1", { query: "retry needle" });
+  const retry = await searchTool.execute("call-2", { query: "retry needle" });
+
+  assert.match((failure.details as { error: string }).error, /temporary daemon outage/);
+  assert.equal((retry.details as { results: unknown[] }).results.length, 2);
+  assert.equal(attempts, 2);
+});
+
 test("LibraVDB libravdb_memory_get reports unknown paths as disabled instead of reading arbitrary files", async () => {
   const rpc = new FakeRpc();
   const tools = createLibraVdbMemoryTools(async () => rpc as never, { userId: "u1" }, silentLogger);
