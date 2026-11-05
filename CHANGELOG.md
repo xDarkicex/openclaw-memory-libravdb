@@ -1,5 +1,65 @@
 # Changelog
 
+## v1.11.0 — 2026-11-04
+
+Major consolidation release incorporating 60 pull requests across four core architectural phases, bringing enhanced context engine stability, resilient compaction projection lifecycles, full native memory search contracts, robust markdown ingestion queues, multi-tenant provenance, and daemon client lifecycle management.
+
+*Special thanks to contributor **@compoodment** for authoring and verifying the comprehensive subsystem fix clusters (#425–#486), and **@xDarkicex** for the compaction projection marker verification (#491).*
+
+### Context Engine, Assembly & Compaction
+
+- **Compacted session projection verification (#491).** When `engine.compact()` returns `didCompact: true`, the engine invalidates prior local projections but now defers marking the session authoritative until a subsequent `assemble()` call confirms a verified `<compacted_session_context>` marker. This prevents transcript loss and empty session views if the daemon compact response lacks usable summaries. *(Contributed by @xDarkicex)*
+- **Turn cache key isolation & user boundary scoping (#433, #473).** Turn memory caching is now strictly keyed to normalized user turn boundaries, query tails, and specific daemon client instances, preventing turn context reuse across replaced engines, modified inputs, or tenant switches. *(Contributed by @compoodment)*
+- **Compaction provider history & cancellation (#437, #474).** Bounded assembled message arrays, enforced zero predictive compaction budgets, validated token count inputs, and honored provider cancellation signals during session rollups. *(Contributed by @compoodment)*
+- **Destination-scoped session checkpoints & replay identity (#475, #482, #484).** Scoped turn manifests and session advancement state to `destinations/` by daemon endpoint and write tenant hash. Preserved replay identity for truncated turn messages and deduplicated repeated turn exchanges using host message IDs. *(Contributed by @compoodment)*
+- **Independent engine continuity persistence (#476).** Moved conversation continuity storage from a single contested file to individual per-session hashed files under `.openclaw/libravdb-continuity/`, ensuring concurrent engine instances cannot overwrite each other's continuity. *(Contributed by @compoodment)*
+- **Bootstrap context optimization (#486).** Bounded bootstrap reads (continuity context, user card, bot persona, and rules) strictly to the initial turn (`messages.length <= 1`), eliminating unneeded RPC round-trips on established conversations. *(Contributed by @compoodment)*
+- **Engine disposal isolation (#447).** Engine disposal now drains only its own owned ingestion tasks, preserving shared session-scoped caches (`postToolRecallCache`, `triggerCache`, and subagent exclusions) for other concurrent engines. *(Contributed by @compoodment)*
+
+### Memory Search, Recall & Native Provider Contracts
+
+- **Native memory search & exact-read contracts (#458).** Aligned `RegisteredMemorySearchManager.search()` to always return an array of `MemorySearchResult` records with `recordId` provenance, ensuring full compatibility with OpenClaw's native memory consumer while retaining cached exact file reads (`readFile`). *(Contributed by @compoodment)*
+- **Cross-tenant search routing & record reference encoding (#427).** Preserved source tenant identity through search, describe, and causal graph expansion using URI-encoded references (`libravdb://record/<tenant>/<collection>/<id>`) across `memory_describe`, `memory_expand`, and `memory_grep`. *(Contributed by @compoodment)*
+- **Search loop guard filter & retry protection (#429).** Duplicate search guards now distinguish query filter changes from identical query text, and allow immediate search retries following transient RPC errors. *(Contributed by @compoodment)*
+- **Explicit memory corpus bypass (#430).** Explicit `corpus: "memory"` or `corpus: "sessions"` searches now bypass `crossSessionRecall: false` restrictions. *(Contributed by @compoodment)*
+- **Recall circuit breaker thresholds (#483).** The recall circuit breaker now opens only after consecutive failures across timeouts, unavailable states, or auth errors, preserving prompt assembly during transient daemon restarts. *(Contributed by @compoodment)*
+- **Memory tool availability guidance (#444).** Dynamic prompt headers now reference only currently registered and available memory tools. *(Contributed by @compoodment)*
+
+### Markdown Ingestion & File Watchers
+
+- **Resilient authored-document delete retries (#441).** Daemon delete refusals (`ok: false`) now retry with exponential backoff rather than immediately purging local snapshot tracking state. *(Contributed by @compoodment)*
+- **Backpressure resume & cursor recovery (#440).** Ingestion scans now save progress cursors during daemon WAL backpressure and resume from the last uncommitted document, while watcher events reset the cursor for immediate rescans. *(Contributed by @compoodment)*
+- **Preserved timestamp & rewrite detection (#442).** Content hashing now detects equal-size file rewrites even when mtimes are preserved by editors or file transfers. *(Contributed by @compoodment)*
+- **Ordered ingestion queue & concurrency (#462, #466).** Multi-chunk document replacements and deletions are now serialized per document in `IngestQueue` while allowing disjoint documents to proceed in parallel. *(Contributed by @compoodment)*
+- **Unicode chunk boundary safety (#463).** Chunk token boundary splitting now respects multi-byte UTF-8 sequences and grapheme clusters. *(Contributed by @compoodment)*
+- **Ancestor watcher recovery & shared roots (#472, #480).** Re-established filesystem watchers when directory trees are replaced, and prevented pruning of documents shared between generic and Obsidian roots. *(Contributed by @compoodment)*
+- **Tenant-isolated snapshots (#467, #468).** Scoped markdown snapshots by endpoint and write tenant, preserving cleanup tracking and version-3 migration states across restarts. *(Contributed by @compoodment)*
+- **Stale markdown content retirement (#432).** Truncating or emptying markdown files now cleanly deletes stored chunks on the daemon and excludes fenced code examples from accidental frontmatter parsing. *(Contributed by @compoodment)*
+
+### Rules, Multi-Tenancy & Agent Lifecycle
+
+- **Subagent & agent exclusion lifetime (#478, #479).** Enforced subagent and named agent exclusions across context engines, prompt hooks, and memory tools throughout child execution lifetimes. *(Contributed by @compoodment)*
+- **Outgoing rule delivery hooks (#477).** Enforced rule keyword replacements on outgoing message delivery without intercepting inbound user turns. *(Contributed by @compoodment)*
+- **Rule persistence resilience (#443, #460).** Preserved active rules in memory when disk writes fail, and disabled rule injection cleanly when `maxRules = 0`. *(Contributed by @compoodment)*
+- **Causal graph expansion budgets (#428).** Causal graph traversals now enforce subagent and token budgets during recursive node expansions. *(Contributed by @compoodment)*
+- **Queued agent tenant isolation (#464).** Queued agent writes and tools preserve their primary tenant identity regardless of concurrent switches by other agents. *(Contributed by @compoodment)*
+
+### Dream Promotion Subsystem
+
+- **Shutdown drain & background scan synchronization (#469).** Terminal runtime cleanup now drains background scans and flushes pending entries before terminating client sessions. *(Contributed by @compoodment)*
+- **Diary reconciliation on deletion (#470).** Reconciled promoted entries on the daemon when a diary file is deleted locally. *(Contributed by @compoodment)*
+- **Promotion retry queues & wire counts (#465, #481, #485).** Kept rejected promotions and queued edits retryable after daemon recovery, and validated wire counts before transmission. *(Contributed by @compoodment)*
+
+### Client Infrastructure, Security & Deployment
+
+- **HTTP/2 session lifecycle & auth mutex locks (#446).** Client shutdown now closes active HTTP/2 connections promptly and cancels queued auth recovery requests without hanging lock slots. *(Contributed by @compoodment)*
+- **Unauthenticated RPC concurrency (#426).** Permitted parallel RPC execution when running against unauthenticated daemon endpoints. *(Contributed by @compoodment)*
+- **Plaintext mTLS file bypass (#425).** Ignored unused mTLS client certificate paths when connected to plaintext endpoints. *(Contributed by @compoodment)*
+- **Namespace flush failure reporting (#445).** Reported daemon-rejected namespace flushes as non-zero CLI failures. *(Contributed by @compoodment)*
+- **GGUF embedding configuration schema (#461).** Added first-class schema support for the GGUF embedding backend. *(Contributed by @compoodment)*
+- **Packaging, upgrades & Docker (#434, #448, #449).** Atomic daemon binary upgrades with rollback protection, strict Docker build failures on invalid asset downloads, and Helm persistence/listener configurations. *(Contributed by @compoodment)*
+- **Documentation & Benchmarks (#438, #439, #450, #451, #452).** Clarified TLS/mTLS configuration, container startup scripts, benchmark setup, and LongMemEval diagnostics. *(Contributed by @compoodment)*
+
 ## v1.10.25 — 2026-09-03
 
 ### Fixed
