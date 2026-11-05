@@ -31,7 +31,7 @@ test("dream stop waits for an active file read and its promotion", async t => {
   let promoted = false;
   const handle = createDreamPromotionHandle(config, async () => {
     assert.equal(stopped, false, "the client must remain available while the scan drains");
-    return { async promoteDreamEntries() { promoted = true; } } as unknown as LibravDBClient;
+    return { async promoteDreamEntries() { promoted = true; return { promoted: 1 }; } } as unknown as LibravDBClient;
   }, { error() {}, warn() {} }, {
     async stat() { return { size: diaryText.length, mtimeMs: 1 }; },
     async readFile() { reading.resolve(); await releaseRead.promise; return new TextEncoder().encode(diaryText); },
