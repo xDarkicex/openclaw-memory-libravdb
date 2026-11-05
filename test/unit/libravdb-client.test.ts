@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
+import http2 from "node:http2";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -198,6 +199,84 @@ test("close prevents RPC methods", async () => {
   await assert.rejects(client.bootstrapHandshake(), /client is closed/);
 });
 
+test("close tears down an established gRPC HTTP/2 session", async () => {
+  const server = http2.createServer();
+  const sessions = new Set<http2.ServerHttp2Session>();
+  let sessionClosed!: () => void;
+  const closed = new Promise<void>((resolve) => { sessionClosed = resolve; });
+  server.on("session", (session) => {
+    sessions.add(session);
+    session.once("close", () => {
+      sessions.delete(session);
+      sessionClosed();
+    });
+  });
+  server.on("stream", (stream) => {
+    stream.resume();
+    stream.respond({ ":status": 200, "content-type": "application/grpc" }, { waitForTrailers: true });
+    stream.once("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
+    stream.end(Buffer.from([0, 0, 0, 0, 0]));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as net.AddressInfo;
+  const client = new LibravDBClient({ endpoint: `tcp:127.0.0.1:${address.port}`, secret: "" });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await client.bootstrapHandshake();
+    assert.equal(sessions.size, 1);
+    client.close();
+    client.close();
+    await Promise.race([
+      closed,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("client.close() retained its HTTP/2 session")), 500);
+      }),
+    ]);
+    assert.equal(sessions.size, 0);
+  } finally {
+    clearTimeout(timeout);
+    client.close();
+    for (const session of sessions) session.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("close aborts an in-flight handshake and prevents a queued auth recovery connection", async () => {
+  const server = http2.createServer();
+  const sessions = new Set<http2.ServerHttp2Session>();
+  let requestStarted!: () => void;
+  const requestSeen = new Promise<void>((resolve) => { requestStarted = resolve; });
+  let connections = 0;
+  server.on("session", (session) => {
+    connections++;
+    sessions.add(session);
+    session.once("close", () => sessions.delete(session));
+  });
+  server.on("stream", (stream) => {
+    stream.resume();
+    requestStarted();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as net.AddressInfo;
+  const client = new LibravDBClient({ endpoint: `tcp:127.0.0.1:${address.port}`, secret: "secret", timeoutMs: 1000 });
+  try {
+    // Both calls need the nonce. The first performs Health inside the mutex;
+    // the second must never create a replacement connection after close.
+    const first = client.status();
+    const firstRejected = assert.rejects(first, /connection aborted|client is closed/);
+    await requestSeen;
+    const second = client.status();
+    const secondRejected = assert.rejects(second, /client is closed/);
+    client.close();
+    await Promise.all([firstRejected, secondRejected]);
+    assert.equal(connections, 1);
+  } finally {
+    client.close();
+    for (const session of sessions) session.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("bootstrapHandshake wraps transport errors", async () => {
   const endpoint = process.platform === "win32"
     ? "tcp:127.0.0.1:9"
@@ -324,6 +403,69 @@ test("auth mutex releases when an in-flight rpc is aborted", async () => {
 
   assert.equal(secondStarted, true);
   assert.equal(st.nonceHex, "after");
+});
+
+test("aborted auth requests reject while queued and release their abandoned lock slot", async () => {
+  const st = state({ nonceHex: "active" });
+  const int = createAuthInterceptor(st);
+  const controller = new AbortController();
+  let finishFirst!: () => void;
+  let firstStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { finishFirst = resolve; });
+  const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+  const response = {
+    header: { get: (name: string) => name === "x-libravdb-nonce" ? "after" : null },
+    trailer: { get: () => null },
+  };
+  const request = { method: { name: "Status" }, header: { set: () => {} } };
+  const first = (int as any)(async () => {
+    firstStarted();
+    await gate;
+    return response;
+  })(request);
+  await started;
+  let canceledEnteredTransport = false;
+  const canceled = (int as any)(async () => {
+    canceledEnteredTransport = true;
+    return response;
+  })({ ...request, signal: controller.signal });
+  const reason = new Error("canceled while waiting");
+  let rejected = false;
+  const canceledRejected = assert.rejects(canceled, (error) => error === reason).then(() => { rejected = true; });
+  controller.abort(reason);
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(rejected, true, "cancellation must not wait for an unrelated in-flight RPC");
+  } finally {
+    finishFirst();
+    await Promise.all([first, canceledRejected]);
+  }
+  assert.equal(canceledEnteredTransport, false);
+  await (int as any)(async () => response)(request);
+  assert.equal(st.nonceHex, "after");
+});
+
+test("auth recovery receives the canceled request's signal", async () => {
+  const controller = new AbortController();
+  let bootstrapStarted!: () => void;
+  const started = new Promise<void>((resolve) => { bootstrapStarted = resolve; });
+  const st = state({
+    bootstrap: async (signal) => {
+      bootstrapStarted();
+      assert.equal(signal, controller.signal);
+      await new Promise<void>((_resolve, reject) => {
+        signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+      });
+    },
+  });
+  const reason = new Error("canceled during recovery");
+  const request = (createAuthInterceptor(st) as any)(async () => {
+    throw new Error("transport must not run after canceled recovery");
+  })({ method: { name: "Status" }, header: { set: () => {} }, signal: controller.signal });
+  const rejected = assert.rejects(request, (error) => error === reason);
+  await started;
+  controller.abort(reason);
+  await rejected;
 });
 
 test("auth skipped for Health", async () => {

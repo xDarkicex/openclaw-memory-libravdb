@@ -1,7 +1,7 @@
 import { createPromiseClient } from "@connectrpc/connect";
 import type { CallOptions, Interceptor } from "@connectrpc/connect";
 import type { PartialMessage } from "@bufbuild/protobuf";
-import { createGrpcTransport } from "@connectrpc/connect-node";
+import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { LibravDB } from "@xdarkicex/libravdb-contracts/client";
 import { createHmac } from "node:crypto";
 import fs from "node:fs";
@@ -186,8 +186,33 @@ function createRpcMutex(): RpcMutex {
 export interface AuthInterceptorState {
   readonly secret: string | undefined;
   nonceHex: string | undefined;
-  bootstrap(): Promise<void>;
+  bootstrap(signal?: AbortSignal): Promise<void>;
   readonly rpcMutex: RpcMutex;
+}
+
+async function acquireRpcLock(mutex: RpcMutex, signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  const pending = mutex.lock();
+  if (!signal) return pending;
+
+  return await new Promise<() => void>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then((release) => {
+      signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) {
+        // Preserve the nonce queue's ordering, but release this abandoned
+        // slot as soon as the preceding call has finished.
+        release();
+        return;
+      }
+      resolve(release);
+    }, (error) => {
+      signal.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+    if (signal.aborted) onAbort();
+  });
 }
 
 export function createAuthInterceptor(
@@ -200,12 +225,13 @@ export function createAuthInterceptor(
       return next(req);
     }
 
-    const release = await state.rpcMutex.lock();
+    const release = await acquireRpcLock(state.rpcMutex, req.signal);
     try {
+      req.signal?.throwIfAborted();
       // Lost the nonce? Recover inside the lock so queued requests
       // wait for the chain to be restored instead of failing spuriously.
       if (state.secret && !state.nonceHex) {
-        await state.bootstrap();
+        await state.bootstrap(req.signal);
         if (!state.nonceHex) {
           throw new Error("LibraVDB: bootstrap handshake did not return a nonce");
         }
@@ -245,6 +271,7 @@ export function createAuthInterceptor(
 
 export class LibravDBClient {
   private client: PromiseClient;
+  private readonly sessionManager: Http2SessionManager;
   private readonly secret: string | undefined;
   private readonly endpoint: string;
   private readonly legacyProbeTimeoutMs: number;
@@ -286,7 +313,7 @@ export class LibravDBClient {
       secret: this.secret,
       get nonceHex() { return self.nonceHex; },
       set nonceHex(v: string | undefined) { self.nonceHex = v; },
-      bootstrap: () => self.bootstrapHandshake(),
+      bootstrap: (signal) => self.bootstrapHandshake({ signal }),
       rpcMutex,
     });
 
@@ -300,18 +327,24 @@ export class LibravDBClient {
       return next(req);
     });
     interceptors.push(authInterceptor);
+    interceptors.push((next) => async (req) => {
+      self.guardOpen();
+      return next(req);
+    });
 
-    const transport = createGrpcTransport({
-      baseUrl: targetUrl,
-      httpVersion: "2",
-      nodeOptions: isUnix
+    this.sessionManager = new Http2SessionManager(targetUrl, undefined,
+      isUnix
         ? { createConnection: () => net.connect(socketPath!) } as any
         : {
             ...(rootCerts ? { ca: rootCerts } : {}),
             ...(clientKey ? { key: clientKey } : {}),
             ...(clientCert ? { cert: clientCert } : {}),
             ...(isInsecure ? { rejectUnauthorized: false } : {}),
-          },
+          });
+    const transport = createGrpcTransport({
+      baseUrl: targetUrl,
+      httpVersion: "2",
+      sessionManager: this.sessionManager,
       defaultTimeoutMs: options.timeoutMs ?? 30000,
       interceptors,
     });
@@ -319,12 +352,13 @@ export class LibravDBClient {
     this.client = createPromiseClient(LibravDB, transport);
   }
 
-  async bootstrapHandshake(): Promise<void> {
+  async bootstrapHandshake(opts?: Pick<CallOptions, "signal" | "timeoutMs">): Promise<void> {
     this.guardOpen();
     try {
       await this.client.health(
         { service: "" },
         {
+          ...opts,
           onHeader: (headers) => {
             const nonce = headers.get("x-libravdb-nonce");
             if (nonce) this.nonceHex = nonce;
@@ -591,6 +625,7 @@ export class LibravDBClient {
 
   close(): void {
     this.closed = true;
+    this.sessionManager.abort();
   }
 }
 
