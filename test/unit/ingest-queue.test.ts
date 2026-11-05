@@ -123,6 +123,19 @@ test("empty ingest fails when clearing the previous document fails", async () =>
   await assert.rejects(queue.enqueueIngest("/vault/daily.md", "", baseParams()), /delete unavailable/);
 });
 
+test("ok=false delete responses retry and fail rather than retiring the document", async () => {
+  const calls: string[] = [];
+  const queue = new IngestQueue(
+    async () => ({ ok: true }),
+    async ({ sourceDoc }) => { calls.push(sourceDoc); return { ok: false }; },
+    { error() {}, warn() {} },
+    { maxRetries: 1, retryBaseDelayMs: 0 },
+  );
+
+  await assert.rejects(queue.enqueueDelete("/vault/daily.md"), /returned ok=false/);
+  assert.deepEqual(calls, ["/vault/daily.md", "/vault/daily.md"]);
+});
+
 test("chunked ingest replaces first chunk then appends remaining chunks", async () => {
   const calls: Array<{ mode?: IngestMode; text: string }> = [];
   const queue = new IngestQueue(

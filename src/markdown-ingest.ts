@@ -1207,7 +1207,7 @@ class DirectoryMarkdownSourceAdapter implements MarkdownSourceAdapter {
             walCapacity: r.feedback.walCapacity,
           } : undefined,
         })),
-        (params) => client.deleteAuthoredDocument(params).then(() => undefined),
+        (params) => client.deleteAuthoredDocument(params),
         this.logger,
         {
           onChunkFeedback: (feedback) => this.applyIngestFeedback(feedback),
