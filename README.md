@@ -147,6 +147,12 @@ To use the daemon's extractive summarization as a pluggable compaction backend (
 
 This works alongside the context engine's own compaction path — the provider is used when the framework's compaction safeguard runs without a context engine owning compaction.
 
+On subsequent compactions, the provider includes the previous summary as historical
+input alongside newer messages so the daemon can re-summarize both.
+
+Canceling host compaction stops its wait for startup and cancels an active
+summarization request. Shared client startup remains available to other memory operations.
+
 Then restart the gateway so the plugin loads:
 
 ```bash
@@ -252,7 +258,7 @@ The image pulls pre-built binaries from [GitHub Releases](https://github.com/zep
 - **Never forgets a constraint.** Behavioral rules, preferences, and operating boundaries ("always use TLS", "prefers dark mode") are automatically detected and surfaced higher in recall than conversational noise. The agent can ask "what are my constraints?" and get a surgical answer.
 - **Automatic contradiction detection.** When you say "my email changed to jeff@anthropic.com", the old email is automatically marked as outdated — no manual cleanup, no stale facts confusing the agent.
 - **BM25 + vector hybrid search.** Lexical matching (exact identifiers, file paths, error codes) is fused with semantic similarity. A query for `docker-compose.yml` finds the file even if you described it as "the container config."
-- **Summary recall with expansion tools.** Compacted conversation history can be explored without flooding context. `memory_describe` peeks at what a summary covers; `memory_expand` drills into specifics; `memory_grep` searches by pattern. The agent decides how deep to go.
+- **Summary recall with expansion tools.** Compacted conversation history can be explored without flooding context. `memory_describe` peeks at what a summary covers; `memory_expand` drills into specifics; `memory_grep` searches summaries and both raw/default session turns by pattern, deduplicates matching turns, and applies one result limit across both scopes. The agent decides how deep to go.
 - **Subagent-safe expansion.** When a summary is too large to expand directly, `memory_expand` enforces a token budget and delegates to a sub-agent — protecting the main agent's context window.
 - **Predictive memory.** The memory kernel pre-computes what the agent is likely to ask next after each turn, injecting relevant context before the model even sees the prompt.
 - **Three memory scopes.** Session memory (current conversation), user memory (everything you've ever told the agent), and global memory (shared across users) are kept separate. Searches can target specific scopes.

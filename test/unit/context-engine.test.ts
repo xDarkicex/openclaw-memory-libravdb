@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import { AfterTurnKernelResponse } from "@xdarkicex/libravdb-contracts";
 
-import { buildContextEngineFactory, clearCompactedProjectionState, createCompactedProjectionState, FLUSH_ASYNC_INGESTION } from "../../src/context-engine.js";
+import { buildContextEngineFactory, clearCompactedProjectionState, clearSessionTrigger, createCompactedProjectionState, FLUSH_ASYNC_INGESTION, setSessionTrigger } from "../../src/context-engine.js";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import { resolveIdentity } from "../../src/identity.js";
@@ -130,6 +131,46 @@ function installBeforeTurnKernel(
     return handler(params);
   };
 }
+
+test("disposing one engine preserves another session's trigger and post-tool recall", async () => {
+  const client = new FakeClient();
+  installBeforeTurnKernel(client, async () => ({ predictions: [] }));
+  const engineA = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const engineB = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const sessionId = "s1-dispose-preserves-shared-cache";
+  setSessionTrigger(sessionId, "cron");
+  const user = makeMessage("user", "scheduled question", "scheduled-user");
+  client.assembleResponse.systemPromptAddition = "Memory cached for the active session";
+  const first = await engineB.assemble({ sessionId, messages: [user], tokenBudget: 4000 });
+  await engineA.dispose();
+  try {
+    const messages = [user, makeMessage("toolResult", "tool output", "scheduled-tool")];
+    const second = await engineB.assemble({ sessionId, messages, tokenBudget: 4000 });
+    assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 0, "automated trigger must survive unrelated engine disposal");
+    assert.equal(client.calls.filter((call) => call.method === "assembleContextInternal").length, 1, "post-tool continuation must keep its cached recall");
+    assert.equal(second.systemPromptAddition, first.systemPromptAddition);
+    assert.deepEqual(second.messages, messages);
+    await engineB.assemble({ sessionId, messages: [makeMessage("user", "next scheduled question")], tokenBudget: 4000 });
+    assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 0, "the next automated question must retain its trigger gate");
+  } finally {
+    clearSessionTrigger(sessionId);
+  }
+});
+
+test("an unspecified new session trigger clears an earlier automated trigger", async () => {
+  const client = new FakeClient();
+  installBeforeTurnKernel(client, async () => ({ predictions: [] }));
+  const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+  const sessionId = "s1-clear-stale-trigger";
+  setSessionTrigger(sessionId, "cron");
+  setSessionTrigger(sessionId, undefined);
+  try {
+    await engine.assemble({ sessionId, messages: [makeMessage("user", "interactive question")], tokenBudget: 4000 });
+    assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 1);
+  } finally {
+    clearSessionTrigger(sessionId);
+  }
+});
 
 test("context engine bootstraps session via client", async () => {
   const client = new FakeClient();
@@ -318,6 +359,70 @@ function makeMessage(role: string, content: string, id?: string) {
   return { role, content, ...(id ? { id } : {}) };
 }
 
+test("zero compactSessionTokenBudget disables predictive compaction in assemble and afterTurn", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    compactSessionTokenBudget: 0,
+    beforeTurnEnabled: false,
+  });
+  const sessionId = "s1-disable-predictive-compaction";
+  const messages = [makeMessage("user", "hello"), makeMessage("assistant", "reply")];
+  await engine.assemble({ sessionId, messages, tokenBudget: 4000, currentTokenCount: 3000 });
+  await engine.afterTurn({
+    sessionId,
+    messages,
+    tokenBudget: 4000,
+    runtimeContext: { currentTokenCount: 3000 },
+  });
+  await flushIngestion(engine);
+
+  assert.equal(client.calls.filter((call) => call.method === "compactSession").length, 0);
+  assert.equal(client.calls.filter((call) => call.method === "assembleContextInternal").length, 1);
+  assert.equal(client.calls.filter((call) => call.method === "afterTurnKernel").length, 1);
+});
+
+test("an explicit positive compactThreshold overrides zero compactSessionTokenBudget", async () => {
+  const client = new FakeClient();
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    compactSessionTokenBudget: 0,
+    compactThreshold: 50,
+    beforeTurnEnabled: false,
+  });
+  const sessionId = "s1-explicit-predictive-compaction-override";
+  const messages = [makeMessage("user", "hello"), makeMessage("assistant", "reply")];
+  await engine.assemble({ sessionId, messages, tokenBudget: 4000, currentTokenCount: 3000 });
+  await engine.afterTurn({ sessionId, messages, tokenBudget: 4000, runtimeContext: { currentTokenCount: 3000 } });
+  await flushIngestion(engine);
+  assert.equal(client.calls.filter((call) => call.method === "compactSession").length, 2);
+});
+
+test("zero compactSessionTokenBudget preserves explicit host and manual compaction", async () => {
+  const client = new FakeClient();
+  client.compactResponse = { didCompact: true, tokensAfter: 20 };
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    compactSessionTokenBudget: 0,
+    compactThreshold: 50,
+  });
+  const hostResult = await engine.compact({
+    sessionId: "s1-disabled-predictive-host-compact",
+    tokenBudget: 4000,
+    currentTokenCount: 3000,
+  });
+  const manualResult = await engine.compact({
+    sessionId: "s1-disabled-predictive-manual-compact",
+    tokenBudget: 4000,
+    currentTokenCount: 20,
+    runtimeContext: { manualCompaction: true },
+  });
+
+  assert.equal(hostResult.compacted, true);
+  assert.equal(manualResult.compacted, true);
+  assert.equal(client.calls.filter((call) => call.method === "compactSession").length, 2);
+});
+
 test("context engine clears BeforeTurnKernel timeout after successful retrieval", async () => {
   class BeforeTurnClient extends FakeClient {
     async beforeTurnKernel(params: Record<string, unknown>) {
@@ -404,6 +509,84 @@ test("context engine aborts BeforeTurnKernel transport on local timeout", async 
   assert.equal(client.calls.filter((call) => call.method === "beforeTurnKernel").length, 1);
   assert.equal(client.beforeTurnSignal?.aborted, true);
   assert.equal(client.calls.filter((call) => call.method === "assembleContextInternal").length, 1);
+});
+
+test("context engine clears assemble timeout after success and failure", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const scheduled = new Set<ReturnType<typeof setTimeout>>();
+  const cleared = new Set<ReturnType<typeof setTimeout>>();
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+    const handle = Reflect.apply(originalSetTimeout, globalThis, args) as ReturnType<typeof setTimeout>;
+    scheduled.add(handle);
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: Parameters<typeof clearTimeout>[0]) => {
+    if (handle) cleared.add(handle as ReturnType<typeof setTimeout>);
+    return Reflect.apply(originalClearTimeout, globalThis, [handle]);
+  }) as typeof clearTimeout;
+
+  try {
+    for (const fails of [false, true]) {
+      const client = new FakeClient();
+      if (fails) client.assembleContextInternal = async () => { throw new Error("daemon unavailable"); };
+      const engine = buildContextEngineFactory(fakeRuntime(client), {
+        userId: "fixed-user",
+        beforeTurnEnabled: false,
+        crossSessionRecall: false,
+        assembleTimeoutMs: 60_000,
+      });
+      await engine.assemble({
+        sessionId: `s1-assemble-clears-timeout-${fails}`,
+        messages: [makeMessage("user", "hello")],
+        tokenBudget: 4000,
+      });
+    }
+    assert.equal(scheduled.size, 2, "each assemble call schedules its deadline");
+    assert.ok([...scheduled].every((handle) => cleared.has(handle)), "settled RPCs must release every deadline timer");
+  } finally {
+    for (const handle of scheduled) originalClearTimeout(handle);
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("context engine aborts assemble transport on local timeout and returns source fallback", async () => {
+  class AbortableAssembleClient extends FakeClient {
+    public assembleSignal: AbortSignal | undefined;
+    public activeRequests = 0;
+
+    async assembleContextInternal(params: Record<string, unknown>, options?: { signal?: AbortSignal }) {
+      this.calls.push({ method: "assembleContextInternal", params });
+      this.assembleSignal = options?.signal;
+      this.activeRequests += 1;
+      return await new Promise<typeof this.assembleResponse>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          this.activeRequests -= 1;
+          reject(new Error("transport aborted"));
+        }, { once: true });
+      });
+    }
+  }
+  const client = new AbortableAssembleClient();
+  const warnings: string[] = [];
+  const engine = buildContextEngineFactory(fakeRuntime(client), {
+    userId: "fixed-user",
+    beforeTurnEnabled: false,
+    crossSessionRecall: false,
+    assembleTimeoutMs: 1,
+  }, { error: () => {}, warn: (message) => { warnings.push(message); } });
+  const messages = [makeMessage("user", "hello")];
+  const result = await engine.assemble({
+    sessionId: "s1-assemble-aborts-timeout",
+    messages,
+    tokenBudget: 4000,
+  });
+
+  assert.equal(client.assembleSignal?.aborted, true);
+  assert.equal(client.activeRequests, 0, "timed-out assembly must release the transport request");
+  assert.deepEqual(result.messages, messages);
+  assert.ok(warnings.some((message) => /AssembleContextInternal timed out after 1ms/.test(message)));
 });
 
 function openClawMetadataEnvelope(userText: string): string {
@@ -1510,7 +1693,8 @@ test("daemon compacted projection survives engine replacement until session stat
   });
   assert.equal(
     client.calls.filter((call) => call.method === "assembleContextInternal").length,
-    callsBeforePostTool,
+    callsBeforePostTool + 1,
+    "message-74 is a new user turn, so recall must refresh while preserving the compacted projection",
   );
   assert.match(postTool.systemPromptAddition, /Durable daemon projection/u);
   assert.deepEqual(postTool.messages, postToolMessages.slice(20));
@@ -4435,6 +4619,102 @@ test("afterTurn fails loudly when the daemon confirms none of the batch", async 
     0,
     "post-ingest work ran for a turn the daemon did not confirm",
   );
+});
+
+function decodedTurnResponse(cursor: { lastProcessedIndex: number; sessionVersion: number; manifestTailHash: string }): Record<string, unknown> {
+  return AfterTurnKernelResponse.fromBinary(new AfterTurnKernelResponse({
+    ok: true,
+    cursor: {
+      ...cursor,
+      lastProcessedIndex: BigInt(cursor.lastProcessedIndex),
+      sessionVersion: BigInt(cursor.sessionVersion),
+    },
+  }).toBinary()) as unknown as Record<string, unknown>;
+}
+
+test("commitTurn retries the unconfirmed suffix after a partial daemon acknowledgment", async () => {
+  for (const identity of ["ids", "idless"] as const) {
+    const client = new FakeClient();
+    const sessionId = `s1-commit-partial-ack-${identity}`;
+    const messagesWithIds = [makeMessage("user", "question", "partial-u"), makeMessage("assistant", "reply", "partial-a")];
+    const messages = identity === "ids" ? messagesWithIds : messagesWithIds.map(({ role, content }) => ({ role, content }));
+    client.afterTurnResponses = [
+      decodedTurnResponse({ lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "partial" }),
+      decodedTurnResponse({ lastProcessedIndex: 1, sessionVersion: 2, manifestTailHash: "complete" }),
+    ];
+    const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    const args = { advancementKey: `adv-partial-ack-${identity}`, sessionId, messages };
+
+    await assert.rejects(engine.commitTurn(args), /confirmed only 1 of 2 messages/);
+    assert.equal(manifestStore.load(sessionId).turns.length, 1);
+    const replacement = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+    assert.equal((await replacement.commitTurn(args)).status, "committed");
+    assert.equal(manifestStore.load(sessionId).turns.length, 2);
+    const outgoing = client.calls.filter((call) => call.method === "afterTurnKernel")[1]!.params.messages as Array<{ role: string; content: string }>;
+    assert.deepEqual(outgoing.map(({ role, content }) => ({ role, content })), [{ role: "assistant", content: "reply" }]);
+    assert.deepEqual(manifestStore.load(sessionId).turns.map((turn) => turn.contentHash), messages.map((message) => manifestStore.hashString(message.content)));
+    assert.equal((await replacement.commitTurn(args)).status, "duplicate");
+  }
+});
+
+test("cursor-gap repair persists only confirmed seed messages and leaves failed commits retryable", async () => {
+  for (const identity of ["ids", "idless"] as const) {
+    for (const confirmation of ["another-gap", "none", "partial", "partial-before-prompt", "rpc-error"] as const) {
+      const client = new FakeClient();
+      const sessionId = `s1-commit-gap-${confirmation}-${identity}`;
+      const engine = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+      const messagesWithIds = [
+        makeMessage("user", "old question", `${confirmation}-u1`),
+        makeMessage("assistant", "old reply", `${confirmation}-a1`),
+        makeMessage("user", "new question", `${confirmation}-u2`),
+        makeMessage("assistant", "new reply", `${confirmation}-a2`),
+      ];
+      const messages = identity === "ids" ? messagesWithIds : messagesWithIds.map(({ role, content }) => ({ role, content }));
+      client.afterTurnResponses = [decodedTurnResponse({ lastProcessedIndex: 1, sessionVersion: 1, manifestTailHash: "old" })];
+      await engine.afterTurn({ sessionId, messages: messages.slice(0, 2) });
+      await flushIngestion(engine);
+
+      client.afterTurnResponses = [
+        decodedTurnResponse({ lastProcessedIndex: 0, sessionVersion: 1, manifestTailHash: "" }),
+        decodedTurnResponse({
+          lastProcessedIndex: confirmation === "partial" ? 1 : confirmation === "partial-before-prompt" ? 0 : -1,
+          sessionVersion: 1,
+          manifestTailHash: confirmation === "another-gap" ? "" : "confirmed-tail",
+        }),
+      ];
+      if (confirmation === "rpc-error") {
+        const original = client.afterTurnKernel.bind(client);
+        let calls = 0;
+        client.afterTurnKernel = async (params) => {
+          calls += 1;
+          if (calls === 2) {
+            client.afterTurnResponses.length = 0;
+            throw new Error("reseed RPC unavailable");
+          }
+          return original(params);
+        };
+      }
+      const args = { advancementKey: `adv-gap-${confirmation}-${identity}`, sessionId, messages, prePromptMessageCount: 2 };
+      await assert.rejects(engine.commitTurn(args), /Daemon confirmed (?:no|only [12] of 4) messages|reseed RPC unavailable/);
+      const confirmedCount = confirmation === "partial" ? 2 : confirmation === "partial-before-prompt" ? 1 : 0;
+      assert.equal(manifestStore.load(sessionId).turns.length, confirmedCount);
+      assert.equal(manifestStore.load(sessionId).recoveryPending, true);
+
+      // A replacement engine must recover the unconfirmed historical suffix
+      // from persisted state, including messages before prePromptMessageCount.
+      const replacement = buildContextEngineFactory(fakeRuntime(client), { userId: "fixed-user" });
+      client.afterTurnResponse = decodedTurnResponse({ lastProcessedIndex: 3, sessionVersion: 2, manifestTailHash: "recovered" });
+      assert.equal((await replacement.commitTurn(args)).status, "committed");
+      const retried = client.calls.filter((call) => call.method === "afterTurnKernel").at(-1)!;
+      const outgoing = retried.params.messages as Array<{ role: string; content: string; id?: string }>;
+      assert.deepEqual(outgoing.map(({ role, content }) => ({ role, content })), messages.slice(confirmedCount).map(({ role, content }) => ({ role, content })));
+      if (identity === "ids") assert.deepEqual(outgoing, messages.slice(confirmedCount));
+      assert.equal(manifestStore.load(sessionId).turns.length, messages.length);
+      assert.deepEqual(manifestStore.load(sessionId).turns.map((turn) => turn.contentHash), messages.map((message) => manifestStore.hashString(message.content)));
+      assert.equal(manifestStore.load(sessionId).recoveryPending, undefined);
+      assert.equal((await replacement.commitTurn(args)).status, "duplicate");
+    }
+  }
 });
 
 test("bootstrap does not orphan an ingestion that is still in flight", async () => {

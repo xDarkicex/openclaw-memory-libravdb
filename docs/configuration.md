@@ -119,6 +119,18 @@ endpoints; provisioning and backend selection still happen on the daemon.
 
 ## Retrieval
 
+Recall cached for a turn is reused only while the normalized transcript through
+its latest user message is unchanged. A new message identity or changed query
+refreshes recall even when the transcript has the same length or query prefix.
+Post-tool continuations also require the same daemon client; changing runtime or
+tenant clients refreshes context instead of reusing the previous client's recall.
+
+Recent conversation continuity is saved separately for each session key under
+`OPENCLAW_STATE_DIR/libravdb-continuity` (or `~/.openclaw/libravdb-continuity`).
+Separate engine instances read the latest saved value and cannot overwrite other
+sessions' entries. Existing `libravdb-continuity-cache.json` entries remain a
+read-only fallback until each session gets a newer individual entry.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `topK` | number | — | Max results per search |
@@ -128,6 +140,17 @@ endpoints; provisioning and backend selection still happen on the daemon.
 | `crossSessionRecall` | boolean | `true` | When `false`, only session-scoped memories are retrieved |
 | `useSessionRecallProjection` | boolean | — | Use `session_recall` collection instead of `session` |
 | `useSessionSummarySearchExperiment` | boolean | — | Use `session_summary` collection for search |
+
+## Session checkpoints
+
+Acknowledged session transcripts are stored separately for each resolved daemon
+endpoint and write tenant. Reusing a host advancement key at another destination
+does not skip ingestion there. Switching back resumes that destination's checkpoint.
+
+On upgrade, an older checkpoint without destination information is assigned to the
+first destination that uses it. Start with the existing endpoint and tenant before
+switching destinations, since the older file cannot identify where it was written.
+This does not detect a database reset behind an unchanged endpoint and tenant.
 
 ## Ingestion gating
 

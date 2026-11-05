@@ -57,11 +57,52 @@ Concurrent shutdown callers wait for the same drain, flush, and close operation.
 Session messages are written into the vector service-backed store. User turns may also
 be promoted into durable user memory after gating.
 
+Durable turn commits checkpoint only the message prefix acknowledged by the
+daemon. Partial acknowledgements and explicit rejections leave the turn
+retryable, including after engine replacement. Cursor-gap recovery keeps its
+pending state until the full recovery batch is confirmed. Protobuf cursor
+integers are checked before conversion to local indices; an invalid cursor
+cannot fall back to optimistic success. Successful responses from older
+daemons without cursors retain their compatibility behavior.
+
+Messages without host IDs use stable advancement IDs and source positions in
+both normal ingestion and recovery, so an exact commit replay after restart
+still matches the persisted checkpoint.
+
+Ingestion checkpoints remember whether message IDs came from the host. When
+both sides of an overlap have host IDs, the IDs must agree: a new exchange with
+the same wording is still stored, while an exact replay is skipped. Legacy
+checkpoints and messages without host IDs retain the content-based overlap
+fallback for compatibility with regenerated IDs.
+
+After-turn ingestion caps large payloads to protect the embedding service. When
+it truncates a single message, the local checkpoint also retains a hash of the
+original normalized content so an exact replay with the same message identity
+is recognized after restart. The daemon's hash chain still describes only the
+bounded content actually sent. This does not restore content omitted by the cap
+or change how whole messages are selected from an oversized batch.
+
 ### `assemble`
 
 The context engine queries the relevant memory scopes, ranks the results, fits
 them to the current token budget, and injects the selected items as synthetic
 system messages.
+
+Recall reuse is limited to the same user-turn boundary and daemon client.
+Replacing a client does not reuse its cached recall or inherit its retrieval
+failure state. Predictions produced after ingestion are also discarded if a
+different client handles the next assembly.
+
+For conversation continuity, the plugin also keeps a best-effort local copy of
+the last user and assistant messages per session key. Each entry is replaced
+atomically and read when needed, so separate engine instances preserve one
+another's entries and observe current saved context. The vector service remains
+the source of truth; failure to update this cache does not reject an acknowledged
+turn.
+
+Continuity, the user card, and the bot persona are fetched for the bootstrap
+turn where they are injected. Established conversations do not wait for these
+bootstrap-only reads when assembling later turns.
 
 ### `compact`
 
@@ -80,6 +121,8 @@ thresholds, compaction declines instead of forcing a rewrite.
 - compaction is separate from prompt construction
 - lifecycle hints such as `before_reset` and `session_end` are advisory
 - the vector service is the source of truth for stored memory state
+- engine disposal drains only ingestion submitted by that engine, with a bounded
+  deadline; other engines retain their queues and shared session caches
 
 ## Failure Handling
 

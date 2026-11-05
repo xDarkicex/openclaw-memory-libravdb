@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { homedir } from "node:os";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { ContinuityCache } from "./continuity-cache.js";
 import { buildRulesContext } from "./rules.js";
-import { resolveReadTenants } from "./identity.js";
+import { resolveReadTenants, resolveTenantKey } from "./identity.js";
+import { resolveClientEndpoint } from "./libravdb-client.js";
 
 import type { PluginRuntime } from "./plugin-runtime.js";
+import type { LibravDBClient } from "./libravdb-client.js";
 import type {
   LoggerLike,
   PluginConfig,
@@ -22,8 +22,15 @@ import {
 } from "@xdarkicex/libravdb-contracts";
 import { resolveIdentity, type ResolvedIdentity } from "./identity.js";
 import { resolveUserCollection } from "./memory-scopes.js";
-import { manifestStore } from "./manifest.js";
+import { TurnManifestStore, manifestStore, type TurnManifest } from "./manifest.js";
 import { TurnMemoryCache, extractQueryHint, isNewUserTurn } from "./turn-cache.js";
+
+function sessionDestination(cfg: PluginConfig, runtime: PluginRuntime, scope: { sessionId: string; sessionKey?: string }): string {
+  return createHash("sha256").update(JSON.stringify([
+    resolveClientEndpoint(cfg.grpcEndpoint || cfg.sidecarPath),
+    runtime.resolveWriteTenantKey?.(scope) ?? resolveTenantKey(cfg),
+  ])).digest("hex");
+}
 
 /** Host advancement keys whose turn is durably ingested, so an exact retry answers "duplicate". */
 const committedAdvancementKeys = new Set<string>();
@@ -342,7 +349,8 @@ class SessionLifecycleChangedError extends Error {
 }
 
 interface PostToolContextCache {
-  lastUserIndex: number;
+  client: import("./libravdb-client.js").LibravDBClient;
+  boundarySignature: string;
   systemPromptAddition: string;
 }
 const POST_TOOL_CACHE_MAX_SIZE = 100;
@@ -508,6 +516,8 @@ export const FLUSH_ASYNC_INGESTION = Symbol("flushAsyncIngestion");
  * host-supplied argument.
  */
 const CAPTURE_INGESTION = Symbol("libravdbCaptureIngestion");
+/** Stable synthetic message identities for retries of one durable advancement. */
+const ADVANCEMENT_IDENTITY = Symbol("libravdbAdvancementIdentity");
 
 let maxOptimizationMemoCacheSize = 50000;
 const metadataEnvelopeCache = new Map<string, string>();
@@ -987,6 +997,7 @@ function truncateContentToTokenBudget(content: unknown, tokenBudget: number): st
 function trimMessagesToBudget(
   messages: OpenClawCompatibleMessage[],
   tokenBudget: number,
+  onTruncate?: (bounded: OpenClawCompatibleMessage, original: OpenClawCompatibleMessage) => void,
 ): OpenClawCompatibleMessage[] {
   if (tokenBudget <= 0 || messages.length === 0) {
     return [];
@@ -1017,7 +1028,9 @@ function trimMessagesToBudget(
   if (!truncated) {
     return [];
   }
-  return [{ ...last, content: truncated }];
+  const bounded = { ...last, content: truncated };
+  onTruncate?.(bounded, last);
+  return [bounded];
 }
 
 /**
@@ -1068,14 +1081,22 @@ function boundAfterTurnMessagesForIngest(
   messages: KernelCompatibleMessage[],
   logger: LoggerLike,
   sessionId: string,
+  sourceContentHashes?: Map<KernelCompatibleMessage, string>,
 ): KernelCompatibleMessage[] {
   const estimatedTokens = approximateMessagesTokens(messages);
   if (estimatedTokens <= AFTER_TURN_INGEST_MAX_TOKENS) {
     return messages;
   }
 
-  const bounded = trimMessagesToBudget(messages, AFTER_TURN_INGEST_MAX_TOKENS)
-    .map((message) => normalizeKernelMessage(message));
+  const truncatedSources = new Map<OpenClawCompatibleMessage, string>();
+  const bounded = trimMessagesToBudget(messages, AFTER_TURN_INGEST_MAX_TOKENS, (message, original) => {
+    truncatedSources.set(message, manifestStore.hashString(original.content as string));
+  }).map((message) => {
+    const normalized = normalizeKernelMessage(message);
+    const sourceHash = truncatedSources.get(message);
+    if (sourceHash && sourceContentHashes) sourceContentHashes.set(normalized, sourceHash);
+    return normalized;
+  });
   logger.info?.(
     `LibraVDB afterTurn trimmed oversized ingest payload sessionId=${sessionId} ` +
     `estimatedTokens=${estimatedTokens} maxTokens=${AFTER_TURN_INGEST_MAX_TOKENS} ` +
@@ -2009,16 +2030,64 @@ type CursorFromDaemon = {
 function extractCursorFromResult(result: unknown): CursorFromDaemon | undefined {
   if (result && typeof result === "object" && "cursor" in result) {
     const cursor = (result as Record<string, unknown>).cursor;
+    if (cursor == null) return undefined;
     if (cursor && typeof cursor === "object") {
       const c = cursor as Record<string, unknown>;
-      if (typeof c.lastProcessedIndex === "number" &&
-          typeof c.sessionVersion === "number" &&
+      // Connect decodes int64 fields as bigint. Manifests use numeric indices;
+      // convert only exact, valid values rather than silently treating an
+      // unrecognized cursor as a legacy cursorless acknowledgement.
+      const lastProcessedIndex = typeof c.lastProcessedIndex === "bigint"
+        ? Number(c.lastProcessedIndex) : c.lastProcessedIndex;
+      const sessionVersion = typeof c.sessionVersion === "bigint"
+        ? Number(c.sessionVersion) : c.sessionVersion;
+      if (typeof lastProcessedIndex === "number" && Number.isSafeInteger(lastProcessedIndex) && lastProcessedIndex >= -1 &&
+          typeof sessionVersion === "number" && Number.isSafeInteger(sessionVersion) && sessionVersion >= 0 &&
           typeof c.manifestTailHash === "string") {
-        return c as CursorFromDaemon;
+        return { lastProcessedIndex, sessionVersion, manifestTailHash: c.manifestTailHash };
       }
     }
+    throw new Error("[LibraVDB] Daemon returned an invalid session cursor; ingestion must be retried.");
   }
   return undefined;
+}
+
+/** Persist the confirmed prefix, but keep the logical turn retryable until complete. */
+function persistAcknowledgedBatch(
+  manifestStore: TurnManifestStore,
+  manifest: TurnManifest,
+  messages: KernelCompatibleMessage[],
+  startIndex: number,
+  result: unknown,
+  hostMessageIds?: ReadonlySet<string>,
+  sourceContentHashes?: ReadonlyMap<KernelCompatibleMessage, string>,
+): void {
+  if (result && typeof result === "object" && "ok" in result && result.ok === false) {
+    throw new Error(`[LibraVDB] afterTurnKernel returned ok=false for session ${manifest.sessionId}; ingestion must be retried.`);
+  }
+  const cursor = extractCursorFromResult(result);
+  // Legacy daemons without cursors retain their optimistic ACK behavior.
+  // An empty tail hash is the daemon's explicit rejection of the batch.
+  const ackCount = cursor
+    ? cursor.manifestTailHash ? Math.max(0, cursor.lastProcessedIndex - startIndex + 1) : 0
+    : messages.length;
+  const ackedMessages = messages.slice(0, ackCount);
+  if (ackedMessages.length === 0) {
+    throw new Error(
+      `[LibraVDB] Daemon confirmed no messages for session ${manifest.sessionId} ` +
+      `(lastProcessedIndex=${cursor?.lastProcessedIndex}, batch started at ${startIndex}).`,
+    );
+  }
+  const updated = manifestStore.appendACKedMessages(manifest, ackedMessages, startIndex, hostMessageIds, sourceContentHashes);
+  if (manifest.recoveryPending && ackedMessages.length < messages.length) {
+    updated.recoveryPending = true;
+  }
+  manifestStore.save(updated);
+  if (ackedMessages.length < messages.length) {
+    throw new Error(
+      `[LibraVDB] Daemon confirmed only ${ackedMessages.length} of ${messages.length} messages ` +
+      `for session ${manifest.sessionId}; the unconfirmed suffix must be retried.`,
+    );
+  }
 }
 
 /**
@@ -2036,13 +2105,16 @@ const triggerCache = new Map<string, string>();
 const TRIGGER_CACHE_MAX_SIZE = 200;
 
 export function setSessionTrigger(sessionId: string, trigger: string | undefined): void {
+  if (trigger == null) {
+    triggerCache.delete(sessionId);
+    return;
+  }
+  triggerCache.delete(sessionId);
   if (triggerCache.size >= TRIGGER_CACHE_MAX_SIZE) {
     const oldest = triggerCache.keys().next().value;
     if (oldest !== undefined) triggerCache.delete(oldest);
   }
-  if (trigger !== undefined && trigger !== null) {
-    triggerCache.set(sessionId, trigger);
-  }
+  triggerCache.set(sessionId, trigger);
 }
 
 export function clearSessionTrigger(sessionId: string): void {
@@ -2120,11 +2192,25 @@ export function buildContextEngineFactory(
     setOptimizationMemoCacheSize(cfg.optimizationMemoCacheSize);
   }
 
-  const predictiveContextCache = new Map<string, import("./types.js").PredictedContext[]>();
+  const predictiveContextCache = new Map<string, {
+    client: LibravDBClient;
+    predictions: import("./types.js").PredictedContext[];
+  }>();
   const compactedProjectionSessions = compactedProjectionState.activeSessions;
   const PREDICTIVE_CACHE_MAX_SIZE = 100;
   // BeforeTurnKernel state
   const turnCache = new TurnMemoryCache(100);
+  // Numeric IDs separate cache/attempt/circuit keys without retaining clients.
+  const recallClientIds = new WeakMap<LibravDBClient, number>();
+  let nextRecallClientId = 1;
+  function recallClientId(client: LibravDBClient): number {
+    let id = recallClientIds.get(client);
+    if (id === undefined) {
+      id = nextRecallClientId++;
+      recallClientIds.set(client, id);
+    }
+    return id;
+  }
   const circuitBreakers = new Map<string, FailureState>();
   const beforeTurnAttempts = new Map<string, string>();
   const CIRCUIT_STATE_MAX_SIZE = 200;
@@ -2133,6 +2219,7 @@ export function buildContextEngineFactory(
   let cachedIdentity: ResolvedIdentity | null = null;
   let cachedSessionKey: string | undefined;
   let engineDisposed = false;
+  const ownedIngestions = new Set<Promise<void>>();
 
   // --- Per-agent / per-subagent exclusion ---
   // Sessions belonging to an excluded agent (or, when excludeSubagents is set,
@@ -2521,6 +2608,14 @@ export function buildContextEngineFactory(
       cfg.compactSessionTokenBudget,
     );
 
+  // A zero budget disables automatic triggers unless an explicit positive
+  // compactThreshold overrides it. Host compact() keeps its normal threshold.
+  const getPredictiveCompactThreshold = (tokenBudget: number | undefined): number | undefined =>
+    cfg.compactSessionTokenBudget === 0 &&
+    !(typeof cfg.compactThreshold === "number" && Number.isFinite(cfg.compactThreshold) && cfg.compactThreshold > 0)
+      ? undefined
+      : getDynamicCompactThreshold(tokenBudget);
+
   const buildAssemblyConfig = (tokenBudget: number | undefined) => ({
     useSessionRecallProjection: cfg.useSessionRecallProjection,
     useSessionSummarySearchExperiment: cfg.useSessionSummarySearchExperiment,
@@ -2705,35 +2800,14 @@ export function buildContextEngineFactory(
     };
   }
 
-  const continuityCache = new Map<string, string>(); // sessionKey -> raw context block
-  const continuityCachePath = (() => {
-    const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
-    const dir = stateDir || join(homedir(), '.openclaw');
-    return join(dir, 'libravdb-continuity-cache.json');
-  })();
-
-  // Load persisted cache on startup.
-  try {
-    if (existsSync(continuityCachePath)) {
-      const raw = JSON.parse(readFileSync(continuityCachePath, 'utf8'));
-      for (const [k, v] of Object.entries(raw)) {
-        if (typeof v === 'string') continuityCache.set(k, v);
-      }
-    }
-  } catch { /* best-effort */ }
-
-  function persistContinuityCache() {
-    try {
-      mkdirSync(join(continuityCachePath, '..'), { recursive: true });
-      writeFileSync(continuityCachePath, JSON.stringify(Object.fromEntries(continuityCache)));
-    } catch { /* best-effort */ }
-  }
+  const continuityCache = new ContinuityCache();
 
   function updateContinuityCache(sessionKey: string, messages: KernelCompatibleMessage[]) {
     const lastTurns = messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-2);
     if (lastTurns.length > 0) {
-      continuityCache.set(sessionKey, lastTurns.map(m => `${m.role}: ${m.content}`).join('\n'));
-      persistContinuityCache();
+      try {
+        continuityCache.write(sessionKey, lastTurns.map(m => `${m.role}: ${m.content}`).join('\n'));
+      } catch { /* continuity is best-effort; the daemon already acknowledged the turn */ }
     }
   }
 
@@ -2747,7 +2821,7 @@ export function buildContextEngineFactory(
     systemPromptAddition: string;
   }): Promise<string | null> {
     try {
-      const cached = continuityCache.get(params.sessionKey);
+      const cached = continuityCache.read(params.sessionKey);
       if (cached) {
         return `<continuity_context>\nRecent conversation:\n${cached}\n</continuity_context>`;
       }
@@ -2892,7 +2966,7 @@ export function buildContextEngineFactory(
     currentTokenCount?: number;
     lifecycleToken: object;
   }): Promise<void> {
-    const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
+    const dynamicCompactThreshold = getPredictiveCompactThreshold(args.tokenBudget);
     const currentContextTokens = resolveAfterTurnPredictiveCompactionTokenCount({
       currentTokenCount: args.currentTokenCount,
       messages: args.messages,
@@ -3101,6 +3175,7 @@ export function buildContextEngineFactory(
         ? normalizeKernelContent(args.prompt, { retainOpenClawContext: false })
         : "";
       const lastUserIndex = findLastUserMessageIndex(messages);
+      const turnBoundarySignature = buildBeforeTurnSignature(args.messages);
       const isPostToolContinuation = lastUserIndex >= 0 && lastUserIndex < messages.length - 1
         && hasLiveToolProtocolAfterLastUser(messages, lastUserIndex);
       const lastUserMessage = findLastReplaySafeUserMessage(messages);
@@ -3114,7 +3189,7 @@ export function buildContextEngineFactory(
         messages,
         prompt: strippedPrompt,
       });
-      const dynamicCompactThreshold = getDynamicCompactThreshold(args.tokenBudget);
+      const dynamicCompactThreshold = getPredictiveCompactThreshold(args.tokenBudget);
       const predictiveTargetSize = resolvePredictiveCompactionTarget({
         currentTokenCount: currentContextTokens,
         threshold: dynamicCompactThreshold,
@@ -3189,63 +3264,63 @@ export function buildContextEngineFactory(
         }
       }
 
-      // BeforeTurnKernel: semantic memory retrieval against the current user query.
-      // Skip for automated triggers (heartbeat, cron, memory, overflow) — saves
-      // an embedding call and RPC round trip on non-interactive turns.
-      const btLog = cfg.beforeTurnDebug
-        ? (msg: string) => logger.info?.(msg)
-        : (_msg: string) => {};
-      let beforeTurnPredictions: BeforeTurnKernelResponse["predictions"] | null = null;
-      let beforeTurnQueryHint: string | null = null;
-      let beforeTurnSignature: string | null = null;
-      if (cfg.beforeTurnEnabled === false) {
-        btLog(`BeforeTurnKernel disabled by config sessionId=${sessionId}`);
-      } else if (!isInteractiveTrigger(sessionId)) {
-        btLog(`BeforeTurnKernel skipped: non-interactive trigger sessionId=${sessionId}`);
-      } else {
-        beforeTurnQueryHint = extractQueryHint(messages, (text) =>
-          typeof text === "string" ? text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "").trim() : text,
-        );
-        if (!beforeTurnQueryHint) {
-          btLog(`BeforeTurnKernel skipped: no query hint extracted sessionId=${sessionId}`);
-        } else if (!isNewUserTurn(messages as Parameters<typeof isNewUserTurn>[0])) {
-          btLog(`BeforeTurnKernel skipped: not a new user turn sessionId=${sessionId}`);
-          beforeTurnQueryHint = null;
-        }
-        if (beforeTurnQueryHint && isBeforeTurnCircuitOpen(sessionId)) {
-          btLog(`BeforeTurnKernel skipped: circuit open sessionId=${sessionId}`);
-          beforeTurnQueryHint = null;
-        }
-        if (beforeTurnQueryHint) {
-          btLog(`BeforeTurnKernel calling sessionId=${sessionId} hint=${beforeTurnQueryHint.slice(0, 50)}`);
-          // Include message count in cache key so identical queries
-          // in different turns don't return stale predictions.
-          const turnScopedHint = `${messages.length}:${beforeTurnQueryHint}`;
-          const cached = turnCache.get(sessionId, turnScopedHint) as BeforeTurnKernelResponse | undefined;
-          if (cached?.predictions) {
-            beforeTurnPredictions = cached.predictions;
-            beforeTurnQueryHint = null;
-          }
-        }
-        if (beforeTurnQueryHint) {
-          beforeTurnSignature = buildBeforeTurnSignature(args.messages);
-          if (!beforeTurnSignature || hasAttemptedBeforeTurn(sessionId, beforeTurnSignature)) {
-            beforeTurnQueryHint = null;
-          }
-        }
-      }
-
       try {
         const client = await runtime.getClient(args);
-
-
+        // BeforeTurnKernel: semantic memory retrieval against the current user query.
+        // Skip for automated triggers (heartbeat, cron, memory, overflow) — saves
+        // an embedding call and RPC round trip on non-interactive turns.
+        const btLog = cfg.beforeTurnDebug
+          ? (msg: string) => logger.info?.(msg)
+          : (_msg: string) => {};
+        let beforeTurnPredictions: BeforeTurnKernelResponse["predictions"] | null = null;
+        let beforeTurnQueryHint: string | null = null;
+        const clientId = recallClientId(client);
+        const beforeTurnStateKey = JSON.stringify([sessionId, clientId]);
+        const beforeTurnSignature = turnBoundarySignature ? `${clientId}:${turnBoundarySignature}` : null;
+        if (cfg.beforeTurnEnabled === false) {
+          btLog(`BeforeTurnKernel disabled by config sessionId=${sessionId}`);
+        } else if (!isInteractiveTrigger(sessionId)) {
+          btLog(`BeforeTurnKernel skipped: non-interactive trigger sessionId=${sessionId}`);
+        } else {
+          beforeTurnQueryHint = extractQueryHint(messages, (text) =>
+            typeof text === "string" ? text.replace(OPENCLAW_LEADING_TIMESTAMP_PREFIX_RE, "").trim() : text,
+          );
+          if (!beforeTurnQueryHint) {
+            btLog(`BeforeTurnKernel skipped: no query hint extracted sessionId=${sessionId}`);
+          } else if (!isNewUserTurn(messages as Parameters<typeof isNewUserTurn>[0])) {
+            btLog(`BeforeTurnKernel skipped: not a new user turn sessionId=${sessionId}`);
+            beforeTurnQueryHint = null;
+          }
+          if (beforeTurnQueryHint && isBeforeTurnCircuitOpen(beforeTurnStateKey)) {
+            btLog(`BeforeTurnKernel skipped: circuit open sessionId=${sessionId}`);
+            beforeTurnQueryHint = null;
+          }
+          if (beforeTurnQueryHint) {
+            btLog(`BeforeTurnKernel calling sessionId=${sessionId} hint=${beforeTurnQueryHint.slice(0, 50)}`);
+            // Transcript windows can have equal lengths across distinct turns.
+            // Use the full normalized user boundary, including message identity,
+            // rather than a message count and truncated query prefix.
+            const cached = beforeTurnSignature
+              ? turnCache.get(sessionId, beforeTurnSignature) as BeforeTurnKernelResponse | undefined
+              : undefined;
+            if (cached?.predictions) {
+              beforeTurnPredictions = cached.predictions;
+              beforeTurnQueryHint = null;
+            }
+          }
+          if (beforeTurnQueryHint) {
+            if (!beforeTurnSignature || hasAttemptedBeforeTurn(beforeTurnStateKey, beforeTurnSignature)) {
+              beforeTurnQueryHint = null;
+            }
+          }
+        }
 
         let enforced: OpenClawCompatibleAssembleResult;
         let cachedSystemPrompt: string | undefined;
 
         if (isPostToolContinuation) {
           const cached = postToolRecallCache.get(sessionId);
-          if (cached && cached.lastUserIndex === lastUserIndex) {
+          if (cached?.client === client && turnBoundarySignature && cached.boundarySignature === turnBoundarySignature) {
             cachedSystemPrompt = cached.systemPromptAddition;
             logger.info?.(`LibraVDB skipping assemble context search for post-tool continuation sessionId=${sessionId}`);
 
@@ -3296,7 +3371,7 @@ export function buildContextEngineFactory(
           // BeforeTurnKernel RPC call (reuses the same client)
           if (beforeTurnQueryHint) {
             if (beforeTurnSignature) {
-              markBeforeTurnAttempt(sessionId, beforeTurnSignature);
+              markBeforeTurnAttempt(beforeTurnStateKey, beforeTurnSignature);
             }
             try {
               const beforeTurnTimeout = cfg.beforeTurnTimeoutMs ?? 5000;
@@ -3329,11 +3404,11 @@ export function buildContextEngineFactory(
               const clamped = btResult.predictions && btResult.predictions.length > maxMemories
                 ? selectTopByRelevance(btResult.predictions, retrievalQuery, maxMemories)
                 : btResult.predictions;
-              turnCache.set(sessionId, `${messages.length}:${beforeTurnQueryHint}`, { predictions: clamped });
+              if (beforeTurnSignature) turnCache.set(sessionId, beforeTurnSignature, { predictions: clamped });
               beforeTurnPredictions = clamped;
-              clearBeforeTurnCircuit(sessionId);
+              clearBeforeTurnCircuit(beforeTurnStateKey);
             } catch (err) {
-              trackBeforeTurnFailure(sessionId, err);
+              trackBeforeTurnFailure(beforeTurnStateKey, err);
               logger.warn?.(
                 `BeforeTurnKernel failed for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
               );
@@ -3348,21 +3423,31 @@ export function buildContextEngineFactory(
             cfg.tokenBudgetMax,
             cfg.tokenBudgetFraction,
           ) ?? args.tokenBudget;
-          const resp = await Promise.race([
-            client.assembleContextInternal({
-              sessionId,
-              sessionKey: args.sessionKey,
-              userId,
-              prompt: retrievalQuery,
-              messages: messages as any,
-              tokenBudget: cappedAssembleBudget,
-              config: buildAssemblyConfig(cappedAssembleBudget),
-              emitDebug: true,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`)), assembleTimeout)
-            ),
-          ]);
+          const assembleAbort = new AbortController();
+          let assembleTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+          let resp: AssembleContextInternalResponse;
+          try {
+            resp = await Promise.race([
+              client.assembleContextInternal({
+                sessionId,
+                sessionKey: args.sessionKey,
+                userId,
+                prompt: retrievalQuery,
+                messages: messages as any,
+                tokenBudget: cappedAssembleBudget,
+                config: buildAssemblyConfig(cappedAssembleBudget),
+                emitDebug: true,
+              }, { signal: assembleAbort.signal }),
+              new Promise<never>((_, reject) => {
+                assembleTimeoutHandle = setTimeout(() => {
+                  reject(new Error(`AssembleContextInternal timed out after ${assembleTimeout}ms`));
+                  assembleAbort.abort();
+                }, assembleTimeout);
+              }),
+            ]);
+          } finally {
+            clearTimeout(assembleTimeoutHandle);
+          }
           const daemonCompactedProjectionContext =
             typeof resp.systemPromptAddition === "string"
               ? extractCompactedSessionContext(resp.systemPromptAddition)
@@ -3406,22 +3491,23 @@ export function buildContextEngineFactory(
             sourceProjection,
             compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
           );
-          const continuityContext = await injectContinuityContext({
-            client,
-            userId,
-            sessionId,
-            sessionKey: args.sessionKey ?? sessionId,
-            logger,
-            tokenBudget: args.tokenBudget,
-            systemPromptAddition: assembled.systemPromptAddition,
-          });
-          const userCardContext = await injectUserCardContext({ client, userId });
-          const personaContext = await injectPersonaContext({ client });
-          const rulesContext = buildRulesContext();
-          // Only inject on session bootstrap.
+          // Bootstrap context is consumed only on the first turn. Do not wait
+          // for these RPCs on later turns just to discard their results.
           const isSessionBootstrap = messages.length <= 1;
           let withContext = assembled;
           if (isSessionBootstrap) {
+            const continuityContext = await injectContinuityContext({
+              client,
+              userId,
+              sessionId,
+              sessionKey: args.sessionKey ?? sessionId,
+              logger,
+              tokenBudget: args.tokenBudget,
+              systemPromptAddition: assembled.systemPromptAddition,
+            });
+            const userCardContext = await injectUserCardContext({ client, userId });
+            const personaContext = await injectPersonaContext({ client });
+            const rulesContext = buildRulesContext();
             // Persona first — identity of the bot itself.
             if (personaContext) {
               withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, personaContext) };
@@ -3449,7 +3535,8 @@ export function buildContextEngineFactory(
             args.tokenBudget,
             compactionProjectionActive,
           );
-          const predictions = predictiveContextCache.get(sessionId) || [];
+          const cachedPredictions = predictiveContextCache.get(sessionId);
+          const predictions = cachedPredictions?.client === client ? cachedPredictions.predictions : [];
           predictiveContextCache.delete(sessionId);
           if (predictions.length > 0) {
             const effectiveBudget = normalizeTokenBudget(args.tokenBudget) != null
@@ -3588,14 +3675,17 @@ export function buildContextEngineFactory(
             args.tokenBudget,
           );
         }
-        if (postToolRecallCache.size >= POST_TOOL_CACHE_MAX_SIZE) {
-          const oldest = postToolRecallCache.keys().next().value;
-          if (oldest !== undefined) postToolRecallCache.delete(oldest);
+        if (turnBoundarySignature) {
+          if (postToolRecallCache.size >= POST_TOOL_CACHE_MAX_SIZE) {
+            const oldest = postToolRecallCache.keys().next().value;
+            if (oldest !== undefined) postToolRecallCache.delete(oldest);
+          }
+          postToolRecallCache.set(sessionId, {
+            client,
+            boundarySignature: turnBoundarySignature,
+            systemPromptAddition: replaySafe.systemPromptAddition,
+          });
         }
-        postToolRecallCache.set(sessionId, {
-          lastUserIndex,
-          systemPromptAddition: replaySafe.systemPromptAddition,
-        });
         return replaySafe;
       } catch (error) {
         logger.warn?.(
@@ -3697,19 +3787,14 @@ export function buildContextEngineFactory(
      * named a commit.
      *
      * Known limitations, inherited from afterTurn and not introduced here:
-     * - Overlap detection compares message id hashes where it has them, but a
-     *   multi-message overlap still matches on role and content alone, so two distinct
-     *   turns whose messages are byte-identical dedupe against each other and the
+     * - Without known host-supplied message identities on both sides, legacy
+     *   multi-message overlap still matches on role and content alone, so distinct
+     *   turns whose messages are byte-identical can dedupe against each other and the
      *   second is not ingested. It is reported as committed anyway, since replaying it
      *   would dedupe identically. The stored content is the same either way; what is
      *   lost is the repeat occurrence.
      * - A daemon that answers without a cursor is ACKed optimistically, so for those
      *   the manifest records what was sent rather than what was confirmed.
-     * - A daemon that returns a cursor confirming none of the batch leaves the queued
-     *   task resolving normally, so this reports "committed" for a turn that was never
-     *   stored. That is a defect in afterTurn's cursor reconciliation rather than in
-     *   this contract, and is fixed separately; until that lands, this method is only
-     *   as trustworthy as the ingest beneath it.
      *
      * Concurrent calls carrying the same key are serialized on one in-flight promise,
      * so at most one of them performs the ingest. The others reject with the same
@@ -3731,7 +3816,9 @@ export function buildContextEngineFactory(
       isHeartbeat?: boolean;
       runtimeContext?: Record<string, unknown>;
     }): Promise<{ status: "committed" | "duplicate" }> {
-      const key = args.advancementKey;
+      const key = args.advancementKey && !isExcludedSession(args.sessionKey, args.sessionId)
+        ? JSON.stringify([sessionDestination(cfg, runtime, args), args.sessionId, args.advancementKey])
+        : "";
 
       // Run the turn and wait for the durable part of the ingest to finish.
       // Errors propagate: a caller that is told nothing must be free to retry.
@@ -3749,6 +3836,7 @@ export function buildContextEngineFactory(
           prePromptMessageCount: args.prePromptMessageCount,
           isHeartbeat: args.isHeartbeat,
           runtimeContext: args.runtimeContext,
+          [ADVANCEMENT_IDENTITY]: key || undefined,
           [CAPTURE_INGESTION]: (handle) => { ingestion = handle; },
         });
         // The host defines "duplicate" as "this exact advancementKey was already
@@ -3829,6 +3917,7 @@ export function buildContextEngineFactory(
       isHeartbeat?: boolean;
       tokenBudget?: number;
       runtimeContext?: Record<string, unknown>;
+      [ADVANCEMENT_IDENTITY]?: string;
       [CAPTURE_INGESTION]?: (ingestion: Promise<void>) => void;
     }) {
       const sessionId = requireSessionId(args.sessionId, "afterTurn");
@@ -3841,13 +3930,45 @@ export function buildContextEngineFactory(
         sessionKey: args.sessionKey,
       });
 
-      const afterTurnMessages = selectAfterTurnMessages(args.messages, args.prePromptMessageCount, logger);
-      const messages = normalizeKernelMessages(afterTurnMessages, { retainOpenClawContext: true });
+      const hostMessageIds = new Set(args.messages
+        .map(message => message.id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0));
+      const manifestStore = new TurnManifestStore(undefined, sessionDestination(cfg, runtime, args));
+      const preflightManifest = manifestStore.load(sessionId, logger);
+      const selectMessages = (recoveryPending: boolean, sourceContentHashes?: Map<KernelCompatibleMessage, string>): KernelCompatibleMessage[] => {
+        const source = recoveryPending
+          ? args.messages
+          : selectAfterTurnMessages(args.messages, args.prePromptMessageCount, logger);
+        // The same advancement retry carries the same source transcript.
+        // Preserve single-message ACK prefixes even when the host omitted IDs.
+        // A recovered commit must keep the same IDs on a normal replay after
+        // restart, when recoveryPending and the in-memory key memo are gone.
+        // Legacy afterTurn calls without advancement keys keep their ID policy.
+        const identityScope = args[ADVANCEMENT_IDENTITY]
+          ? `advancement:${args[ADVANCEMENT_IDENTITY]}`
+          : recoveryPending ? `recovery:${sessionId}` : undefined;
+        const sourceOffset = args.messages.length - source.length;
+        const identifiedSource = identityScope ? source.map((message, index) => {
+          if (typeof message.id === "string" && message.id.length > 0) return message;
+          const hash = createHash("sha256").update(JSON.stringify([
+            sessionId,
+            identityScope,
+            sourceOffset + index,
+            message.role,
+            normalizeKernelContent(message.content, { retainOpenClawContext: true }),
+          ])).digest("hex");
+          return { ...message, id: `libravdb-ingest:${hash}` };
+        }) : source;
+        const normalized = normalizeKernelMessages(identifiedSource, { retainOpenClawContext: true });
+        return recoveryPending
+          ? boundAfterTurnMessagesForIngest(normalized, logger, sessionId, sourceContentHashes)
+          : normalized;
+      };
+      const messages = selectMessages(preflightManifest.recoveryPending === true);
 
       // Sync preflight: return skipped immediately when no new messages exist,
       // preserving the original afterTurn completion contract for idempotency.
-      const preflightManifest = manifestStore.load(sessionId, logger);
-      const preflightOverlap = manifestStore.findOverlapIndex(preflightManifest, messages);
+      const preflightOverlap = manifestStore.findOverlapIndex(preflightManifest, messages, hostMessageIds);
       const preflightNewCount = messages.slice(preflightOverlap).length;
 
       logger.info?.(
@@ -3872,15 +3993,19 @@ export function buildContextEngineFactory(
           // Reload manifest inside the serialized queue so state is fresh
           // after any preceding queued tasks have completed.
           const manifest = manifestStore.load(sessionId, logger);
-          const overlapIndex = manifestStore.findOverlapIndex(manifest, messages);
-          const newMessages = messages.slice(overlapIndex);
+          // Preserve original-content identity locally while the daemon chain
+          // continues hashing only the bounded payload it actually receives.
+          const sourceContentHashes = new Map<KernelCompatibleMessage, string>();
+          const queuedMessages = manifest.recoveryPending ? selectMessages(true, sourceContentHashes) : messages;
+          const overlapIndex = manifestStore.findOverlapIndex(manifest, queuedMessages, hostMessageIds);
+          const newMessages = queuedMessages.slice(overlapIndex);
 
           if (newMessages.length === 0) {
             return; // already handled by a preceding queued task
           }
 
           // Apply token budget cap only to new messages
-          const ingestMessages = boundAfterTurnMessagesForIngest(newMessages, logger, sessionId);
+          const ingestMessages = boundAfterTurnMessagesForIngest(newMessages, logger, sessionId, sourceContentHashes);
           // A manifest with no acknowledged turns is an initial/recovery
           // ingest, not an OpenClaw transcript offset. Sending the host's
           // pre-prompt count here makes the daemon reject the batch as a gap
@@ -3918,88 +4043,35 @@ export function buildContextEngineFactory(
           } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
           if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
 
-          updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
-
-          // Reconcile manifest with daemon-confirmed cursor.
-          // The daemon returns a cursor even when it ingests zero messages
-          // (e.g. gap detected, all messages deduped). Trust its
-          // lastProcessedIndex over our optimistic startIndex math.
-          let daemonCursor = extractCursorFromResult(result);
-          let repairedCursorGap = false;
-
-          if (daemonCursor) {
-            if (!daemonCursor.manifestTailHash) {
-              // Daemon detected a gap: its DB is behind our manifest.
-              // It did NOT ingest our messages. Reset the manifest so the
-              // next turn does a full re-sync.
-              logger.warn?.(
-                `[LibraVDB] Daemon reported cursor gap for session ${sessionId}. ` +
-                `Resetting manifest for full re-sync next turn.`,
-              );
-              const seedMessages = boundAfterTurnMessagesForIngest(
-                normalizeKernelMessages(args.messages, { retainOpenClawContext: true }),
-                logger,
-                sessionId,
-              );
-              const emptyManifest = manifestStore.createEmpty(sessionId);
-              if (seedMessages.length > 0) {
-                // Recover in the same serialized task. The retry deliberately
-                // omits a cursor: the daemon just proved its durable history
-                // is behind ours, so claiming the old index again would cause
-                // another gap and strand compaction on a singleton turn.
-                result = await client.afterTurnKernel({
-                  sessionId,
-                  sessionKey: args.sessionKey,
-                  userId,
-                  messages: seedMessages,
-                  isHeartbeat: args.isHeartbeat,
-                } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
-                if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
-                manifestStore.save(
-                  manifestStore.appendACKedMessages(emptyManifest, seedMessages, 0),
-                );
-                repairedCursorGap = true;
-                daemonCursor = extractCursorFromResult(result);
-                logger.info?.(
-                  `[LibraVDB] Re-seeded daemon session ${sessionId} with ${seedMessages.length} source messages after cursor gap.`,
-                );
-              } else {
-                manifestStore.save(emptyManifest);
-              }
-            } else if (ingestMessages.length > 0) {
-              // Normal path: reconcile to what the daemon actually confirmed.
-              const confirmedIndex = daemonCursor.lastProcessedIndex;
-              const ackCount = Math.max(0, confirmedIndex - startIndex + 1);
-              if (ackCount === 0) {
-                // The cursor the daemon returned sits before this batch, so it
-                // confirmed none of these messages. Falling through here left
-                // the manifest un-advanced with no diagnostic, so the same
-                // messages were re-sent on every subsequent turn and the
-                // session could never make progress. Fail instead: the catch
-                // below turns this into the same warning every other ingest
-                // failure produces, and skips the post-ingest best-effort work
-                // that would otherwise run for a turn that was never stored.
-                throw new Error(
-                  `[LibraVDB] Daemon confirmed no messages for session ${sessionId} ` +
-                  `(lastProcessedIndex=${confirmedIndex}, batch started at ${startIndex}).`,
-                );
-              }
-              const ackedMessages = ingestMessages.slice(0, ackCount);
-              const updatedManifest = manifestStore.appendACKedMessages(
-                manifest,
-                ackedMessages,
-                startIndex,
-              );
-              manifestStore.save(updatedManifest);
-            }
-          } else if (!repairedCursorGap && ingestMessages.length > 0) {
-            // Legacy daemon (no cursor in response): optimistic ACK.
-            const updatedManifest = manifestStore.appendACKedMessages(
-              manifest,
-              ingestMessages,
-              startIndex,
+          // Reconcile both normal ingestion and cursor-gap recovery against
+          // the daemon's confirmation before reporting a durable logical turn.
+          const daemonCursor = extractCursorFromResult(result);
+          if (daemonCursor && !daemonCursor.manifestTailHash) {
+            logger.warn?.(
+              `[LibraVDB] Daemon reported cursor gap for session ${sessionId}. ` +
+              `Resetting manifest and re-seeding from source history.`,
             );
-            manifestStore.save(updatedManifest);
+            const seedMessages = selectMessages(true, sourceContentHashes);
+            const emptyManifest = manifestStore.createEmpty(sessionId);
+            emptyManifest.recoveryPending = true;
+            // The daemon has disproved the old manifest. Clear it even if the
+            // recovery RPC fails, so a subsequent retry cannot skip lost data.
+            manifestStore.save(emptyManifest);
+            // Omit the stale cursor to recover in the same serialized task.
+            result = await client.afterTurnKernel({
+              sessionId,
+              sessionKey: args.sessionKey,
+              userId,
+              messages: seedMessages,
+              isHeartbeat: args.isHeartbeat,
+            } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
+            if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
+            persistAcknowledgedBatch(manifestStore, emptyManifest, seedMessages, 0, result, hostMessageIds, sourceContentHashes);
+            logger.info?.(
+              `[LibraVDB] Re-seeded daemon session ${sessionId} with ${seedMessages.length} source messages after cursor gap.`,
+            );
+          } else {
+            persistAcknowledgedBatch(manifestStore, manifest, ingestMessages, startIndex, result, hostMessageIds, sourceContentHashes);
           }
 
           // Everything above is the durable part of the turn: the daemon has
@@ -4008,6 +4080,7 @@ export function buildContextEngineFactory(
           // commit, because asking the host to retry an already-durable turn
           // is worse than losing a prediction or a warm cache entry.
           try {
+            updateContinuityCache(args.sessionKey ?? sessionId, ingestMessages);
             await performAfterTurnPredictiveCompaction({
               sessionId,
               sessionKey: args.sessionKey,
@@ -4023,7 +4096,7 @@ export function buildContextEngineFactory(
                 const oldest = predictiveContextCache.keys().next().value;
                 if (oldest !== undefined) predictiveContextCache.delete(oldest);
               }
-              predictiveContextCache.set(sessionId, predictions);
+              predictiveContextCache.set(sessionId, { client, predictions });
               logger.info?.(
                 `LibraVDB predictive graph returned predictions sessionId=${sessionId} ` +
                 `count=${predictions.length}`,
@@ -4055,9 +4128,13 @@ export function buildContextEngineFactory(
         }
       });
 
-      // afterTurn's own contract is fire-and-forget and the task already
-      // logged. commitTurn awaits the handle instead, so it sees real failures.
-      ingestion.catch(() => {});
+      // Keep ownership separate from the shared session queue: a replacement
+      // engine can already have queued later work in that same session.
+      ownedIngestions.add(ingestion);
+      const releaseOwnership = () => { ownedIngestions.delete(ingestion); };
+      // Handle both outcomes without creating an unhandled rejected promise.
+      // commitTurn still awaits the original handle and sees real failures.
+      void ingestion.then(releaseOwnership, releaseOwnership);
 
       args[CAPTURE_INGESTION]?.(ingestion);
 
@@ -4135,27 +4212,29 @@ export function buildContextEngineFactory(
       // Drain in-flight ingestion so writes are not lost during shutdown.
       // Apply a timeout so a stuck daemon doesn't block process exit.
       const DISPOSE_DRAIN_TIMEOUT_MS = 5000;
-      const pending = Array.from(asyncIngestionQueues.values());
+      const pending = Array.from(ownedIngestions);
       if (pending.length > 0) {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
-            Promise.all(pending),
-            new Promise<void>((resolve) => setTimeout(resolve, DISPOSE_DRAIN_TIMEOUT_MS)),
+            Promise.allSettled(pending),
+            new Promise<void>((resolve) => { timeout = setTimeout(resolve, DISPOSE_DRAIN_TIMEOUT_MS); }),
           ]);
-        } catch {
-          // Swallow — drain errors are already logged inside queued tasks.
+        } finally {
+          if (timeout) clearTimeout(timeout);
         }
-        const remaining = Array.from(asyncIngestionQueues.values()).length;
+        const remaining = ownedIngestions.size;
         if (remaining > 0) {
           logger.warn?.(
             `LibraVDB dispose timed out after ${DISPOSE_DRAIN_TIMEOUT_MS}ms ` +
-            `with ${remaining} queued ingestion task(s) still pending — clearing anyway`,
+            `with ${remaining} owned ingestion task(s) still pending`,
           );
         }
       }
       predictiveContextCache.clear();
-      postToolRecallCache.clear();
-      triggerCache.clear();
+      // These session-scoped caches are shared across factories. Bootstrap,
+      // reset/end hooks, and bounded eviction own their lifetime; disposing
+      // one logical turn must not invalidate other sessions' live state.
       // Spawn rollback, child completion, and runtime shutdown own exclusions.
       // Disposing a parent turn must not re-enable memory for its live children.
       excludedSessionIds.clear();

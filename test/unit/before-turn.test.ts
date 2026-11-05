@@ -96,3 +96,27 @@ test("TurnMemoryCache invalidates session", () => {
   assert.equal(cache.get("s1", "q1"), undefined);
   assert.equal(cache.get("s2", "q1"), 2);
 });
+
+test("TurnMemoryCache keeps session ids containing separators isolated", () => {
+  const cache = new TurnMemoryCache(10);
+  cache.set("agent:main", "2:question", { session: "agent:main" });
+  assert.equal(cache.get("agent:main:2", "question"), undefined);
+
+  cache.set("agent:main:2", "question", { session: "agent:main:2" });
+  assert.deepEqual(cache.get("agent:main", "2:question"), { session: "agent:main" });
+  assert.deepEqual(cache.get("agent:main:2", "question"), { session: "agent:main:2" });
+
+  cache.invalidateSession("agent:main");
+  assert.equal(cache.get("agent:main", "2:question"), undefined);
+  assert.deepEqual(cache.get("agent:main:2", "question"), { session: "agent:main:2" });
+});
+
+test("TurnMemoryCache escapes quotes and backslashes in session ids", () => {
+  const cache = new TurnMemoryCache(10);
+  const sessionId = 'agent:"main\\branch';
+  cache.set(sessionId, "query", 1);
+  cache.set(`${sessionId}:child`, "query", 2);
+  cache.invalidateSession(sessionId);
+  assert.equal(cache.get(sessionId, "query"), undefined);
+  assert.equal(cache.get(`${sessionId}:child`, "query"), 2);
+});
