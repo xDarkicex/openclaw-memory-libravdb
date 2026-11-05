@@ -2456,15 +2456,13 @@ export function buildContextEngineFactory(
   function isBeforeTurnCircuitOpen(sessionId: string): boolean {
     const state = circuitBreakers.get(sessionId);
     if (!state) return false;
+    // A zero deadline means failures are still accumulating below the
+    // threshold. Preserve that count for the next turn.
+    if (state.cooldownUntil === 0) return false;
     if (state.cooldownUntil === Infinity) return true;
     if (Date.now() > state.cooldownUntil) {
       circuitBreakers.delete(sessionId);
       return false;
-    }
-    // Prune stale entries occasionally.
-    if (circuitBreakers.size > CIRCUIT_STATE_MAX_SIZE) {
-      const oldest = circuitBreakers.keys().next().value;
-      if (oldest) circuitBreakers.delete(oldest);
     }
     return true;
   }
@@ -2491,6 +2489,10 @@ export function buildContextEngineFactory(
         `consecutive=${state.consecutive} cooldownMs=${state.cooldownUntil - state.lastFailure} ` +
         `${state.cooldownUntil === Infinity ? "(permanent)" : ""}`,
       );
+    }
+    if (!circuitBreakers.has(sessionId) && circuitBreakers.size >= CIRCUIT_STATE_MAX_SIZE) {
+      const oldest = circuitBreakers.keys().next().value;
+      if (oldest !== undefined) circuitBreakers.delete(oldest);
     }
     circuitBreakers.set(sessionId, state);
   }

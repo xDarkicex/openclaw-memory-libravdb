@@ -129,6 +129,8 @@ thresholds, compaction declines instead of forcing a rewrite.
 The plugin is designed to degrade gracefully:
 
 - if the vector service is unavailable, prompt assembly continues without recall
+- consecutive recall failures accumulate across turns until their failure-class
+  threshold opens a cooldown; successful recall resets the count
 - if compaction fails, the active session is not blocked
 - if summarization is unavailable, the system falls back to the safer path
 
