@@ -33,6 +33,7 @@ type AgentTool = {
 
 type MemorySearchResult = {
   path: string;
+  recordId?: string;
   startLine: number;
   endLine: number;
   score: number;

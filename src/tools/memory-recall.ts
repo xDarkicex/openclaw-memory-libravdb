@@ -2,6 +2,7 @@ import type { ClientGetter } from "../plugin-runtime.js";
 import { formatError } from "../format-error.js";
 import type { LoggerLike } from "../types.js";
 import { consumeSubagentBudget } from "../context-engine.js";
+import { encodeRecordReference, type RoutedSearchResult } from "../record-reference.js";
 
 // ── Tool types ──
 
@@ -72,7 +73,7 @@ const MEMORY_DESCRIBE_SCHEMA = {
   properties: {
     summaryId: {
       type: "string",
-      description: "A summary ID (sum_xxx format) returned by libravdb_memory_search. Inspect metadata without expanding.",
+      description: "A summary reference from libravdb_memory_search or memory_grep. Copy its path/recordId to preserve the source tenant and session; bare sum_xxx IDs use the current tenant and selected session.",
     },
     sessionId: {
       type: "string",
@@ -89,11 +90,11 @@ const MEMORY_EXPAND_SCHEMA = {
     summaryIds: {
       type: "array",
       items: { type: "string" },
-      description: "Summary IDs (sum_xxx format) to expand. Use results from libravdb_memory_search or memory_describe.",
+      description: "Summary references to expand. Copy paths/recordIds from libravdb_memory_search or summary IDs from memory_grep/memory_describe to preserve their source tenant and session. Bare sum_xxx IDs use the current tenant and selected session.",
     },
     record_id: {
       type: "string",
-      description: "Record ID for causal graph traversal. Use exact IDs from libravdb_memory_search or libravdb_memory_get results.",
+      description: "Record reference for causal graph traversal. Copy recordId or path from libravdb_memory_search (or a connected edge's recordId) to retain its source tenant. Bare IDs use the current tenant.",
     },
     maxDepth: {
       type: "number",
@@ -275,7 +276,7 @@ export function createMemoryExpandTool(
       "Expand compacted summaries OR walk causal graph edges from ANY record. " +
       "Summary mode (summaryIds): walk the summary tree up to maxDepth levels. " +
       "Graph mode (record_id): walk causal edges (why_ids/how_ids/hop_targets) " +
-      "from a record ID. Use exact IDs from libravdb_memory_search or libravdb_memory_get results — " +
+      "from a record ID. Copy recordId or path from libravdb_memory_search to preserve the source tenant — " +
       "any ingested turn, memory, or summary has graph edges. " +
       "For large expansions, spawns a sub-agent. " +
       "Use memory_describe first to check if expansion is warranted.",
@@ -481,7 +482,9 @@ export function createMemoryGrepTool(
               } catch { /* best-effort */ }
             }
             const snippet = truncateSnippet(r.text);
-            summaries.push({ summaryId: r.id, snippet, score: r.score, evictionCue });
+            const tenant = (r as RoutedSearchResult).sourceTenant;
+            const summaryId = tenant === undefined ? r.id : encodeRecordReference(tenant, `session_summary:${sessionId}`, r.id);
+            summaries.push({ summaryId, snippet, score: r.score, evictionCue });
             totalChars += snippet.length;
           }
         }
@@ -507,7 +510,9 @@ export function createMemoryGrepTool(
                   }
                 } catch { /* best-effort */ }
               }
-              matchingTurns.set(r.id, { turnId: r.id, snippet: truncateSnippet(r.text), role, score: r.score });
+              const tenant = (r as RoutedSearchResult).sourceTenant;
+              const turnId = tenant === undefined ? r.id : encodeRecordReference(tenant, collection, r.id);
+              matchingTurns.set(r.id, { turnId, snippet: truncateSnippet(r.text), role, score: r.score });
             }
           }
           for (const turn of [...matchingTurns.values()].sort((a, b) => b.score - a.score)) {

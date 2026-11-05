@@ -7,6 +7,7 @@ import { createHmac } from "node:crypto";
 import fs from "node:fs";
 import type { LoggerLike } from "./types.js";
 import { formatError } from "./format-error.js";
+import { decodeRecordReference, encodeRecordReference, searchResultKey, type RoutedSearchResult } from "./record-reference.js";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -321,10 +322,17 @@ export class LibravDBClient {
 
     const interceptors: Interceptor[] = [];
     interceptors.push((next) => async (req) => {
-      if (self.tenantKey) {
+      if (self.tenantKey && !req.header.has("libravdb-tenant-key")) {
         req.header.set("libravdb-tenant-key", self.tenantKey);
       }
-      return next(req);
+      const tenant = req.header.get("libravdb-tenant-key") ?? "";
+      const response = await next(req);
+      if (!response.stream && (req.method.name === "SearchText" || req.method.name === "SearchTextCollections")) {
+        for (const item of (response.message as SearchTextResponse).results) {
+          (item as RoutedSearchResult).sourceTenant = tenant;
+        }
+      }
+      return response;
     });
     interceptors.push(authInterceptor);
     interceptors.push((next) => async (req) => {
@@ -386,8 +394,8 @@ export class LibravDBClient {
     }
   }
 
-  /** Update the tenant key for subsequent gRPC calls. Thread-safe —
-   *  the interceptor reads this.tenantKey on every request. */
+  /** Update the default tenant for subsequent gRPC calls.
+   *  This does not bind queued application work to a particular agent. */
   setTenantKey(key: string): void {
     this.tenantKey = key;
   }
@@ -395,7 +403,7 @@ export class LibravDBClient {
   /** Set additional tenants to search across. Only used by searchTextCollections.
    *  Empty by default — zero overhead for single-tenant setups. */
   setReadTenants(tenants: string[]): void {
-    this.readTenants = tenants;
+    this.readTenants = [...tenants];
   }
 
   // ── Session lifecycle ────────────────────────────────────────────
@@ -480,29 +488,36 @@ export class LibravDBClient {
     if (this.readTenants.length === 0) {
       return this.client.searchTextCollections(req);
     }
-    // Multi-tenant fan-out: search across all read tenants, merge results.
-    // Temporarily swap tenantKey per call, restore after.
-    const savedKey = this.tenantKey;
+    // Fan-out must not retarget concurrent writes or restore a stale default.
+    // Bind the tenant to each read request and snapshot this search's access list.
+    const readTenants = [...this.readTenants];
     const allResults: SearchTextResponse["results"] = [];
     const seen = new Set<string>();
-    try {
-      for (const t of this.readTenants) {
-        this.tenantKey = t;
-        try {
-          const resp = await this.client.searchTextCollections(req);
-          for (const r of resp.results ?? []) {
-            const dedupeKey = `${t}\0${r.id}`;
-            if (!seen.has(dedupeKey)) {
-              seen.add(dedupeKey);
-              allResults.push(r);
-            }
+    let succeeded = false;
+    let firstError: unknown;
+    for (const t of readTenants) {
+      try {
+        const resp = await this.client.searchTextCollections(req, {
+          headers: { "libravdb-tenant-key": t },
+        });
+        succeeded = true;
+        for (const r of resp.results ?? []) {
+          const dedupeKey = searchResultKey(r, t);
+          if (!seen.has(dedupeKey)) {
+            seen.add(dedupeKey);
+            allResults.push(r);
           }
-        } catch { /* skip failed tenant reads */ }
+        }
+      } catch (error) {
+        firstError ??= error;
       }
-    } finally {
-      this.tenantKey = savedKey;
     }
-    return { results: allResults } as SearchTextResponse;
+    if (!succeeded) {
+      throw firstError;
+    }
+    allResults.sort((left, right) => right.score - left.score);
+    const results = req.k && req.k > 0 ? allResults.slice(0, req.k) : allResults;
+    return { results } as SearchTextResponse;
   }
 
   async listCollection(req: PartialMessage<ListCollectionRequest>): Promise<ListCollectionResponse> {
@@ -590,7 +605,57 @@ export class LibravDBClient {
     req: PartialMessage<ExpandSummaryRequest>,
   ): Promise<ExpandSummaryResponse> {
     this.guardOpen();
-    return this.client.expandSummary(req);
+    const graphMode = Boolean(req.recordId);
+    const reference = decodeRecordReference((graphMode ? req.recordId : req.summaryId) ?? "");
+    const tenant = reference?.tenant;
+    if (tenant !== undefined && tenant !== (this.tenantKey ?? "") && (!tenant || !this.readTenants.includes(tenant))) {
+      throw new Error("Record reference tenant is outside configured read access");
+    }
+    let routed = req;
+    if (reference) {
+      if (graphMode) {
+        routed = { ...req, recordId: reference.id };
+      } else {
+        const prefix = "session_summary:";
+        if (!reference.collection.startsWith(prefix) || reference.collection.length === prefix.length) {
+          throw new Error("Summary reference must identify a session_summary collection");
+        }
+        routed = { ...req, summaryId: reference.id, sessionId: reference.collection.slice(prefix.length) };
+      }
+    }
+    const response = await this.client.expandSummary(
+      routed,
+      tenant ? { headers: { "libravdb-tenant-key": tenant } } : undefined,
+    );
+    if (reference) {
+      // Graph edges stay within the source tenant. Their collections are not
+      // present in this response, so leave that component empty.
+      const edgeReference = (id: string) => encodeRecordReference(reference.tenant, "", id);
+      for (const edge of response.connected) edge.recordId = edgeReference(edge.recordId);
+      response.whyIds = response.whyIds.map(edgeReference);
+      response.howIds = response.howIds.map(edgeReference);
+      response.hopTargets = response.hopTargets.map(edgeReference);
+      if (!graphMode) {
+        const summaryReference = (id: string) => encodeRecordReference(reference.tenant, reference.collection, id);
+        response.summaryId = summaryReference(response.summaryId || reference.id);
+        try {
+          const meta = JSON.parse(new TextDecoder().decode(response.metadataJson));
+          const lineage = meta?.continuity_lineage;
+          if (lineage && typeof lineage === "object" && !Array.isArray(lineage)) {
+            for (const [key, qualify] of [
+              ["parent_summary_ids", summaryReference],
+              ["source_turn_ids", edgeReference],
+            ] as const) {
+              if (Array.isArray(lineage[key])) {
+                lineage[key] = lineage[key].map((id: unknown) => typeof id === "string" ? qualify(id) : id);
+              }
+            }
+            response.metadataJson = new TextEncoder().encode(JSON.stringify(meta));
+          }
+        } catch { /* Preserve opaque metadata if it cannot be decoded. */ }
+      }
+    }
+    return response;
   }
 
   async rankCandidates(
