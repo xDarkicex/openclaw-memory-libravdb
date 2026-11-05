@@ -540,7 +540,8 @@ async function runFlush(runtime: PluginRuntime, opts: CliOptionBag | undefined, 
 
   try {
     const client = await runtime.getClient();
-    await client.flushNamespace(scope.params);
+    const result = await client.flushNamespace(scope.params);
+    if (!result.ok) throw new Error("Daemon rejected the namespace flush");
     console.log(`Deleted durable memory namespace ${scope.displayName}.`);
   } catch (error) {
     logger.error(`LibraVDB flush failed: ${formatError(error)}`);
