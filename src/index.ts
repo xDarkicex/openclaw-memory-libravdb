@@ -250,7 +250,10 @@ export function register(api: OpenClawPluginApi) {
       async create(_options: Record<string, unknown>) {
         return {
           ok: false,
-          error: `LibraVDB embedding is managed by the vector service. Use config embeddingBackend="${entry.id}" to select this backend.`,
+          error: "LibraVDB embeddings run in libravdbd; this provider is discovery-only. " +
+            "Configure embedding_backend in the daemon's YAML or " +
+            "LIBRAVDB_EMBEDDING_BACKEND in its service environment. " +
+            "Plugin embeddingBackend does not reconfigure the daemon.",
         };
       },
     } as any);

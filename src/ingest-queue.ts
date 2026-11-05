@@ -205,7 +205,12 @@ export class IngestQueue {
 
   private async deleteWithRetry(sourceDoc: string): Promise<void> {
     await withRetry(
-      () => this.deleteDocument({ sourceDoc }) as Promise<void>,
+      async () => {
+        const response = await this.deleteDocument({ sourceDoc });
+        if (response && typeof response === "object" && "ok" in response && response.ok === false) {
+          throw new Error(`delete_authored_document(${sourceDoc}) returned ok=false`);
+        }
+      },
       this.options.maxRetries,
       this.options.retryBaseDelayMs,
       this.logger,

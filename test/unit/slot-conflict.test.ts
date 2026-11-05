@@ -161,6 +161,29 @@ test("slot check — ours: register succeeds", () => {
 
 });
 
+test("embedding discovery providers direct backend configuration to the daemon", async () => {
+  const api = makeFakeApi({ slotsMemory: "libravdb-memory" });
+  const providers: Array<{
+    id: string;
+    create(options: Record<string, unknown>): Promise<{ ok: boolean; error: string }>;
+  }> = [];
+  api.registerMemoryEmbeddingProvider = (provider: unknown) => {
+    providers.push(provider as typeof providers[number]);
+  };
+  register(api);
+
+  assert.equal(providers.length, 3);
+  for (const provider of providers) {
+    const result = await provider.create({});
+    assert.equal(result.ok, false, provider.id);
+    assert.match(result.error, /discovery-only/i, provider.id);
+    assert.match(result.error, /embedding_backend/, provider.id);
+    assert.match(result.error, /daemon.*YAML/i, provider.id);
+    assert.match(result.error, /LIBRAVDB_EMBEDDING_BACKEND.*service environment/, provider.id);
+    assert.doesNotMatch(result.error, /embeddingBackend=["']/i, provider.id);
+  }
+});
+
 // slot: another plugin — should throw with slot name in message
 test("slot check — other plugin: register throws", () => {
   const api = makeFakeApi({ slotsMemory: "memory-lancedb" });

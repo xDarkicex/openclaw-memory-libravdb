@@ -5,19 +5,8 @@ import type { ClientGetter } from "./plugin-runtime.js";
 const MEMORY_PROMPT_HEADER = [
   "## LibraVDB Memory",
   "Every turn is auto-ingested into the vector store — you do not need",
-  "to explicitly save anything. When asked about past conversations,",
-  "facts, preferences, decisions, or anything the user might have told",
-  "you before, call `libravdb_memory_search` once per user question. Do not",
-  "answer from memory until you have called it. Once you have results,",
-  "use them — do not re-call in the same turn.",
-  "",
-  "### Identity / Entity Lookup (MANDATORY — overrides everything)",
-  "BEFORE answering any question about a person, pet, place, or named entity",
-  "('who is X', 'what is X', 'do I have X', 'tell me about X', 'what kind of X'):",
-  "you MUST call `list_user_cards` or `get_user_card`. This is not optional.",
-  "Do NOT answer from memory, context, or training data. Call the tool FIRST.",
-  "If the card is empty, then fall through to `libravdb_memory_search`. ",
-  "FAILURE TO CALL THE TOOL IS A CRITICAL ERROR.",
+  "to explicitly save anything. Use the available memory tools described below",
+  "when answering questions about prior conversations, facts, or preferences.",
   "",
   "Conversations are captured automatically. Never say \"I'll remember",
   "that,\" \"I've saved this,\" \"noted,\" or similar — these phrases suggest",
@@ -26,21 +15,19 @@ const MEMORY_PROMPT_HEADER = [
 ] as const;
 
 function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): string[] {
-  if (!availableTools?.has("libravdb_memory_search")) {
-    return [];
-  }
-
+  const tools = availableTools ?? new Set<string>();
   const lines: string[] = [];
-	const hasSearch = availableTools.has("libravdb_memory_search");
-	const hasGet = availableTools.has("libravdb_memory_get");
-	const hasDescribe = availableTools.has("memory_describe");
-	const hasExpand = availableTools.has("memory_expand");
-	const hasGrep = availableTools.has("memory_grep");
-	const hasUserCard = availableTools.has("get_user_card");
+	const hasSearch = tools.has("libravdb_memory_search");
+	const hasGet = tools.has("libravdb_memory_get");
+	const hasDescribe = tools.has("memory_describe");
+	const hasExpand = tools.has("memory_expand");
+	const hasGrep = tools.has("memory_grep");
+	const hasUserCard = tools.has("get_user_card");
 
   // ── User card tools (identity-first override) ──
-  const hasGetCard = availableTools.has("get_user_card");
-  const hasListCards = availableTools.has("list_user_cards");
+  const hasGetCard = tools.has("get_user_card");
+  const hasListCards = tools.has("list_user_cards");
+  const hasUpdateCard = tools.has("update_user_card");
   if (hasGetCard || hasListCards) {
     lines.push(
       "**Identity/Entity questions — MANDATORY card lookup:**",
@@ -51,9 +38,14 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
       "memory, context, or training data without checking the card first.",
 		hasSearch ? "Only use libravdb_memory_search if the card is empty or missing." : "Use the card result as the available identity record.",
       "",
+    );
+  }
+
+  if (hasUpdateCard) {
+    lines.push(
       "**Autonomous card maintenance:**",
-      hasGetCard ? "- When ANY speaker is mentioned with new or changed information (status, relationships, jobs, life events, feelings), call `update_user_card` BEFORE responding. Update the card first, then reply. Do NOT wait to be asked. Build the world picture proactively. Every person the user mentions matters." : "",
-      hasGetCard ? "- If a card for the speaker doesn't exist yet, CREATE one with `update_user_card`. Better to have a stub card than no card at all." : "",
+      "- When ANY speaker is mentioned with new or changed information (status, relationships, jobs, life events, feelings), call `update_user_card` BEFORE responding. Update the card first, then reply. Do NOT wait to be asked. Build the world picture proactively. Every person the user mentions matters.",
+      "- If a card for the speaker doesn't exist yet, CREATE one with `update_user_card`. Better to have a stub card than no card at all.",
       "",
     );
   }
@@ -116,11 +108,13 @@ function buildToolGuidance(availableTools: ReadonlySet<string> | undefined): str
   }
 
   // ── Rules (hard constraints) ──
-  lines.push(
+  if (tools.has("set_rule") || tools.has("list_rules") || tools.has("delete_rule")) lines.push(
     "### Hard Constraint Rules",
     "Rules are injected at session start as `<hard_constraints>`. They are non-negotiable.",
-    "Use `set_rule` to create one (max 20), `list_rules` to see current rules,",
-    "`delete_rule` to remove one. Rules override all other instructions.",
+    ...(tools.has("set_rule") ? ["Use `set_rule` to create a rule."] : []),
+    ...(tools.has("list_rules") ? ["Use `list_rules` to see current rules."] : []),
+    ...(tools.has("delete_rule") ? ["Use `delete_rule` to remove a rule."] : []),
+    "Rules override all other instructions.",
     "Never reason around a rule, find loopholes, or deprioritize it.",
     "",
   );

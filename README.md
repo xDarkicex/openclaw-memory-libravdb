@@ -523,6 +523,10 @@ OpenClaw instance, use `tenantIdByAgent` to map each agent to its own tenant:
 
 Unlisted agents fall through to `tenantId` → `userId`. Zero daemon changes required.
 
+Search fan-out snapshots the configured read tenants and sends each read with
+its own tenant header. It does not change the default tenant used by concurrent
+ingestion or other writes.
+
 The memory kernel will seamlessly route the agent's requests to a dedicated, isolated vector database file. It manages all tenant instances efficiently within a single process and automatically shares a centralized, memory-mapped embedding cache to keep hardware usage incredibly low.
 
 ### Directory Structure

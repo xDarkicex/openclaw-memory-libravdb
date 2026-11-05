@@ -234,7 +234,7 @@ test("flush command sends explicit user ids through the userId RPC field", async
       return {
         async flushNamespace(params: Record<string, unknown>) {
           rpcCalls.push({ method: "flushNamespace", params });
-          return {};
+          return { ok: true };
         },
       } as never;
     },
@@ -294,6 +294,40 @@ test("export command keeps user ids separate from derived namespaces", async () 
       params: { namespace: "session-key:session-1" },
     },
   ]);
+});
+
+test("flush command reports a daemon rejection without claiming deletion succeeded", async () => {
+  let shutdownCalls = 0;
+  const memory = buildMemoryCommand({
+    async getClient() {
+      return { async flushNamespace() { return { ok: false }; } } as never;
+    },
+    async emitLifecycleHint() {},
+    onShutdown() {},
+    async shutdown() { shutdownCalls++; },
+  });
+  const flush = memory.commands.find((command) => command.name() === "flush");
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalExitCode = process.exitCode;
+  const logs: string[] = [];
+  const errors: string[] = [];
+  console.log = ((message: unknown) => logs.push(String(message))) as typeof console.log;
+  console.error = ((message: unknown) => errors.push(String(message))) as typeof console.error;
+  process.exitCode = 0;
+
+  try {
+    await flush!.handler!({ userId: "alice", yes: true });
+
+    assert.equal(process.exitCode, 1);
+    assert.equal(logs.some((message) => message.includes("Deleted durable")), false);
+    assert.ok(errors.some((message) => message.includes("flush failed")));
+    assert.equal(shutdownCalls, 1);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    process.exitCode = originalExitCode;
+  }
 });
 
 test("status command shuts the plugin runtime down after printing status", async () => {

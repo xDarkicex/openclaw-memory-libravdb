@@ -6,6 +6,7 @@ import { resolveIdentity } from "./identity.js";
 import { detectDreamQuerySignal, resolveDreamCollection } from "./dream-routing.js";
 import type { PluginConfig, LoggerLike } from "./types.js";
 import type { SearchResult as ProtoSearchResult } from "@xdarkicex/libravdb-contracts";
+import { searchResultKey, searchResultPath, type RoutedSearchResult } from "./record-reference.js";
 
 type MemorySearchParams = {
   query?: string;
@@ -85,8 +86,8 @@ function createMemorySearchManager(
 
   return {
     async search(queryOrParams: string | MemorySearchParams = {}, opts: MemorySearchParams = {}) {
-      const legacyCall = typeof queryOrParams === "string";
-      const params = legacyCall
+      const stringCall = typeof queryOrParams === "string";
+      const params = stringCall
         ? {
             query: queryOrParams,
             limit: opts.limit ?? opts.k ?? opts.maxResults ?? opts.topK,
@@ -97,11 +98,13 @@ function createMemorySearchManager(
             userId: opts.userId,
             agentId: opts.agentId,
             context: opts.context,
+            kind: opts.kind,
+            signals: opts.signals,
           }
         : queryOrParams;
       const queryText = firstString(params.query, params.text, params.input, params.q);
       if (!queryText) {
-        return legacyCall ? { results: [], error: "Missing query text for LibraVDB memory search" } : [];
+        return [];
       }
 
       const dreamQuery = detectDreamQuerySignal(queryText);
@@ -159,22 +162,10 @@ function createMemorySearchManager(
           ? result.results
           : result.results.filter((item) => item.score >= minScore);
 
-      const legacyResults = filteredResults.map((item) => {
-        const meta = parseMetadataJson(item);
-        const text = resolveSearchResultText(item, meta);
-        return {
-          ...item,
-          text,
-          content: text,
-        };
-      });
-      if (legacyCall) {
-        return { results: legacyResults };
-      }
+      // Both host string calls and plugin object calls use OpenClaw memory hits.
       const memoryResults = filteredResults.map((item) => {
         const meta = parseMetadataJson(item);
-        const collection = typeof meta.collection === "string" ? meta.collection : "memory";
-        const relPath = encodeSearchResultPath(collection, item.id);
+        const relPath = searchResultPath(item);
         const text = resolveSearchResultText(item, meta);
         returnedSearchPaths.set(relPath, text);
         return toMemorySearchResult(item, meta, text);
@@ -266,8 +257,9 @@ function mergeSearchResults(
     .flatMap((response) => response.results)
     .sort((left, right) => right.score - left.score)
     .filter((item) => {
-      if (seenIds.has(item.id)) return false;
-      seenIds.add(item.id);
+      const key = searchResultKey(item);
+      if (seenIds.has(key)) return false;
+      seenIds.add(key);
       return true;
     })
     .slice(0, limit);
@@ -284,13 +276,13 @@ function resolveSearchCollections(
     return sessionId ? [resolveSessionSearchCollection(cfg, sessionId)] : [];
   }
 
+  if (cfg.crossSessionRecall === false) {
+    return corpus === "all" && sessionId ? [resolveSessionSearchCollection(cfg, sessionId)] : [];
+  }
+
   const durableCollections = [resolveUserCollection(userId), "global"];
   if (corpus === "memory") {
     return durableCollections;
-  }
-
-  if (cfg.crossSessionRecall === false) {
-    return sessionId ? [resolveSessionSearchCollection(cfg, sessionId)] : [];
   }
 
   if (!sessionId) {
@@ -352,24 +344,21 @@ function resolveSearchResultText(
 }
 
 function toMemorySearchResult(
-  item: ProtoSearchResult,
+  item: RoutedSearchResult,
   meta: Record<string, unknown> = parseMetadataJson(item),
   text = resolveSearchResultText(item, meta),
 ) {
   const collection = typeof meta.collection === "string" ? meta.collection : "memory";
   return {
-    path: encodeSearchResultPath(collection, item.id),
+    path: searchResultPath(item),
+    ...(item.sourceTenant === undefined ? {} : { recordId: searchResultPath(item) }),
     startLine: 1,
     endLine: Math.max(1, text.split("\n").length),
     score: item.score,
     snippet: text,
-    source: collection.startsWith("session:") || collection.startsWith("session_") ? "sessions" : "memory",
-    citation: `${collection}:${item.id}`,
+    source: collection.startsWith("session:") || collection.startsWith("session_") ? "sessions" as const : "memory" as const,
+    citation: item.sourceTenant === undefined ? `${collection}:${item.id}` : searchResultPath(item),
   };
-}
-
-function encodeSearchResultPath(collection: string, id: string): string {
-  return `${encodeURIComponent(collection)}::${encodeURIComponent(id)}`;
 }
 
 async function readStatus(

@@ -2291,6 +2291,30 @@ export function buildContextEngineFactory(
     }
   }
 
+  /**
+   * A CompactSession response only tells us that the daemon changed its own
+   * storage. It does not prove that the next assembly contains a usable
+   * compacted projection. Invalidate any prior local projection, then wait
+   * for assemble() to return a complete compacted_session_context marker
+   * before making that projection authoritative to OpenClaw.
+   */
+  function awaitCompactedProjection(sessionId: string): void {
+    const hadProjection =
+      compactedProjectionSessions.has(sessionId) ||
+      compactedProjectionState.snapshots.has(sessionId);
+    compactedProjectionSessions.delete(sessionId);
+    compactedProjectionState.snapshots.delete(sessionId);
+    predictiveContextCache.delete(sessionId);
+    postToolRecallCache.delete(sessionId);
+    turnCache.invalidateSession(sessionId);
+    if (hadProjection) {
+      logger.info?.(
+        `LibraVDB invalidated prior compacted projection sessionId=${sessionId}; ` +
+        "awaiting a usable daemon compacted context",
+      );
+    }
+  }
+
   function rememberCompactedProjection(
     sessionId: string,
     context: string,
@@ -2456,15 +2480,13 @@ export function buildContextEngineFactory(
   function isBeforeTurnCircuitOpen(sessionId: string): boolean {
     const state = circuitBreakers.get(sessionId);
     if (!state) return false;
+    // A zero deadline means failures are still accumulating below the
+    // threshold. Preserve that count for the next turn.
+    if (state.cooldownUntil === 0) return false;
     if (state.cooldownUntil === Infinity) return true;
     if (Date.now() > state.cooldownUntil) {
       circuitBreakers.delete(sessionId);
       return false;
-    }
-    // Prune stale entries occasionally.
-    if (circuitBreakers.size > CIRCUIT_STATE_MAX_SIZE) {
-      const oldest = circuitBreakers.keys().next().value;
-      if (oldest) circuitBreakers.delete(oldest);
     }
     return true;
   }
@@ -2491,6 +2513,10 @@ export function buildContextEngineFactory(
         `consecutive=${state.consecutive} cooldownMs=${state.cooldownUntil - state.lastFailure} ` +
         `${state.cooldownUntil === Infinity ? "(permanent)" : ""}`,
       );
+    }
+    if (!circuitBreakers.has(sessionId) && circuitBreakers.size >= CIRCUIT_STATE_MAX_SIZE) {
+      const oldest = circuitBreakers.keys().next().value;
+      if (oldest !== undefined) circuitBreakers.delete(oldest);
     }
     circuitBreakers.set(sessionId, state);
   }
@@ -2942,11 +2968,22 @@ export function buildContextEngineFactory(
       ) {
         if (response.didCompact === true) {
           const projectionToken = {};
-          compactedProjectionState.snapshots.delete(args.sessionId);
+          // A successful compact RPC is not enough to make an assembled
+          // projection authoritative. The daemon can report didCompact while
+          // its next AssembleContextInternal response has no complete
+          // compacted_session_context (for example, an empty session view).
+          // Keep the ordinary transcript and recall path alive until that
+          // marker is actually observed in assemble().
+          awaitCompactedProjection(args.sessionId);
           compactedProjectionState.projectionTokens.set(args.sessionId, projectionToken);
           onProjectionChanged?.(projectionToken);
         }
-        activateCompactedProjection(args.sessionId, "compact");
+        // An already-compacted response may preserve a projection that this
+        // engine has already verified. A new compaction deliberately does not
+        // activate one here; assemble() is the verification point.
+        if (response.didCompact !== true && compactedProjectionSessions.has(args.sessionId)) {
+          activateCompactedProjection(args.sessionId, "compact");
+        }
       }
       return result;
     } catch (error) {

@@ -131,6 +131,20 @@ Separate engine instances read the latest saved value and cannot overwrite other
 sessions' entries. Existing `libravdb-continuity-cache.json` entries remain a
 read-only fallback until each session gets a newer individual entry.
 
+For summary hits, pass the returned reference to `memory_describe.summaryId` or
+`memory_expand.summaryIds`. It selects both the source tenant and the original
+session, even when called from another session. Parent summary and source turn
+IDs returned by describe, and summary/turn IDs returned by grep, retain their
+source tenant for follow-up calls. Bare summary IDs continue to use the current
+tenant and the explicitly selected or current session.
+
+Memory search paths include the source tenant, collection, and record ID. Pass a
+returned path to `libravdb_memory_get` for its cached text, or copy its `recordId`
+or `path` into `memory_expand.record_id` to expand its graph in the source tenant.
+Connected graph records retain that tenant for follow-up expansion. References
+do not grant access: expansion checks the client's current primary tenant and
+configured `readAccess`. Bare record IDs continue to use the current tenant.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `topK` | number | — | Max results per search |

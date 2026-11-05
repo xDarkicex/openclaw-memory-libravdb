@@ -732,6 +732,47 @@ test("overlapping watcher scans do not retire a replacement before its ownership
   assert.match(rpc.documents.get(file)?.text ?? "", /plain generic replacement/);
 });
 
+test("markdown ingestion retries daemon delete refusals before retiring snapshot state", async () => {
+  const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-delete-retry-"));
+  const filePath = path.join(tempRoot, "notes.md");
+  const rpc = new FakeRpcClient();
+  let deleteAttempts = 0;
+  const deleteAuthoredDocument = rpc.deleteAuthoredDocument.bind(rpc);
+  rpc.deleteAuthoredDocument = async (params) => {
+    deleteAttempts++;
+    if (deleteAttempts === 1) {
+      return { ok: false };
+    }
+    return deleteAuthoredDocument(params);
+  };
+  const fsApi = new FakeFsApi();
+  await fsApi.writeFile(filePath, "A fact that will be removed");
+  const handle = createMarkdownIngestionHandle(
+    {
+      markdownIngestionEnabled: true,
+      markdownIngestionRoots: [tempRoot],
+      markdownIngestionSnapshotPath: snapshotPath(tempRoot),
+    },
+    async () => rpc as never,
+    { error() {}, warn() {}, info() {} },
+    fsApi as never,
+  );
+
+  try {
+    await handle.start();
+    await fsApi.rm(filePath);
+    await handle.refresh();
+
+    assert.equal(deleteAttempts, 2, "ok=false must retry instead of clearing local tracking");
+    assert.equal(rpc.documents.has(filePath), false);
+    const snapshot = JSON.parse(await fsp.readFile(snapshotPath(tempRoot), "utf8"));
+    assert.equal(snapshot.files[filePath], undefined);
+  } finally {
+    await handle.stop();
+    await fsp.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("markdown ingestion roots stay inert unless explicitly enabled", async () => {
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "libravdb-markdown-disabled-"));
   const filePath = path.join(tempRoot, "MEMORY.md");
