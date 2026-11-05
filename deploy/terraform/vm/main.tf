@@ -87,13 +87,15 @@ resource "aws_instance" "libravdbd" {
     apt-get update && apt-get install -y docker.io
     systemctl enable --now docker
 
-    mkdir -p /var/lib/libravdbd/data /var/lib/libravdbd/models
+    # Named volumes inherit the image directories' non-root ownership on first use.
+    docker volume create libravdbd-data
+    docker volume create libravdbd-models
 
     docker run -d --restart=unless-stopped \
       --name libravdbd \
       -p 50051:50051 \
-      -v /var/lib/libravdbd/data:/var/lib/libravdbd/data \
-      -v /var/lib/libravdbd/models:/var/lib/libravdbd/models \
+      -v libravdbd-data:/var/lib/libravdbd/data \
+      -v libravdbd-models:/var/lib/libravdbd/models \
       -e LIBRAVDB_GRPC_ENDPOINT=tcp:0.0.0.0:50051 \
       -e LIBRAVDB_DB_PATH=/var/lib/libravdbd/data/data.libravdb \
       -e LIBRAVDB_EMBEDDING_BACKEND=gguf \
