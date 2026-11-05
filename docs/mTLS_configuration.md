@@ -17,7 +17,11 @@ The plugin cannot detect whether the vector service requires mTLS — it must be
 
 Both fields must be set together or not at all. Setting one without the other will cause a configuration error at startup.
 
-These fields only take effect when the connection uses TLS — that is, when `grpcEndpointTlsMode` is not `"insecure"` and the endpoint is not a loopback address or Unix socket. See [TLS configuration](./TLS_configuration.md) for the full TLS behavior reference.
+These credentials are sent only when the TCP connection uses TLS. Remote TCP
+uses TLS in `"auto"` mode; loopback TCP requires
+`grpcEndpointTlsMode: "tls"`. `"insecure"` mode and Unix sockets do not send
+client certificates. See [TLS configuration](./TLS_configuration.md) for the
+full transport behavior.
 
 ## Certificate requirements
 

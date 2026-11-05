@@ -35,10 +35,10 @@ completes).
 Fires during gateway shutdown.
 
 - **Emitter:** OpenClaw core
-- **Behavior:** Flushes pending writes to the sidecar, then shuts down the
-  sidecar process and closes the gRPC kernel client (if configured).
-- **Side effects:** Destructive — after this hook runs, the sidecar connection
-  is closed.
+- **Behavior:** Runs registered plugin shutdown tasks, requests a daemon flush
+  if the client was started, then marks the plugin client closed.
+- **Side effects:** The plugin runtime stops accepting calls. The separately
+  supervised `libravdbd` process keeps running.
 - **Configuration:** None required.
 
 ## Memory Capability
@@ -81,8 +81,7 @@ results with exact-match durable memory recall for fact-lookup queries.
 ### `compact(args)`
 
 Runs compaction on demand. Supports force compaction and target-size-driven
-compaction. Uses the kernel (gRPC) path when available, falling back to
-sidecar RPC.
+compaction through the daemon's gRPC API.
 
 ### `afterTurn(args)`
 
@@ -92,9 +91,10 @@ heartbeat turns.
 
 ## CLI
 
-### `memory`
+### `libravdb`
 
 Root command registered via `registerCli` with lazy descriptors.
+Invoke it as `openclaw libravdb ...`.
 
 Subcommands: `status`, `index`, `search`, `flush`, `export`, `journal`,
 `dream-promote`.

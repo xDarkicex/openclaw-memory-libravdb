@@ -26,20 +26,22 @@ Current implementation facts:
 - the published npm package has no `postinstall`
 - the published plugin manifest does not register `openclaw.setup`
 - the published plugin source contains no direct `child_process` usage
-- the plugin connects only to a configured local endpoint such as
-  `unix:/Users/<you>/.libravdbd/run/libravdb.sock` or `tcp:127.0.0.1:37421`
+- the default connection is local, but `grpcEndpoint` or `sidecarPath` can
+  select a remote daemon and send session content over the network
 - vector service installation and lifecycle are explicit user or operator actions
 
 The vector service distribution surface should be evaluated separately from the plugin
 package. If you install `libravdbd` from release assets or another package
 channel, validate that channel directly.
 
-After installation, the plugin remains local-first:
+Offline operation depends on the daemon and its backends being local:
 
 - no required network calls are made for embedding
 - no required network calls are made for extractive compaction
-- the only optional runtime network path is an explicitly configured external
-  summarizer endpoint, such as an Ollama server
+- optional remote embedding and external summarizer backends can send input
+  text to their configured services
+- a remote daemon receives the memory RPCs and controls where its storage and
+  model backends run; TLS protects transport, not locality
 
 That trust boundary matters because it is exactly the area security-conscious
 users will inspect first.
@@ -61,7 +63,21 @@ The plugin structurally separates:
 - durable user memory
 - global memory
 
-Cross-user leakage is prevented by collection naming and lookup boundaries. The gate, compaction, and retrieval code all operate on explicit scope-qualified collection names rather than a shared unscoped table.
+The gate, compaction, and retrieval code operate on explicit scope-qualified
+collection names. Sessions sharing a `userId` intentionally share durable user
+memory, and `global` is shared within its daemon tenant. Configure tenant routing
+and durable identities for the isolation you need; collection names alone do
+not authenticate channel users or authorize tool access.
+
+## Reply Rules
+
+The reply scanner checks case-insensitive literal substrings in the
+`before_agent_reply` hook's `cleanedBody`. Matching depends on the host invoking
+that hook and honoring its returned refusal. It is a keyword filter, not a
+general PII detector: obfuscated or encoded text, indirect references, tool
+output, logs, and unsupported delivery paths are outside that check. Prompt
+rules are behavioral guidance to the model and are not an access-control
+boundary.
 
 ## What the Plugin Cannot Protect Against
 

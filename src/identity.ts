@@ -1,4 +1,4 @@
-import { userInfo, hostname } from "node:os";
+import { userInfo, hostname, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -7,7 +7,7 @@ import {
   renameSync,
   mkdirSync,
 } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { execSync } from "node:child_process";
 import type { LoggerLike, PluginConfig } from "./types.js";
 
@@ -19,14 +19,26 @@ import type { LoggerLike, PluginConfig } from "./types.js";
  *   2. `OPENCLAW_STATE_DIR` env var + `/libravdb-identity.json`
  *   3. `~/.openclaw/libravdb-identity.json` (default)
  */
-function resolveIdentityPath(configuredPath?: string): string {
+function resolveIdentityPath(configuredPath?: string): string | undefined {
   if (configuredPath) return configuredPath;
 
   const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
   if (stateDir) return join(stateDir, "libravdb-identity.json");
 
-  const home = userInfo().homedir;
-  return join(home, ".openclaw", "libravdb-identity.json");
+  let home: string;
+  try {
+    // Keep the existing account-derived location when it is available.
+    home = userInfo().homedir;
+  } catch {
+    try {
+      // homedir() can still resolve the environment-provided home when the
+      // current UID has no account entry. Persistence remains best-effort.
+      home = homedir();
+    } catch {
+      return undefined;
+    }
+  }
+  return home && isAbsolute(home) ? join(home, ".openclaw", "libravdb-identity.json") : undefined;
 }
 
 export type IdentitySource = "config" | "file" | "auto" | "session-key" | "default";
@@ -131,7 +143,7 @@ export function resolveIdentity(params: {
   const filePath = resolveIdentityPath(params.identityPath);
 
   // 2. Identity JSON file (portable, user-editable)
-  if (existsSync(filePath)) {
+  if (filePath && existsSync(filePath)) {
     try {
       const raw = readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw) as IdentityFile;
@@ -164,7 +176,7 @@ export function resolveIdentity(params: {
   }
 
   const autoId = deriveAutoId(parts);
-  if (params.noAutoPersist) {
+  if (params.noAutoPersist || !filePath) {
     return { userId: autoId, source: "auto" };
   }
   try {

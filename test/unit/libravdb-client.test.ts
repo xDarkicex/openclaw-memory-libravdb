@@ -163,6 +163,33 @@ test("detectLegacyJsonRpcDaemon probes legacy JSON-RPC unix health", { skip: pro
 // Client lifecycle
 // ---------------------------------------------------------------------------
 
+test("plaintext endpoints do not read unused TLS certificate files", () => {
+  const missingPath = path.join(tmpdir(), `libravdb-missing-cert-${process.pid}-${Date.now()}`);
+  for (const options of [
+    { endpoint: "tcp:127.0.0.1:9" },
+    { endpoint: "tcp:memory.internal:9", tlsMode: "insecure" as const },
+    { endpoint: `unix:${path.join(tmpdir(), "libravdb.sock")}` },
+  ]) {
+    const client = new LibravDBClient({
+      ...options,
+      tlsCaPath: missingPath,
+      tlsClientCertPath: missingPath,
+      tlsClientKeyPath: missingPath,
+    });
+    client.close();
+  }
+});
+
+test("TLS endpoints still require readable configured client certificates", () => {
+  const missingPath = path.join(tmpdir(), `libravdb-missing-cert-${process.pid}-${Date.now()}`);
+  assert.throws(() => new LibravDBClient({
+    endpoint: "tcp:127.0.0.1:9",
+    tlsMode: "tls",
+    tlsClientCertPath: missingPath,
+    tlsClientKeyPath: missingPath,
+  }), /ENOENT/);
+});
+
 test("close prevents RPC methods", async () => {
   const client = new LibravDBClient({ secret: "test" });
   client.close();
@@ -374,6 +401,35 @@ test("no auth headers without secret", async () => {
   }))({ method: { name: "Status" }, header } as any);
 
   assert.equal(sent.has("x-libravdb-auth"), false);
+});
+
+test("unauthenticated RPCs proceed independently while another RPC is pending", async () => {
+  const st = state({ secret: undefined });
+  const int = createAuthInterceptor(st);
+  let finishFirst!: () => void;
+  let firstStarted!: () => void;
+  const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+  const gate = new Promise<void>((resolve) => { finishFirst = resolve; });
+  const response = { header: { get: () => null }, trailer: { get: () => null } };
+  const first = (int as any)(async () => {
+    firstStarted();
+    await gate;
+    return response;
+  })({ method: { name: "AfterTurnKernel" }, header: { set: () => {} } });
+  await started;
+  let secondStarted = false;
+  const second = (int as any)(async () => {
+    secondStarted = true;
+    return response;
+  })({ method: { name: "BeforeTurnKernel" }, header: { set: () => {} } });
+
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(secondStarted, true, "unauthenticated calls have no shared nonce chain to serialize");
+  } finally {
+    finishFirst();
+    await Promise.all([first, second]);
+  }
 });
 
 test("loadSecretFromEnv returns undefined when no env vars are set", () => {

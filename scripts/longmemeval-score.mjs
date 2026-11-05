@@ -38,21 +38,24 @@ function runPython(cwd, args, extraEnv = {}) {
 }
 
 async function main() {
-  const evalRepo = env("LONGMEMEVAL_EVAL_REPO");
-  const hypothesisFile = env("LONGMEMEVAL_HYPOTHESIS_FILE");
-  const dataFile = env("LONGMEMEVAL_DATA_FILE");
+  const evalRepoInput = env("LONGMEMEVAL_EVAL_REPO");
+  const hypothesisFileInput = env("LONGMEMEVAL_HYPOTHESIS_FILE");
+  const dataFileInput = env("LONGMEMEVAL_DATA_FILE");
   const model = env("LONGMEMEVAL_EVAL_MODEL") || "gpt-4o";
 
-  if (!evalRepo) {
+  if (!evalRepoInput) {
     throw new Error("LONGMEMEVAL_EVAL_REPO must point at a LongMemEval checkout that contains src/evaluation/evaluate_qa.py");
   }
-  if (!hypothesisFile) {
+  if (!hypothesisFileInput) {
     throw new Error("LONGMEMEVAL_HYPOTHESIS_FILE is required and must point at a jsonl file with question_id and hypothesis");
   }
-  if (!dataFile) {
+  if (!dataFileInput) {
     throw new Error("LONGMEMEVAL_DATA_FILE is required and must point at the LongMemEval dataset JSON");
   }
 
+  const evalRepo = path.resolve(evalRepoInput);
+  const hypothesisFile = path.resolve(hypothesisFileInput);
+  const dataFile = path.resolve(dataFileInput);
   const evaluator = path.join(evalRepo, "src", "evaluation", "evaluate_qa.py");
   const metrics = path.join(evalRepo, "src", "evaluation", "print_qa_metrics.py");
   const logFile = `${hypothesisFile}.log`;

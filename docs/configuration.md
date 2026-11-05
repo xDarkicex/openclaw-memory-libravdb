@@ -2,10 +2,11 @@
 
 All configuration keys are optional.
 
-If you do not have a GPU available, setting `onnxDevice` to `"cpu"` is
-recommended to avoid startup failures from missing GPU/NPU providers,
-but this is also optional — the service auto-detects and falls back to
-CPU when a provider is unavailable.
+The plugin is connect-only. Configure the daemon's database, embedding backend,
+model paths, and execution provider in its YAML or service environment. Plugin
+model fields do not change an already-running daemon's settings. For example,
+select ONNX CPU execution with `LIBRAVDB_ONNX_DEVICE=cpu` in the daemon's
+environment, rather than relying on the plugin's `onnxDevice` field.
 
 ## Connection
 
@@ -13,12 +14,12 @@ CPU when a provider is unavailable.
 |---|---|---|---|
 | `sidecarPath` | string | `auto` | `"auto"` probes standard socket paths; set `unix:/path` or `tcp:host:port` to override |
 | `grpcEndpoint` | string | — | gRPC kernel endpoint. See `grpcEndpointTlsMode` for credential control. |
-| `grpcEndpointTlsCa` | string | — | Path to CA certificate PEM file. Only needed for self-signed or private CA certs. Omit when using Let's Encrypt or cert-manager. |
-| `grpcEndpointTlsMode` | string | `"auto"` | gRPC credential mode. `"auto"`: loopback/unix → plaintext, remote → TLS. `"tls"`: always TLS. `"insecure"`: always plaintext. |
+| `grpcEndpointTlsCa` | string | — | PEM trust anchor for a self-signed or private-CA service. cert-manager private issuers also need this; public issuers trusted by Node do not. |
+| `grpcEndpointTlsMode` | string | `"auto"` | gRPC credential mode. `"auto"`: loopback/unix → plaintext, remote → TLS. `"tls"`: TCP uses TLS, including loopback. `"insecure"`: plaintext. Unix sockets always use plaintext. |
 | `grpcEndpointTlsClientCert` | string | — | Path to client certificate PEM for mTLS. Must be paired with `grpcEndpointTlsClientKey`. |
 | `grpcEndpointTlsClientKey` | string | — | Path to client private key PEM for mTLS. Must be paired with `grpcEndpointTlsClientCert`. |
-| `rpcTimeoutMs` | number | `30000` | Per-call timeout for service RPC (ms) |
-| `dbPath` | string | auto-named | Explicit DB path; when set bypasses model-specific naming |
+| `rpcTimeoutMs` | number | `120000` | Per-call timeout for service RPC (ms); overrides `LIBRAVDB_RPC_TIMEOUT_MS` |
+| `dbPath` | string | — | Legacy accepted field; does not change the connected daemon's database. Set `db_path` or `LIBRAVDB_DB_PATH` on the daemon. |
 
 ### gRPC TLS behavior
 
@@ -34,18 +35,18 @@ Use `grpcEndpointTlsMode` to override the default behavior:
 
 | Value | When to use |
 |---|---|
-| `"auto"` (default) | Standard operation — plugin heuristic matches vector service TLS setting automatically. |
-| `"tls"` | Daemon has TLS enabled on loopback or unix socket (rare; use when the vector service's `LIBRAVDB_GRPC_TLS_*` env vars are set on a local address). |
+| `"auto"` (default) | Address-based selection above; the plugin does not detect the service's TLS settings. |
+| `"tls"` | Daemon has TLS enabled on a loopback TCP address. Unix sockets remain plaintext. |
 | `"insecure"` | Service mesh or TLS-terminating tunnel handles encryption externally; both sides are plaintext. |
 
 **Default (local vector service):** No TLS configuration needed.
-Unix socket and loopback endpoints are always plaintext regardless
-of any TLS settings.
+Unix sockets are always plaintext. Loopback TCP endpoints use plaintext in
+`"auto"` mode and TLS when `grpcEndpointTlsMode` is `"tls"`.
 
 **K8 / remote vector service with CA-issued cert:**
-No extra configuration needed. The plugin uses the system CA pool,
-which trusts certs issued by Let's Encrypt, cert-manager, and
-other public CAs automatically.
+No extra plugin configuration is needed when the issuer is in Node's default
+trusted roots, such as Let's Encrypt. cert-manager may use public or private
+issuers; a private issuer needs `grpcEndpointTlsCa`.
 
 **Remote vector service with self-signed or private CA cert:**
 Set `grpcEndpointTlsCa` to the path of the CA certificate PEM file:
@@ -83,14 +84,19 @@ address, explicitly set `grpcEndpointTlsMode: "tls"` to match:
 
 ## Embedding
 
+These fields remain in the plugin schema for metadata and local path validation.
+They are not sent as daemon configuration. `embeddingBackend: "onnx-local"`
+requires runtime/model paths and validates them on the plugin host for local
+endpoints; provisioning and backend selection still happen on the daemon.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `embeddingProfile` | string | `nomic-embed-text-v1.5` | Primary embedding model |
 | `fallbackProfile` | string | `bge-small-en-v1.5` | Fallback when primary model fails dimension checks |
 | `embeddingBackend` | string | — | `gguf` (recommended default), `bundled`, `onnx-local`, `custom-local`, or `remote` |
 | `onnxDevice` | string | `cpu` | ONNX execution provider: `auto`, `cpu`, `coreml` (macOS), `cuda` (Linux/Windows), `directml` (Windows), `openvino` (Linux) |
-| `embeddingRuntimePath` | string | — | Path to ONNX runtime library visible to the vector service (maps to `LIBRAVDB_ONNX_RUNTIME`; required with `embeddingBackend: "onnx-local"`) |
-| `embeddingModelPath` | string | — | Path to the model directory containing `embedding.json`, `model.onnx`, and `tokenizer.json` (maps to `LIBRAVDB_EMBEDDING_MODEL`; required with `embeddingBackend: "onnx-local"`) |
+| `embeddingRuntimePath` | string | — | Runtime library path used for plugin-side validation with `embeddingBackend: "onnx-local"`; configure `LIBRAVDB_ONNX_RUNTIME` separately on the daemon |
+| `embeddingModelPath` | string | — | Model directory containing `embedding.json`, used for plugin-side validation with `embeddingBackend: "onnx-local"`; configure `LIBRAVDB_EMBEDDING_MODEL` separately on the daemon |
 | `embeddingTokenizerPath` | string | — | Path to custom tokenizer file |
 | `embeddingDimensions` | number | — | Embedding dimension override |
 | `embeddingNormalize` | boolean | — | Enable embedding normalization |
@@ -124,7 +130,7 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 |---|---|---|---|
 | `compactThreshold` | number | — | Absolute token threshold for forced compaction |
 | `compactionThresholdFraction` | number | `0.8` | Dynamic trigger as fraction of active token budget |
-| `compactSessionTokenBudget` | number | `2000` | Auto-compact when session exceeds this many tokens since last compaction; `0` disables |
+| `compactSessionTokenBudget` | number | `2000` | Auto-compaction token budget; `0` disables implicit predictive compaction. A positive `compactThreshold` overrides this setting; explicit host/manual compaction remains available. |
 | `compactionQualityWeight` | number | `0.5` | How much summary confidence affects retrieval score (0 = ignore, 1 = full suppression) |
 
 ## Summarizer
@@ -147,6 +153,11 @@ The plugin exposes `ingestionGateThreshold` for host-side gating decisions:
 |---|---|---|---|
 | `userId` | string | auto-derived | Stable user identity for cross-session durable memory |
 | `identityPath` | string | `$OPENCLAW_STATE_DIR/libravdb-identity.json` | Custom path for the auto-derived identity file |
+
+If OS account lookup fails, identity derivation still uses its environment fallback.
+The default identity-file path falls back to the OS home-directory resolver; when
+neither home lookup succeeds, derivation continues without persisting a file.
+An explicit `identityPath` or `OPENCLAW_STATE_DIR` continues to take precedence.
 
 ## Markdown ingestion
 

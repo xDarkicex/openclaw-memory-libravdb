@@ -196,7 +196,7 @@ export function createAuthInterceptor(
   return (next) => async (req) => {
     // Health does not participate in the nonce chain — bypass the
     // mutex entirely so recovery can call Health without deadlocking.
-    if (req.method.name === "Health") {
+    if (req.method.name === "Health" || !state.secret) {
       return next(req);
     }
 
@@ -274,7 +274,7 @@ export class LibravDBClient {
     if (!isInsecure && options.tlsCaPath) {
       rootCerts = fs.readFileSync(options.tlsCaPath);
     }
-    if (options.tlsClientCertPath && options.tlsClientKeyPath) {
+    if (!isInsecure && options.tlsClientCertPath && options.tlsClientKeyPath) {
       clientCert = fs.readFileSync(options.tlsClientCertPath);
       clientKey = fs.readFileSync(options.tlsClientKeyPath);
     }

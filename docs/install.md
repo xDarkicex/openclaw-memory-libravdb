@@ -168,21 +168,42 @@ Keep the vector service assets and database in a mounted volume and point both t
 vector service and plugin at paths inside the container:
 
 ```sh
+set -eu
+
 export LIBRAVDB_GRPC_ENDPOINT=unix:/home/node/.openclaw/libravdbd/run/libravdb.sock
 export LIBRAVDB_DB_PATH=/home/node/.openclaw/libravdbd/data.libravdb
 export LIBRAVDB_ONNX_RUNTIME=/home/node/.openclaw/libravdbd/models/onnxruntime/lib/libonnxruntime.so
 export LIBRAVDB_EMBEDDING_MODEL=/home/node/.openclaw/libravdbd/models/nomic-embed-text-v1.5
 export LIBRAVDB_ONNX_DEVICE=cpu
 libravdbd serve &
+daemon_pid=$!
 
-# Wait for socket to be ready
-for i in {1..30}; do
-  [ -S "$LIBRAVDB_GRPC_ENDPOINT" ] && break
+# Test the filesystem path, not the unix: endpoint string.
+socket_path=${LIBRAVDB_GRPC_ENDPOINT#unix:}
+attempts=0
+while [ ! -S "$socket_path" ]; do
+  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+    echo "libravdbd exited before creating its socket" >&2
+    exit 1
+  fi
+  if [ "$attempts" -ge 30 ]; then
+    echo "Timed out waiting for libravdbd socket: $socket_path" >&2
+    kill "$daemon_pid"
+    wait "$daemon_pid" || true
+    exit 1
+  fi
+  attempts=$((attempts + 1))
   sleep 0.5
 done
 
-node dist/index.js gateway --bind lan --port 18789
+exec openclaw gateway --bind lan --port 18789
 ```
+
+This wrapper assumes the OpenClaw CLI is installed and the socket path is not
+left over from a previous service. A socket file alone is not a health check;
+use `openclaw libravdb status` to verify the gRPC service after startup. For
+production containers, use separate services or a supervisor that manages both
+processes.
 
 Use matching plugin config:
 

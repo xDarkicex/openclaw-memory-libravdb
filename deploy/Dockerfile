@@ -9,16 +9,18 @@ RUN apk add --no-cache ca-certificates curl tzdata && \
 # Download daemon binary from public releases
 ARG LIBRAVDBD_VERSION=latest
 RUN if [ "$LIBRAVDBD_VERSION" = "latest" ]; then \
-        VERSION=$(curl -s https://api.github.com/repos/zephyr-systems/libravdbd/releases/latest | grep tag_name | cut -d'"' -f4); \
+        RELEASE=$(curl -fsSL https://api.github.com/repos/zephyr-systems/libravdbd/releases/latest) && \
+        VERSION=$(printf '%s\n' "$RELEASE" | grep tag_name | cut -d'"' -f4) && \
+        test -n "$VERSION"; \
     else \
         VERSION="v${LIBRAVDBD_VERSION}"; \
     fi && \
     case "${TARGETARCH}" in \
         amd64) ARCH="amd64";; \
         arm64) ARCH="arm64";; \
-        *) ARCH="amd64";; \
+        *) echo "Unsupported target architecture: ${TARGETARCH}" >&2; exit 1;; \
     esac && \
-    curl -sL "https://github.com/zephyr-systems/libravdbd/releases/download/${VERSION}/libravdbd-linux-${ARCH}" \
+    curl -fsSL "https://github.com/zephyr-systems/libravdbd/releases/download/${VERSION}/libravdbd-linux-${ARCH}" \
         -o /usr/local/bin/libravdbd && \
     chmod +x /usr/local/bin/libravdbd
 

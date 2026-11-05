@@ -266,12 +266,13 @@
       "embeddingBackend": {
         "type": "string",
         "enum": [
+          "gguf",
           "bundled",
           "onnx-local",
           "custom-local",
           "remote"
         ],
-        "description": "Embedder backend: bundled (built-in ONNX), onnx-local (local ONNX model), custom-local (custom ONNX), remote (HTTP API)"
+        "description": "Embedder backend: gguf (llama.cpp), bundled (built-in ONNX), onnx-local (local ONNX model), custom-local (custom ONNX), remote (HTTP API). Configure the actual backend separately in the daemon YAML or service environment."
       },
       "embeddingProfile": {
         "type": "string",

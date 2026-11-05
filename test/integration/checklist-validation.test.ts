@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import type { PluginConfig } from "../../src/types.js";
 
 const repoRoot = process.cwd();
 
@@ -71,6 +72,22 @@ test("manifest schema includes runtime-consumed context tuning keys", async () =
   for (const key of tuningKeys) {
     assert.equal(properties[key]?.type, "number", `${key} must be accepted by configSchema`);
   }
+});
+
+test("manifest schema accepts every supported embedding backend", async () => {
+  const manifest = JSON.parse(await readFile(path.join(repoRoot, "openclaw.plugin.json"), "utf8"));
+  // Keep the host's config gate aligned with the runtime's complete public type.
+  const backends: Record<NonNullable<PluginConfig["embeddingBackend"]>, true> = {
+    bundled: true,
+    "onnx-local": true,
+    gguf: true,
+    "custom-local": true,
+    remote: true,
+  };
+  assert.deepEqual(
+    [...manifest.configSchema.properties.embeddingBackend.enum].sort(),
+    Object.keys(backends).sort(),
+  );
 });
 
 test("manifest schema requires explicit assets for onnx-local embedding setup", async () => {
