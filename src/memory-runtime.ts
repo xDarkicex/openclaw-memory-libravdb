@@ -284,13 +284,13 @@ function resolveSearchCollections(
     return sessionId ? [resolveSessionSearchCollection(cfg, sessionId)] : [];
   }
 
+  if (cfg.crossSessionRecall === false) {
+    return corpus === "all" && sessionId ? [resolveSessionSearchCollection(cfg, sessionId)] : [];
+  }
+
   const durableCollections = [resolveUserCollection(userId), "global"];
   if (corpus === "memory") {
     return durableCollections;
-  }
-
-  if (cfg.crossSessionRecall === false) {
-    return sessionId ? [resolveSessionSearchCollection(cfg, sessionId)] : [];
   }
 
   if (!sessionId) {

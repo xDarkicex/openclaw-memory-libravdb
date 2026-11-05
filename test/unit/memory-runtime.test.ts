@@ -209,6 +209,19 @@ test("memory runtime bridge returns no results for dream queries without a sessi
   assert.equal(rpc.calls.some((call) => call.params.collection === "dream:u1"), false);
 });
 
+test("memory runtime bridge does not retrieve durable memory through an explicit corpus when cross-session recall is disabled", async () => {
+  for (const sessionId of [undefined, "s1"]) {
+    const rpc = new FakeRpc();
+    const runtime = buildMemoryRuntimeBridge(async () => rpc as never, { crossSessionRecall: false });
+    const { manager } = await runtime.getMemorySearchManager();
+
+    const result = await manager.search({ query: "prior preferences", userId: "u1", corpus: "memory", sessionId });
+
+    assert.deepEqual(result, []);
+    assert.equal(rpc.calls.filter((call) => call.method.startsWith("searchText")).length, 0);
+  }
+});
+
 test("memory runtime bridge falls back to session-scoped namespace when no other identity is present", async () => {
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
