@@ -100,6 +100,10 @@ another's entries and observe current saved context. The vector service remains
 the source of truth; failure to update this cache does not reject an acknowledged
 turn.
 
+Continuity, the user card, and the bot persona are fetched for the bootstrap
+turn where they are injected. Established conversations do not wait for these
+bootstrap-only reads when assembling later turns.
+
 ### `compact`
 
 Compaction is explicit rather than background-only. The host can request a

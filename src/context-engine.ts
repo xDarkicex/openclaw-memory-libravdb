@@ -3491,22 +3491,23 @@ export function buildContextEngineFactory(
             sourceProjection,
             compactionProjectionActive ? "assembled" : PROMPT_AUTHORITY_PREASSEMBLY_MAY_OVERFLOW,
           );
-          const continuityContext = await injectContinuityContext({
-            client,
-            userId,
-            sessionId,
-            sessionKey: args.sessionKey ?? sessionId,
-            logger,
-            tokenBudget: args.tokenBudget,
-            systemPromptAddition: assembled.systemPromptAddition,
-          });
-          const userCardContext = await injectUserCardContext({ client, userId });
-          const personaContext = await injectPersonaContext({ client });
-          const rulesContext = buildRulesContext();
-          // Only inject on session bootstrap.
+          // Bootstrap context is consumed only on the first turn. Do not wait
+          // for these RPCs on later turns just to discard their results.
           const isSessionBootstrap = messages.length <= 1;
           let withContext = assembled;
           if (isSessionBootstrap) {
+            const continuityContext = await injectContinuityContext({
+              client,
+              userId,
+              sessionId,
+              sessionKey: args.sessionKey ?? sessionId,
+              logger,
+              tokenBudget: args.tokenBudget,
+              systemPromptAddition: assembled.systemPromptAddition,
+            });
+            const userCardContext = await injectUserCardContext({ client, userId });
+            const personaContext = await injectPersonaContext({ client });
+            const rulesContext = buildRulesContext();
             // Persona first — identity of the bot itself.
             if (personaContext) {
               withContext = { ...withContext, systemPromptAddition: appendSystemPromptAddition(withContext.systemPromptAddition, personaContext) };
