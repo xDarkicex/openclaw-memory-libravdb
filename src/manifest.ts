@@ -7,6 +7,8 @@ export interface TurnEntry {
   index: number;
   role: string;
   contentHash: string;
+  /** Original normalized content when the ingest cap truncated this message. */
+  sourceContentHash?: string;
   idHash?: string;
   /** Present only when the caller identified this ID as supplied by the host. */
   idSource?: "host";
@@ -71,7 +73,27 @@ export class TurnManifestStore {
     const filePath = this.getManifestPath(sessionId);
 
     if (!fs.existsSync(filePath)) {
-      if (!this.destination) return this.createEmpty(sessionId);
+      if (!this.destination) {
+        const destDir = path.join(this.getManifestDir(), "destinations");
+        if (fs.existsSync(destDir)) {
+          const fileName = `${this.hashString(sessionId)}.manifest.json`;
+          for (const entry of fs.readdirSync(destDir)) {
+            const candidate = path.join(destDir, entry, fileName);
+            if (fs.existsSync(candidate)) {
+              try {
+                const raw = fs.readFileSync(candidate, "utf8");
+                const manifest = JSON.parse(raw) as TurnManifest;
+                if (manifest.sessionId === sessionId && this.verifyChain(manifest)) {
+                  return manifest;
+                }
+              } catch {
+                // Ignore candidate parse failure and keep scanning
+              }
+            }
+          }
+        }
+        return this.createEmpty(sessionId);
+      }
       // Adopt a legacy checkpoint once, without re-sending an already-ACKed
       // transcript. Keep the claim in the old file so a different destination
       // cannot adopt the same acknowledgment on its first use.
@@ -105,6 +127,21 @@ export class TurnManifestStore {
       if (manifest.sessionId !== sessionId) {
         logger?.warn?.(`[LibraVDB] Manifest session mismatch for ${sessionId}. Forcing re-sync.`);
         return this.createEmpty(sessionId);
+      }
+
+      if (!this.destination && manifest.destination) {
+        const candidate = path.join(this.getManifestDir(), "destinations", this.hashString(manifest.destination), `${this.hashString(sessionId)}.manifest.json`);
+        if (fs.existsSync(candidate)) {
+          try {
+            const activeRaw = fs.readFileSync(candidate, "utf8");
+            const activeManifest = JSON.parse(activeRaw) as TurnManifest;
+            if (activeManifest.sessionId === sessionId && this.verifyChain(activeManifest)) {
+              return activeManifest;
+            }
+          } catch {
+            // Fall back to claimed root manifest
+          }
+        }
       }
 
       if (this.destination && manifest.destination !== this.destination) {
@@ -193,7 +230,7 @@ export class TurnManifestStore {
     for (let i = 0; i < overlapLength; i++) {
       const turn = turns[manifestStart + i];
       const msg = incomingMessages[i];
-      if (!turn || !msg || turn.role !== msg.role || turn.contentHash !== this.hashString(msg.content)) {
+      if (!turn || !msg || turn.role !== msg.role || (turn.sourceContentHash ?? turn.contentHash) !== this.hashString(msg.content)) {
         return false;
       }
       const incomingIdHash = msg.id ? this.hashString(msg.id) : undefined;
@@ -219,8 +256,17 @@ export class TurnManifestStore {
     manifest: TurnManifest,
     newMessages: KernelCompatibleMessage[],
     startingIndex: number,
-    hostMessageIds?: ReadonlySet<string>,
+    hostMessageIds?: ReadonlySet<string> | ReadonlyMap<KernelCompatibleMessage, string>,
+    sourceContentHashes?: ReadonlyMap<KernelCompatibleMessage, string>,
   ): TurnManifest {
+    let resolvedHostMessageIds: ReadonlySet<string> | undefined;
+    let resolvedSourceHashes: ReadonlyMap<KernelCompatibleMessage, string> | undefined = sourceContentHashes;
+    if (hostMessageIds instanceof Map) {
+      resolvedSourceHashes = hostMessageIds;
+    } else if (hostMessageIds instanceof Set) {
+      resolvedHostMessageIds = hostMessageIds;
+    }
+
     let currentHash = manifest.tailHash;
     const newTurns: TurnEntry[] = [];
 
@@ -228,6 +274,7 @@ export class TurnManifestStore {
       const msg = newMessages[i];
       const absoluteIndex = startingIndex + i;
       const contentHash = this.hashString(msg.content);
+      const sourceContentHash = resolvedSourceHashes?.get(msg);
       const idHash = msg.id ? this.hashString(msg.id) : undefined;
 
       currentHash = this.hashString(`${absoluteIndex}${msg.role}${contentHash}${currentHash}`);
@@ -236,8 +283,9 @@ export class TurnManifestStore {
         index: absoluteIndex,
         role: msg.role,
         contentHash,
+        ...(sourceContentHash && sourceContentHash !== contentHash ? { sourceContentHash } : {}),
         ...(idHash ? { idHash } : {}),
-        ...(idHash && msg.id && hostMessageIds?.has(msg.id) ? { idSource: "host" as const } : {}),
+        ...(idHash && msg.id && resolvedHostMessageIds?.has(msg.id) ? { idSource: "host" as const } : {}),
         turnHash: currentHash,
         ingestedAt: Date.now(),
       });

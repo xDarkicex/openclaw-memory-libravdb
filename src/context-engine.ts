@@ -22,7 +22,7 @@ import {
 } from "@xdarkicex/libravdb-contracts";
 import { resolveIdentity, type ResolvedIdentity } from "./identity.js";
 import { resolveUserCollection } from "./memory-scopes.js";
-import { TurnManifestStore, type TurnManifest } from "./manifest.js";
+import { TurnManifestStore, manifestStore, type TurnManifest } from "./manifest.js";
 import { TurnMemoryCache, extractQueryHint, isNewUserTurn } from "./turn-cache.js";
 
 function sessionDestination(cfg: PluginConfig, runtime: PluginRuntime, scope: { sessionId: string; sessionKey?: string }): string {
@@ -997,6 +997,7 @@ function truncateContentToTokenBudget(content: unknown, tokenBudget: number): st
 function trimMessagesToBudget(
   messages: OpenClawCompatibleMessage[],
   tokenBudget: number,
+  onTruncate?: (bounded: OpenClawCompatibleMessage, original: OpenClawCompatibleMessage) => void,
 ): OpenClawCompatibleMessage[] {
   if (tokenBudget <= 0 || messages.length === 0) {
     return [];
@@ -1027,7 +1028,9 @@ function trimMessagesToBudget(
   if (!truncated) {
     return [];
   }
-  return [{ ...last, content: truncated }];
+  const bounded = { ...last, content: truncated };
+  onTruncate?.(bounded, last);
+  return [bounded];
 }
 
 /**
@@ -1078,14 +1081,22 @@ function boundAfterTurnMessagesForIngest(
   messages: KernelCompatibleMessage[],
   logger: LoggerLike,
   sessionId: string,
+  sourceContentHashes?: Map<KernelCompatibleMessage, string>,
 ): KernelCompatibleMessage[] {
   const estimatedTokens = approximateMessagesTokens(messages);
   if (estimatedTokens <= AFTER_TURN_INGEST_MAX_TOKENS) {
     return messages;
   }
 
-  const bounded = trimMessagesToBudget(messages, AFTER_TURN_INGEST_MAX_TOKENS)
-    .map((message) => normalizeKernelMessage(message));
+  const truncatedSources = new Map<OpenClawCompatibleMessage, string>();
+  const bounded = trimMessagesToBudget(messages, AFTER_TURN_INGEST_MAX_TOKENS, (message, original) => {
+    truncatedSources.set(message, manifestStore.hashString(original.content as string));
+  }).map((message) => {
+    const normalized = normalizeKernelMessage(message);
+    const sourceHash = truncatedSources.get(message);
+    if (sourceHash && sourceContentHashes) sourceContentHashes.set(normalized, sourceHash);
+    return normalized;
+  });
   logger.info?.(
     `LibraVDB afterTurn trimmed oversized ingest payload sessionId=${sessionId} ` +
     `estimatedTokens=${estimatedTokens} maxTokens=${AFTER_TURN_INGEST_MAX_TOKENS} ` +
@@ -2048,6 +2059,7 @@ function persistAcknowledgedBatch(
   startIndex: number,
   result: unknown,
   hostMessageIds?: ReadonlySet<string>,
+  sourceContentHashes?: ReadonlyMap<KernelCompatibleMessage, string>,
 ): void {
   if (result && typeof result === "object" && "ok" in result && result.ok === false) {
     throw new Error(`[LibraVDB] afterTurnKernel returned ok=false for session ${manifest.sessionId}; ingestion must be retried.`);
@@ -2065,7 +2077,7 @@ function persistAcknowledgedBatch(
       `(lastProcessedIndex=${cursor?.lastProcessedIndex}, batch started at ${startIndex}).`,
     );
   }
-  const updated = manifestStore.appendACKedMessages(manifest, ackedMessages, startIndex, hostMessageIds);
+  const updated = manifestStore.appendACKedMessages(manifest, ackedMessages, startIndex, hostMessageIds, sourceContentHashes);
   if (manifest.recoveryPending && ackedMessages.length < messages.length) {
     updated.recoveryPending = true;
   }
@@ -3922,7 +3934,7 @@ export function buildContextEngineFactory(
         .filter((id): id is string => typeof id === "string" && id.length > 0));
       const manifestStore = new TurnManifestStore(undefined, sessionDestination(cfg, runtime, args));
       const preflightManifest = manifestStore.load(sessionId, logger);
-      const selectMessages = (recoveryPending: boolean): KernelCompatibleMessage[] => {
+      const selectMessages = (recoveryPending: boolean, sourceContentHashes?: Map<KernelCompatibleMessage, string>): KernelCompatibleMessage[] => {
         const source = recoveryPending
           ? args.messages
           : selectAfterTurnMessages(args.messages, args.prePromptMessageCount, logger);
@@ -3948,7 +3960,7 @@ export function buildContextEngineFactory(
         }) : source;
         const normalized = normalizeKernelMessages(identifiedSource, { retainOpenClawContext: true });
         return recoveryPending
-          ? boundAfterTurnMessagesForIngest(normalized, logger, sessionId)
+          ? boundAfterTurnMessagesForIngest(normalized, logger, sessionId, sourceContentHashes)
           : normalized;
       };
       const messages = selectMessages(preflightManifest.recoveryPending === true);
@@ -3980,7 +3992,10 @@ export function buildContextEngineFactory(
           // Reload manifest inside the serialized queue so state is fresh
           // after any preceding queued tasks have completed.
           const manifest = manifestStore.load(sessionId, logger);
-          const queuedMessages = manifest.recoveryPending ? selectMessages(true) : messages;
+          // Preserve original-content identity locally while the daemon chain
+          // continues hashing only the bounded payload it actually receives.
+          const sourceContentHashes = new Map<KernelCompatibleMessage, string>();
+          const queuedMessages = manifest.recoveryPending ? selectMessages(true, sourceContentHashes) : messages;
           const overlapIndex = manifestStore.findOverlapIndex(manifest, queuedMessages, hostMessageIds);
           const newMessages = queuedMessages.slice(overlapIndex);
 
@@ -3989,7 +4004,7 @@ export function buildContextEngineFactory(
           }
 
           // Apply token budget cap only to new messages
-          const ingestMessages = boundAfterTurnMessagesForIngest(newMessages, logger, sessionId);
+          const ingestMessages = boundAfterTurnMessagesForIngest(newMessages, logger, sessionId, sourceContentHashes);
           // A manifest with no acknowledged turns is an initial/recovery
           // ingest, not an OpenClaw transcript offset. Sending the host's
           // pre-prompt count here makes the daemon reject the batch as a gap
@@ -4035,7 +4050,7 @@ export function buildContextEngineFactory(
               `[LibraVDB] Daemon reported cursor gap for session ${sessionId}. ` +
               `Resetting manifest and re-seeding from source history.`,
             );
-            const seedMessages = selectMessages(true);
+            const seedMessages = selectMessages(true, sourceContentHashes);
             const emptyManifest = manifestStore.createEmpty(sessionId);
             emptyManifest.recoveryPending = true;
             // The daemon has disproved the old manifest. Clear it even if the
@@ -4050,12 +4065,12 @@ export function buildContextEngineFactory(
               isHeartbeat: args.isHeartbeat,
             } as unknown as Parameters<typeof client.afterTurnKernel>[0]);
             if (!lifecycleIsCurrent()) throw new SessionLifecycleChangedError();
-            persistAcknowledgedBatch(manifestStore, emptyManifest, seedMessages, 0, result, hostMessageIds);
+            persistAcknowledgedBatch(manifestStore, emptyManifest, seedMessages, 0, result, hostMessageIds, sourceContentHashes);
             logger.info?.(
               `[LibraVDB] Re-seeded daemon session ${sessionId} with ${seedMessages.length} source messages after cursor gap.`,
             );
           } else {
-            persistAcknowledgedBatch(manifestStore, manifest, ingestMessages, startIndex, result, hostMessageIds);
+            persistAcknowledgedBatch(manifestStore, manifest, ingestMessages, startIndex, result, hostMessageIds, sourceContentHashes);
           }
 
           // Everything above is the durable part of the turn: the daemon has
