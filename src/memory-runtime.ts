@@ -85,8 +85,8 @@ function createMemorySearchManager(
 
   return {
     async search(queryOrParams: string | MemorySearchParams = {}, opts: MemorySearchParams = {}) {
-      const legacyCall = typeof queryOrParams === "string";
-      const params = legacyCall
+      const stringCall = typeof queryOrParams === "string";
+      const params = stringCall
         ? {
             query: queryOrParams,
             limit: opts.limit ?? opts.k ?? opts.maxResults ?? opts.topK,
@@ -97,11 +97,13 @@ function createMemorySearchManager(
             userId: opts.userId,
             agentId: opts.agentId,
             context: opts.context,
+            kind: opts.kind,
+            signals: opts.signals,
           }
         : queryOrParams;
       const queryText = firstString(params.query, params.text, params.input, params.q);
       if (!queryText) {
-        return legacyCall ? { results: [], error: "Missing query text for LibraVDB memory search" } : [];
+        return [];
       }
 
       const dreamQuery = detectDreamQuerySignal(queryText);
@@ -159,18 +161,7 @@ function createMemorySearchManager(
           ? result.results
           : result.results.filter((item) => item.score >= minScore);
 
-      const legacyResults = filteredResults.map((item) => {
-        const meta = parseMetadataJson(item);
-        const text = resolveSearchResultText(item, meta);
-        return {
-          ...item,
-          text,
-          content: text,
-        };
-      });
-      if (legacyCall) {
-        return { results: legacyResults };
-      }
+      // Both host string calls and plugin object calls use OpenClaw memory hits.
       const memoryResults = filteredResults.map((item) => {
         const meta = parseMetadataJson(item);
         const collection = typeof meta.collection === "string" ? meta.collection : "memory";
@@ -363,7 +354,7 @@ function toMemorySearchResult(
     endLine: Math.max(1, text.split("\n").length),
     score: item.score,
     snippet: text,
-    source: collection.startsWith("session:") || collection.startsWith("session_") ? "sessions" : "memory",
+    source: collection.startsWith("session:") || collection.startsWith("session_") ? "sessions" as const : "memory" as const,
     citation: `${collection}:${item.id}`,
   };
 }

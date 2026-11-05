@@ -45,6 +45,14 @@ flowchart LR
 The memory prompt hook returns a small static capability header. It is not the
 main retrieval path.
 
+### Native memory search
+
+The registered memory manager accepts OpenClaw's `search(query, options)` call
+and returns an array of memory hits with snippets, citations, and paths for
+follow-up reads. The plugin's object-form search uses the same result format.
+Only paths returned by that manager can be read; raw vector-service records
+are not exposed through this interface.
+
 ### Background service shutdown
 
 Terminal runtime cleanup stops Markdown and dream watchers and waits for active

@@ -240,19 +240,54 @@ test("memory runtime bridge falls back to session-scoped namespace when no other
   assert.equal(collections[2], "global");
 });
 
-test("memory runtime bridge keeps the legacy string search shape", async () => {
+test("memory runtime bridge uses the host array shape for string searches", async () => {
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
   assert.ok(manager);
 
-  const result = await manager.search("find prior context", { sessionKey: "fixed-session" }) as {
-    results: Array<{ content: string }>;
-  };
+  const result = await manager.search("find prior context", { sessionKey: "fixed-session" });
 
-  assert.equal(Array.isArray(result), false);
-  assert.equal(result.results.length, 1);
-  assert.equal(result.results[0]?.content, "remembered item");
+  assert.ok(Array.isArray(result));
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.snippet, "remembered item");
+});
+
+test("string memory searches apply kind and signal filters like structured searches", async (t) => {
+  const records = [
+    { id: "factual-episode", text: "a factual episode", score: 0.95, kind: "episode", signals: ["factual"] },
+    { id: "temporal-fact", text: "a temporal fact", score: 0.9, kind: "fact", signals: ["temporal"] },
+    { id: "temporal-episode", text: "a temporal episode", score: 0.85, kind: "episode", signals: ["temporal"] },
+  ];
+  const filters = [
+    { options: { kind: "episode" }, expected: ["factual-episode", "temporal-episode"] },
+    { options: { signals: ["factual"] }, expected: ["factual-episode"] },
+    { options: { kind: "episode", signals: ["factual"] }, expected: ["factual-episode"] },
+  ];
+
+  for (const query of ["recall past context", "tell me about your dreams"]) {
+    for (const { options, expected } of filters) {
+      await t.test(`${query}: ${JSON.stringify(options)}`, async () => {
+        const rpc = new FakeRpc();
+        const matchingRecords = (params: Record<string, unknown>, collection: string) => records
+          .filter((record) => !params.kind || record.kind === params.kind)
+          .filter((record) => !Array.isArray(params.signals) || params.signals.every((signal) => record.signals.includes(String(signal))))
+          .map((record) => ({ ...record, metadata: { collection } }));
+        rpc.searchTextCollections = async (params) => ({ results: matchingRecords(params, "user:u1") });
+        rpc.searchText = async (params) => ({ results: matchingRecords(params, String(params.collection)) });
+        const { manager } = await buildMemoryRuntimeBridge(async () => rpc as never, {})
+          .getMemorySearchManager();
+        const searchOptions = { userId: "u1", limit: 8, ...options };
+
+        assert.ok(manager);
+        const structured = await manager.search({ query, ...searchOptions }) as Array<{ snippet: string }>;
+        const native = await manager.search(query, searchOptions);
+
+        assert.deepEqual(native.map((record) => record.snippet), records.filter((record) => expected.includes(record.id)).map((record) => record.text), `${query}: string result scope must honor both filter options`);
+        assert.deepEqual(native.map((record) => record.snippet), structured.map((record) => record.snippet), `${query}: both API shapes must retrieve the same filtered memories`);
+      });
+    }
+  }
 });
 
 test("memory runtime bridge falls back to metadata text when search result text is blank", async () => {
@@ -322,7 +357,7 @@ test("memory runtime bridge treats non-object metadata JSON as missing", async (
   assert.equal(result[0]?.source, "memory");
 });
 
-test("memory runtime bridge does not authorize hidden paths from legacy search results", async () => {
+test("memory runtime bridge does not authorize unreturned paths after string searches", async () => {
   const rpc = new FakeRpc();
   const runtime = buildMemoryRuntimeBridge(async () => rpc as never, {});
   const { manager } = await runtime.getMemorySearchManager();
@@ -337,7 +372,7 @@ test("memory runtime bridge does not authorize hidden paths from legacy search r
   assert.equal(
     rpc.calls.some((call) => call.method === "listCollection"),
     false,
-    "legacy searches should not authorize paths they did not return",
+    "string searches should not authorize paths they did not return",
   );
 });
 
